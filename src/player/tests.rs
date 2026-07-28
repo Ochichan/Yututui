@@ -4,6 +4,53 @@ use crate::util::process::ProcessProfile;
 #[cfg(unix)]
 use crate::util::process_guard::ChildTreeGuard;
 
+struct TestRouteRevocation(Arc<AtomicBool>);
+
+impl crate::playback_target::PlaybackRouteRevocation for TestRouteRevocation {
+    fn revoke(&self) {
+        self.0.store(true, Ordering::Release);
+    }
+}
+
+#[test]
+fn admitted_file_boundary_revokes_route_before_actor_receive() {
+    let (tx, _rx) = tokio::sync::mpsc::channel(1);
+    let handle = PlayerHandle::test_handle(tx);
+    let revoked = Arc::new(AtomicBool::new(false));
+    let revocation: Arc<dyn crate::playback_target::PlaybackRouteRevocation> =
+        Arc::new(TestRouteRevocation(Arc::clone(&revoked)));
+    let lease = crate::playback_target::PlaybackRouteLease::new(revocation);
+    handle.route_revocations.advance_generation(1);
+    assert!(
+        handle
+            .route_revocations
+            .install(1, lease.revocation_handle())
+    );
+
+    let _ = handle
+        .send(PlayerCmd::load(
+            "https://example.invalid/replacement",
+            MediaSourceContext::OnDemand,
+        ))
+        .unwrap();
+
+    assert!(revoked.load(Ordering::Acquire));
+    drop(lease);
+}
+
+#[test]
+fn late_route_install_is_rejected_after_newer_admission() {
+    let registry = RouteRevocationRegistry::default();
+    registry.advance_generation(2);
+    let revoked = Arc::new(AtomicBool::new(false));
+    let revocation: Arc<dyn crate::playback_target::PlaybackRouteRevocation> =
+        Arc::new(TestRouteRevocation(Arc::clone(&revoked)));
+    let lease = crate::playback_target::PlaybackRouteLease::new(revocation);
+
+    assert!(!registry.install(1, lease.revocation_handle()));
+    assert!(revoked.load(Ordering::Acquire));
+}
+
 #[test]
 fn file_generation_advances_only_for_admitted_load_and_stop_barriers() {
     let (tx, mut rx) = tokio::sync::mpsc::channel(4);

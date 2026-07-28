@@ -81,7 +81,9 @@ pub(super) fn command_parity_class(command: &RemoteCommand) -> CommandParityClas
             | RemoteSettingChange::AiEnabled { .. } => SharedStableEpoch,
             RemoteSettingChange::RadioMode { .. } => OwnerSpecific,
         },
-        RemoteCommand::ExportPersonalData { .. } => BothOwnerLoopIntercepted,
+        RemoteCommand::ExportPersonalData { .. }
+        | RemoteCommand::SyncNow
+        | RemoteCommand::SyncRevokeDevice { .. } => BothOwnerLoopIntercepted,
         RemoteCommand::Quit => OwnerSpecific,
         RemoteCommand::Play { .. }
         | RemoteCommand::Enqueue { .. }
@@ -161,6 +163,23 @@ pub(super) fn seed_snapshot() -> QueueSnapshot {
     queue.snapshot()
 }
 
+/// Stop the parity engine writing through real stores.
+///
+/// Under `#[cfg(test)]` every store resolves inside one process-wide sandbox, so the engine's
+/// `save_session` — which `queue_remove` ends in — targets one `<cache dir>/session.json` shared by
+/// the whole suite. On Windows a concurrent replace there can fail, and a daemon command whose save
+/// fails does not merely lose a write: `finish_remote_persistence` replaces its success-shaped
+/// response with `durability_unconfirmed`. The App owner has no such gate and still reports
+/// success, so the parity assertion reads it as the two owners disagreeing about a queue edit when
+/// nothing about playback diverged.
+///
+/// These tests compare projections and responses, never durability; the persistence gate has its
+/// own coverage in `engine/persistence_gate_tests.rs`. Same reason and same mechanism as
+/// `engine/accounts.rs`, which sets this flag so "saves become no-ops in tests".
+fn silence_engine_persistence(engine: &mut DaemonEngine) {
+    engine.silence_remote_persistence_for_test();
+}
+
 /// Both owners on identical default config + the same restored queue, with the known baseline
 /// differences aligned.
 pub(super) fn hermetic_pair() -> (App, DaemonEngine) {
@@ -176,6 +195,7 @@ pub(super) fn hermetic_pair() -> (App, DaemonEngine) {
         },
         Arc::new(|_event| {}),
     );
+    silence_engine_persistence(&mut engine);
     engine.restore_queue_snapshot(snap.clone(), RNG_SEED);
 
     let mut app = App::new(Config::default().volume);
@@ -201,6 +221,7 @@ pub(super) fn hermetic_pair_from_config(
         },
         Arc::new(|_event| {}),
     );
+    silence_engine_persistence(&mut engine);
     engine.restore_queue_snapshot(snap.clone(), RNG_SEED);
 
     let mut app = App::new(config.volume);
@@ -272,6 +293,42 @@ fn normalize(player: &mut PlayerModel, queue: &mut QueueModel) {
     queue.rev = 0;
 }
 
+/// Asserts both owners accepted, naming the side that refused and why.
+///
+/// `assert!(app_resp.ok && engine_resp.ok)` says nothing about which owner rejected the command
+/// or on what grounds, which is exactly the question when it fires on CI and not on any machine
+/// you can attach to. The revision-guarded cases have exactly two ways to refuse — `stale_rev`
+/// when the guard saw a queue revision other than the one handed to it, and `queue_index` when
+/// the queue was shorter than the position — so the reason alone separates them. The live queue
+/// revision and length are printed too, because a mismatch says whether the queue moved under
+/// the test between reading the revision and issuing the command.
+pub(super) fn assert_accepted(
+    step: &str,
+    app: &App,
+    engine: &DaemonEngine,
+    app_resp: &RemoteResponse,
+    engine_resp: &RemoteResponse,
+) {
+    if app_resp.ok && engine_resp.ok {
+        return;
+    }
+    let app_queue = app.core_view().queue;
+    let engine_queue = engine.core_view().queue;
+    panic!(
+        "{step}: both owners had to accept.\n  \
+         App:    ok={} reason={:?} queue rev={} len={}\n  \
+         daemon: ok={} reason={:?} queue rev={} len={}",
+        app_resp.ok,
+        app_resp.reason,
+        app_queue.rev(),
+        app_queue.len(),
+        engine_resp.ok,
+        engine_resp.reason,
+        engine_queue.rev(),
+        engine_queue.len(),
+    );
+}
+
 pub(super) fn assert_parity(step: &str, app: &App, engine: &DaemonEngine) {
     let (mut app_player, mut app_queue) = models_of(&app.core_view());
     let (mut daemon_player, mut daemon_queue) = models_of(&engine.core_view());
@@ -307,5 +364,36 @@ pub(super) fn gui_repeat(repeat: Repeat) -> RemoteCommand {
             field: "repeat".to_owned(),
             value: serde_json::to_value(repeat).unwrap(),
         },
+    }
+}
+
+#[cfg(test)]
+mod persistence_isolation_tests {
+    use super::*;
+
+    /// `queue_remove` ends in `save_session`, and under `#[cfg(test)]` that targets the one
+    /// `<cache dir>/session.json` the whole suite shares. On Windows a concurrent replace there can
+    /// fail, and `finish_remote_persistence` then answers `durability_unconfirmed` instead of the
+    /// command's success — which the parity assertion reads as the two owners disagreeing.
+    ///
+    /// Injecting the failure proves the seam rather than inferring it: with saves silenced the
+    /// engine never attempts one, so a failure that would otherwise rewrite the response cannot.
+    /// Asserting on the shared file itself would measure whatever else the suite is writing.
+    #[tokio::test]
+    async fn a_silenced_engine_survives_a_session_save_failure() {
+        let _fail =
+            crate::daemon::engine::fail_store_saves_for_test(crate::persist::StoreKind::Session);
+
+        let (_app, mut engine) = hermetic_pair();
+        let (response, _shutdown, _effects) = engine
+            .handle_remote(RemoteCommand::QueueRemove { position: 0 })
+            .await;
+
+        assert!(response.ok, "{response:?}");
+        assert_ne!(
+            response.reason.as_deref(),
+            Some("durability_unconfirmed"),
+            "the parity engine still persisted, so a failed save rewrote its response"
+        );
     }
 }

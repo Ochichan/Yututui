@@ -4,6 +4,14 @@ use super::*;
 
 impl App {
     pub fn new(volume: i64) -> Self {
+        let personal_state = crate::personal_state::legacy_state(
+            &Library::default(),
+            &Playlists::default(),
+            &Signals::default(),
+            &StationStore::default(),
+        )
+        .unwrap_or_default();
+        let revision_guard = crate::sync::OwnerRevisionGuard::new(personal_state.revision);
         Self {
             should_quit: false,
             dirty: true,
@@ -23,6 +31,12 @@ impl App {
             overlays: Overlays::default(),
             transfer_running: false,
             personal_export: PersonalDataExportState::default(),
+            personal_state: PersonalStateRuntime {
+                ledger: personal_state,
+                revision_guard,
+                sync_ui: SyncUiState::default(),
+                ..PersonalStateRuntime::default()
+            },
             playback: Playback {
                 volume: volume.clamp(0, VOLUME_MAX),
                 speed: 1.0,
@@ -86,6 +100,7 @@ impl App {
             signals: Arc::new(Signals::default()),
             session: Session::default(),
             library_ui: LibraryView::default(),
+            server: ServerUiState::default(),
             library_rows_cache: RefCell::new(None),
             all_count_cache: Cell::new(None),
             yid_scan_memo: RefCell::new(None),
@@ -198,6 +213,7 @@ impl App {
             search.audius = false;
             search.jamendo = false;
             search.internet_archive = false;
+            search.open_subsonic = false;
             search.radio_browser = true;
             search.source = SearchSource::RadioBrowser;
         } else {

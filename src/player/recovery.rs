@@ -49,8 +49,9 @@ pub(crate) enum ResumeOrigin {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct LoadWithResume {
-    /// Freshly resolved direct URL or the provider's safe watch URL. Never log this value.
-    pub url: String,
+    /// Freshly resolved direct target or a credential-owning provider reference.
+    /// The destination's `Debug` representation is always redacted.
+    pub destination: crate::playback_target::PlaybackDestination,
     pub position_secs: f64,
     pub paused: bool,
     /// Owner-known semantics for this exact replacement; never inherited from actor state.
@@ -62,14 +63,14 @@ pub struct LoadWithResume {
 
 impl LoadWithResume {
     pub(crate) fn source_recovery(
-        url: String,
+        destination: impl Into<crate::playback_target::PlaybackDestination>,
         position_secs: f64,
         paused: bool,
         source_context: super::MediaSourceContext,
         ticket: RecoveryTicket,
     ) -> Self {
         Self {
-            url,
+            destination: destination.into(),
             position_secs,
             paused,
             source_context,
@@ -80,13 +81,13 @@ impl LoadWithResume {
     }
 
     pub(crate) fn emergency(
-        url: String,
+        destination: impl Into<crate::playback_target::PlaybackDestination>,
         position_secs: f64,
         paused: bool,
         source_context: super::MediaSourceContext,
     ) -> Self {
         Self {
-            url,
+            destination: destination.into(),
             position_secs,
             paused,
             source_context,
@@ -137,7 +138,7 @@ impl TransportRestorePlan {
     pub(crate) fn reload_if_loaded(
         loaded_video_id: Option<&str>,
         current_video_id: &str,
-        url: String,
+        destination: impl Into<crate::playback_target::PlaybackDestination>,
         paused: bool,
         source_context: super::MediaSourceContext,
     ) -> Self {
@@ -145,7 +146,7 @@ impl TransportRestorePlan {
             return Self::Idle;
         }
         Self::Reload {
-            load: super::PlaybackLoad::new(url, source_context),
+            load: super::PlaybackLoad::from_destination(destination.into(), source_context),
             paused,
         }
     }
@@ -153,7 +154,7 @@ impl TransportRestorePlan {
     pub(crate) fn resume_ram_only_if_loaded(
         loaded_video_id: Option<&str>,
         current_video_id: &str,
-        url: String,
+        destination: impl Into<crate::playback_target::PlaybackDestination>,
         position_secs: f64,
         paused: bool,
         source_context: super::MediaSourceContext,
@@ -162,7 +163,7 @@ impl TransportRestorePlan {
             return Self::Idle;
         }
         Self::ResumeRamOnly(LoadWithResume::emergency(
-            url,
+            destination,
             position_secs,
             paused,
             source_context,

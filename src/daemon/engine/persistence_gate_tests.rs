@@ -13,6 +13,51 @@ fn recovery_error() -> StartupRecoveryError {
     }
 }
 
+fn synced_state() -> (
+    crate::personal_state::PersonalStateV2,
+    crate::personal_state::DeviceId,
+) {
+    use crate::personal_state::{
+        CausalStamp, DeviceId, DeviceRecord, Dot, Operation, OperationEnvelope, OperationOrigin,
+        VersionVector,
+    };
+
+    let mut state =
+        crate::personal_state::PersonalStateV2::empty("daemon-sync-test".to_owned()).unwrap();
+    let author = DeviceId::new("membership").unwrap();
+    let mut local_device = None;
+    for (index, raw_device_id) in ["device-a", "device-b"].into_iter().enumerate() {
+        let secrets = crate::sync::DeviceSecretMaterial::generate_for(raw_device_id).unwrap();
+        let device_id = DeviceId::new(raw_device_id).unwrap();
+        let dot = Dot {
+            device_id: author.clone(),
+            sequence: index as u64 + 1,
+        };
+        state.operations.push(OperationEnvelope {
+            operation_id: format!("add-{raw_device_id}"),
+            stamp: CausalStamp {
+                dot: dot.clone(),
+                observed: VersionVector::default(),
+                recorded_at_unix: 0,
+            },
+            origin: OperationOrigin::Local,
+            operation: Operation::AddDevice {
+                device: DeviceRecord {
+                    device_id: device_id.clone(),
+                    name: raw_device_id.to_owned(),
+                    revoked: false,
+                    public_identity: Some(secrets.public_identity()),
+                },
+            },
+        });
+        state.version_vector.observe(&dot);
+        local_device.get_or_insert(device_id);
+    }
+    crate::personal_state::refresh_device_registry(&mut state).unwrap();
+    state.normalize().unwrap();
+    (state, local_device.unwrap())
+}
+
 fn mutating_commands() -> Vec<RemoteCommand> {
     vec![
         RemoteCommand::Next,
@@ -59,6 +104,65 @@ fn mutating_commands() -> Vec<RemoteCommand> {
         },
         RemoteCommand::ResetAllSettings,
     ]
+}
+
+#[test]
+fn synced_daemon_persistence_authors_changes_as_the_bound_device() {
+    let mut engine = engine_with_queue(&[]);
+    let (state, device_id) = synced_state();
+    engine.install_personal_state(state);
+    engine.personal_state_device_id = Some(device_id.clone());
+    engine.library.toggle_favorite(&crate::api::Song::remote(
+        "daemon-bound-rating",
+        "Daemon bound rating",
+        "Artist",
+        "3:00",
+    ));
+
+    engine.save_library("bound device test");
+
+    assert!(engine.remote_persistence_error.is_none());
+    let rating = engine
+        .personal_state
+        .operations
+        .iter()
+        .find(|operation| {
+            matches!(
+                operation.operation,
+                crate::personal_state::Operation::SetRating { .. }
+            )
+        })
+        .expect("rating operation");
+    assert_eq!(rating.stamp.dot.device_id, device_id);
+}
+
+#[test]
+fn durable_personal_commit_immediately_retires_a_detached_worker() {
+    let mut engine = engine_with_queue(&[]);
+    let expected_revision = engine.personal_state_revision();
+    let worker_guard = engine.personal_state_revision_guard();
+    let (release_worker, wait_for_commit) = std::sync::mpsc::sync_channel(0);
+    let worker = std::thread::spawn(move || {
+        wait_for_commit.recv().unwrap();
+        crate::sync::manual::LocalRevisionGuard::ensure_current(&worker_guard, expected_revision)
+    });
+
+    engine.library.toggle_favorite(&crate::api::Song::remote(
+        "guarded-after-commit",
+        "Guarded after commit",
+        "Artist",
+        "3:00",
+    ));
+    engine.save_library("revision fence test");
+
+    assert!(engine.personal_state_revision() > expected_revision);
+    // Stay inside this owner handler: no outer-loop `PersonalSync::observe` runs before the
+    // detached worker resumes and checks the fence published by the persistence gate.
+    release_worker.send(()).unwrap();
+    assert_eq!(
+        worker.join().unwrap(),
+        Err(crate::sync::VaultError::RevisionConflict)
+    );
 }
 
 #[test]

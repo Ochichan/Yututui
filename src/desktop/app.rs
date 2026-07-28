@@ -553,6 +553,9 @@ impl DesktopApp {
             track_id: track.map(|track| track.video_id.clone()),
             position_epoch: player.position_epoch,
             artwork: track.and_then(|track| track.artwork.clone()),
+            // This compatibility projection is reconstructed from player/settings session topics,
+            // which do not carry the one-shot owner's optional personal-sync snapshot.
+            personal_sync: None,
         })
     }
 }

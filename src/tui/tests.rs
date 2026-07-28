@@ -319,12 +319,21 @@ fn restore_reports_output_failure_but_still_attempts_raw_mode_and_later_controls
 #[cfg(unix)]
 #[test]
 fn raw_mode_restore_cannot_hold_the_caller_past_its_wall_clock_budget() {
+    // The contract is that the caller returns without waiting for the worker, so the two
+    // durations only need to be far enough apart to tell those cases apart. They used to be
+    // 200 ms and a 150 ms assertion, which left 50 ms for thread spawn plus a channel wait to
+    // land in — under load on a shared CI runner that slipped and failed the test. Keep the
+    // budget small and move the worker far away instead: passing still proves the caller did
+    // not wait for it, with room for a scheduler that is not paying attention.
+    const WORKER: std::time::Duration = std::time::Duration::from_secs(4);
+    const CALLER_LIMIT: std::time::Duration = std::time::Duration::from_secs(2);
+
     let started = std::time::Instant::now();
     let error = run_bounded_restore(
         "synthetic blocked raw-mode restore",
         std::time::Duration::from_millis(25),
         || {
-            std::thread::sleep(std::time::Duration::from_millis(200));
+            std::thread::sleep(WORKER);
             Ok(())
         },
     )
@@ -332,8 +341,9 @@ fn raw_mode_restore_cannot_hold_the_caller_past_its_wall_clock_budget() {
 
     assert_eq!(error.kind(), io::ErrorKind::TimedOut);
     assert!(
-        started.elapsed() < std::time::Duration::from_millis(150),
-        "bounded restore waited for its blocked worker"
+        started.elapsed() < CALLER_LIMIT,
+        "bounded restore waited for its blocked worker: returned after {:?}",
+        started.elapsed()
     );
 }
 

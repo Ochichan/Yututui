@@ -37,6 +37,7 @@ pub(crate) use settlement::{WireSettlement, WireSettlements};
 const QUICK_REPLY_TIMEOUT: Duration = Duration::from_secs(2);
 const PLAYBACK_REPLY_TIMEOUT: Duration = Duration::from_secs(20);
 const PERSONAL_EXPORT_REPLY_TIMEOUT: Duration = Duration::from_secs(5 * 60);
+const MANUAL_SYNC_REPLY_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 pub(crate) const RESPONSE_WRITE_TIMEOUT: Duration = Duration::from_secs(2);
 const SHUTDOWN_REPLY_GRACE: Duration = Duration::from_millis(50);
 
@@ -44,6 +45,15 @@ const SHUTDOWN_REPLY_GRACE: Duration = Duration::from_millis(50);
 /// Clients must gate the additive command on this capability so a new CLI never sends an
 /// unknown command to an older running instance.
 pub const PERSONAL_EXPORT_CAPABILITY: &str = "personal-export-v1";
+/// Advertised when the export command understands `schema: 2` and returns a v2 causal ledger.
+pub const PERSONAL_STATE_V2_CAPABILITY: &str = "personal-state-v2";
+/// Advertised when the primary owner accepts non-secret manual WebDAV sync and device-revoke
+/// commands. Credentials remain in its owner-only private store and never cross local IPC.
+pub const WEB_DAV_SYNC_CAPABILITY: &str = "webdav-sync-v1";
+/// Advertised by primary owners that can search, browse, and safely proxy playback from the
+/// configured OpenSubsonic server. Secondary TUI instances remain read-only previews and do not
+/// advertise this owner-bound integration.
+pub const OPEN_SUBSONIC_CAPABILITY: &str = "opensubsonic-v1";
 
 /// Daemon/demo capability for the managed long-form seek preference and truthful runtime status.
 /// The standalone TUI owner intentionally does not advertise daemon-only GUI mutation support.
@@ -73,6 +83,9 @@ pub(crate) fn reply_timeout_for(command: &proto::RemoteCommand) -> Duration {
         | RemoteCommand::PlayTracks { .. }
         | RemoteCommand::EnqueueTracks { .. } => PLAYBACK_REPLY_TIMEOUT,
         RemoteCommand::ExportPersonalData { .. } => PERSONAL_EXPORT_REPLY_TIMEOUT,
+        RemoteCommand::SyncNow | RemoteCommand::SyncRevokeDevice { .. } => {
+            MANUAL_SYNC_REPLY_TIMEOUT
+        }
         _ => QUICK_REPLY_TIMEOUT,
     }
 }
@@ -85,7 +98,16 @@ mod tests {
     fn personal_export_has_a_long_running_reply_window() {
         let command = proto::RemoteCommand::ExportPersonalData {
             directory: std::env::temp_dir().to_string_lossy().into_owned(),
+            schema: None,
         };
         assert_eq!(reply_timeout_for(&command), Duration::from_secs(5 * 60));
+    }
+
+    #[test]
+    fn manual_sync_has_a_long_running_reply_window() {
+        assert_eq!(
+            reply_timeout_for(&proto::RemoteCommand::SyncNow),
+            Duration::from_secs(10 * 60)
+        );
     }
 }

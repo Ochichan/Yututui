@@ -207,6 +207,20 @@ fn snapshot_tree(root: &Path) -> Vec<(PathBuf, Vec<u8>)> {
             if file_type.is_dir() {
                 visit(root, &path, out);
             } else if file_type.is_file() {
+                // Lock files are coordination artifacts, not data, and they are the one thing in
+                // here that cannot simply be read. A live owner holds a byte-range lock on its
+                // writer lease; Windows enforces those, so this read returns ERROR_LOCK_VIOLATION
+                // instead of bytes, while the same lock on Unix is advisory and reads fine. That
+                // asymmetry is what made `personal_data_import_preview_...` fail only on Windows.
+                // Excluding them is also more correct than including them: detecting contention
+                // means opening and try-locking the lease, so a lock file legitimately changes
+                // even when nothing about the data tree does.
+                let is_lock = path
+                    .file_name()
+                    .is_some_and(|name| name.to_string_lossy().ends_with(".lock"));
+                if is_lock {
+                    continue;
+                }
                 out.push((
                     path.strip_prefix(root)
                         .expect("snapshot path below root")
@@ -595,10 +609,21 @@ fn personal_data_export_writes_a_private_sanitized_json_file_offline() {
     let bytes = std::fs::read(&files[0]).expect("read export");
     let text = String::from_utf8(bytes.clone()).expect("export is UTF-8");
     let json: serde_json::Value = serde_json::from_slice(&bytes).expect("parse export");
-    assert_eq!(json["kind"], "yututui_personal_data_export");
-    assert_eq!(json["schema_version"], 1);
-    assert_eq!(json["settings"]["general"]["volume"], 42);
-    assert_eq!(json["library"]["favorites"][0]["title"], "Portable song");
+    assert_eq!(json["kind"], "yututui_personal_state");
+    assert_eq!(json["schema_version"], 2);
+    assert_eq!(json["metadata"]["credentials_included"], false);
+    assert_eq!(json["metadata"]["filesystem_paths_included"], false);
+    assert_eq!(json["metadata"]["playable_urls_included"], false);
+    let legacy_baseline = json["operations"]
+        .as_array()
+        .expect("v2 operations")
+        .iter()
+        .find(|operation| operation["operation"]["type"] == "legacy_baseline")
+        .expect("v2 legacy baseline");
+    assert_eq!(
+        legacy_baseline["operation"]["baseline"]["favorites"][0]["title"],
+        "Portable song"
+    );
     for forbidden in [SECRET, PRIVATE_PATH, "gemini_api_key", "cookies_file"] {
         assert!(!text.contains(forbidden), "export leaked {forbidden:?}");
     }
@@ -615,6 +640,77 @@ fn personal_data_export_writes_a_private_sanitized_json_file_offline() {
         );
     }
     std::fs::remove_dir_all(root).expect("cleanup isolated export");
+}
+
+#[test]
+fn personal_data_import_preview_runs_beside_owner_but_apply_requires_writer_lease() {
+    let root = isolated_root("personal-import-reader");
+    let _ = std::fs::remove_dir_all(&root);
+    let data_dir = root.join("data");
+    create_private_dir_all(&root);
+    create_private_dir_all(&data_dir);
+    let import_file = root.join("personal-state-v2.json");
+    let state =
+        yututui::personal_state::PersonalStateV2::empty("preview-beside-owner".to_owned()).unwrap();
+    std::fs::write(&import_file, serde_json::to_vec_pretty(&state).unwrap())
+        .expect("write import fixture");
+
+    let owner_lock = yututui::util::safe_fs::try_lock_private_file(
+        &data_dir.join(".ytt-persistence-writer.lock"),
+    )
+    .expect("open writer lease")
+    .expect("hold simulated owner lease");
+    let before = snapshot_tree(&data_dir);
+    // The lease this test is holding lives inside the tree being snapshotted. Windows enforces
+    // its byte-range lock, so a snapshot that tried to read it would fail here rather than in
+    // the comparison below. Pin the exclusion so restoring it cannot silently reintroduce that.
+    assert!(
+        data_dir.join(".ytt-persistence-writer.lock").exists(),
+        "the simulated owner lease should exist on disk"
+    );
+    assert!(
+        !before
+            .iter()
+            .any(|(path, _)| path.to_string_lossy().ends_with(".lock")),
+        "lock files must stay out of the snapshot"
+    );
+
+    let preview = isolated_command(
+        &root,
+        &["data", "import", import_file.to_str().unwrap(), "--dry-run"],
+    )
+    .output()
+    .expect("read-only import preview should run");
+    assert!(
+        preview.status.success(),
+        "stdout={}, stderr={}",
+        stdout(&preview),
+        stderr(&preview)
+    );
+    assert!(stdout(&preview).contains("Import preview:"));
+    assert!(stdout(&preview).contains("Preview only;"));
+    assert_eq!(
+        snapshot_tree(&data_dir),
+        before,
+        "preview mutated the owner's data tree"
+    );
+
+    let apply = isolated_command(
+        &root,
+        &["data", "import", import_file.to_str().unwrap(), "--apply"],
+    )
+    .output()
+    .expect("contended import apply should return");
+    assert_eq!(apply.status.code(), Some(1));
+    assert!(
+        stderr(&apply).contains("Close it before applying an import"),
+        "stdout={}, stderr={}",
+        stdout(&apply),
+        stderr(&apply)
+    );
+
+    drop(owner_lock);
+    std::fs::remove_dir_all(root).expect("cleanup isolated import");
 }
 
 #[cfg(unix)]
@@ -645,7 +741,12 @@ fn personal_data_export_recovers_from_a_stale_descriptor_without_deleting_it() {
         "created_unix": 1,
         "mode": "standalone_tui",
         "protocol_version": 8,
-        "capabilities": ["remote-control", "status", "personal-export-v1"]
+        "capabilities": [
+            "remote-control",
+            "status",
+            "personal-export-v1",
+            "personal-state-v2"
+        ]
     });
     std::fs::write(
         &descriptor,
@@ -1383,6 +1484,7 @@ mod remote_owner {
             track_id: None,
             position_epoch: 0,
             artwork: None,
+            personal_sync: None,
         }
     }
 
@@ -1589,6 +1691,63 @@ mod remote_owner {
         assert!(queue_play.status.success(), "{}", stderr(&queue_play));
         assert_eq!(stdout(&queue_play), "played queue item 1\n");
         assert_credentials_hidden(&queue_play, &instance.endpoint);
+
+        owner.join().expect("fake owner thread should complete");
+        clean_isolated_remote(&root);
+    }
+
+    #[test]
+    fn sync_status_uses_the_live_owner_and_sanitizes_human_output() {
+        let root = short_root("sync-status-owner");
+        clean_isolated_remote(&root);
+        let instance = isolated_instance(
+            &root,
+            PROTOCOL_VERSION,
+            vec!["status".to_owned(), "webdav-sync-v1".to_owned()],
+        );
+        write_current_descriptor(&root, &instance);
+        let report = yututui::sync::service::SyncStatusReport {
+            state: yututui::sync::SyncHealthState::NeedsAttention,
+            label: "Needs\n\u{1b}[31mattention".to_owned(),
+            configured: true,
+            device_id: Some("device-a".to_owned()),
+            last_attempt_unix: Some(10),
+            last_success_unix: None,
+            failure: Some(yututui::sync::SyncFailureKind::Storage),
+            recovery_action: Some("Retry\r\u{202e}now".to_owned()),
+        };
+        let mut status = snapshot(Vec::new(), Default::default());
+        status.personal_sync = Some(report.clone());
+        let response = RemoteResponse::status(status);
+        let owner = spawn_fake_owner(
+            instance.endpoint.clone(),
+            vec![
+                Exchange {
+                    command: RemoteCommand::Status,
+                    response: response.clone(),
+                },
+                Exchange {
+                    command: RemoteCommand::Status,
+                    response,
+                },
+            ],
+        );
+
+        let human = run_isolated_with_timeout(&root, &["sync", "status"]);
+        assert!(human.status.success(), "stderr={}", stderr(&human));
+        let human_text = stdout(&human);
+        assert_eq!(human_text.lines().count(), 2, "stdout={human_text}");
+        assert!(!human_text.contains('\u{1b}'));
+        assert!(!human_text.contains('\r'));
+        assert!(!human_text.contains('\u{202e}'));
+        assert_credentials_hidden(&human, &instance.endpoint);
+
+        let json = run_isolated_with_timeout(&root, &["sync", "status", "--json"]);
+        assert!(json.status.success(), "stderr={}", stderr(&json));
+        let projected: yututui::sync::service::SyncStatusReport =
+            serde_json::from_slice(&json.stdout).unwrap();
+        assert_eq!(projected, report);
+        assert_credentials_hidden(&json, &instance.endpoint);
 
         owner.join().expect("fake owner thread should complete");
         clean_isolated_remote(&root);

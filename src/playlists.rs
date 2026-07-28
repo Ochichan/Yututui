@@ -25,7 +25,7 @@ pub(crate) const SONGS_PER_PLAYLIST_MAX: usize = 999;
 const MAX_PLAYLISTS_BYTES: u64 = 50 * 1024 * 1024;
 
 /// A named, ordered collection of tracks with a stable slug `id`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Playlist {
     /// Stable, URL-ish slug derived from the name at creation (e.g. `"chill-vibes"`).
     pub id: String,
@@ -129,6 +129,22 @@ impl Playlists {
     /// Monotonic in-process generation for immutable Local Find projections.
     pub fn revision(&self) -> u64 {
         self.revision
+    }
+
+    /// Carry the live generation onto a freshly projected replacement, advancing it exactly
+    /// once when the serialized playlist content changed.
+    ///
+    /// Personal-state projection rebuilds the whole store, so its temporary revision cannot say
+    /// whether Local Find and GUI playlist caches are stale. Comparing the portable content keeps
+    /// rating-only and no-op syncs invisible to those caches while collapsing any number of
+    /// playlist operations in one committed sync into one replacement generation.
+    pub(crate) fn inherit_revision_from(&mut self, previous: &Self) -> bool {
+        let changed = self.playlists != previous.playlists;
+        self.revision = previous.revision;
+        if changed {
+            self.bump_revision();
+        }
+        changed
     }
 
     /// Repair a deserialized playlists file so it obeys the same bounded shape as create/add.
@@ -461,6 +477,25 @@ mod tests {
         assert_eq!(p.add("missing", song("b")), AddResult::NotFound);
         assert_eq!(p.revision(), after_add, "no-op mutations keep the revision");
         assert_eq!(p.find("mix").unwrap().songs.len(), 1);
+    }
+
+    #[test]
+    fn projected_replacement_inherits_or_bumps_the_live_revision_once() {
+        let mut live = Playlists::default();
+        let id = live.create("Mix").unwrap();
+        live.add(&id, song("existing"));
+        let live_revision = live.revision();
+
+        let mut identical = live.clone();
+        identical.revision = u64::MAX;
+        assert!(!identical.inherit_revision_from(&live));
+        assert_eq!(identical.revision(), live_revision);
+
+        let mut changed = identical;
+        changed.add(&id, song("remote"));
+        changed.revision = u64::MAX;
+        assert!(changed.inherit_revision_from(&live));
+        assert_eq!(changed.revision(), live_revision.wrapping_add(1));
     }
 
     #[test]

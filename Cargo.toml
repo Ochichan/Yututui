@@ -60,6 +60,7 @@ ts-export = ["dep:ts-rs", "yututui-core/ts-export"]
 perf-harness = []
 
 [dependencies]
+age = { version = "0.12.1", default-features = false }
 anyhow = "1.0.103"
 # Spotify OAuth PKCE: base64url-encode the SHA-256 code challenge. Pure Rust, tiny.
 base64 = "0.22"
@@ -67,11 +68,19 @@ crossterm = "0.29"
 # Playlist file import/export (Exportify-compatible). Pure Rust; handles quoting/escaping
 # correctly, which hand-rolled CSV never does.
 csv = "1.3"
+# Human-entered, no-padding Base32 pairing codes. Already shared with lofty.
+data-encoding = "2.11"
 directories = "6.0.0"
+# Device operation signatures. Version 2 shares curve25519-dalek 4 and sha2 0.10
+# with age; v3 would duplicate the curve implementation in every shipped binary.
+ed25519-dalek = { version = "2.2.0", default-features = false, features = ["std", "zeroize"] }
 # Tiny, dependency-free RNG for queue shuffling (no `rand` pull-in).
 fastrand = "2"
 futures = "0.3.32"
 getrandom = "0.4"
+# Recovery signing-key derivation. Both are pure Rust and share age's RustCrypto graph.
+hkdf = "0.12"
+hmac = "0.12"
 # Decode album art / thumbnails ourselves (off the render thread) and hand a ready
 # `DynamicImage` to ratatui-image. Default features are off so only the formats we
 # actually fetch are compiled in — JPEG (i.ytimg thumbnails + yt-dlp embedded covers),
@@ -86,12 +95,21 @@ lofty = "0.24"
 # Last.fm `api_sig` request signing (md5 per their auth spec — a format requirement,
 # not a security choice). Pure Rust, tiny (RustCrypto).
 md-5 = "0.10"
+# Inspect reqwest's existing native-TLS source chain so certificate failures can be surfaced as a
+# distinct, redacted recovery state. This is already in reqwest's graph; declaring it directly
+# adds no TLS provider or native dependency.
+native-tls = "0.2"
 # Native desktop notifications (radio-recording saved) — the *fallback* tier used only when the
 # terminal doesn't support OSC 9/777 escape-sequence notifications (see `crate::notify`). One
 # crate, three backends: pure-Rust zbus/D-Bus on Linux, WinRT toast on Windows, NSUserNotification
 # on macOS. Default features (no `preview-macos-un`, which can't post from an unbundled binary).
 notify-rust = "4"
+# Bounded streaming WebDAV Multi-Status parsing. Default features are unnecessary: sync only
+# consumes namespaced XML events and never serializes application data as XML.
+quick-xml = { version = "0.41", default-features = false }
 ratatui = "0.30.2"
+# Read WebDAV credentials without echoing them or placing them in process arguments.
+rpassword = "7"
 # Album art in the player view. `default-features = false` drops `chafa-dyn` (its only C
 # dependency — would break the clean Windows cross-compile) and `image-defaults` (we pull
 # `image` directly with just the formats we need). The Kitty/Sixel/iTerm2/halfblocks
@@ -116,11 +134,10 @@ serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"
 # Spotify OAuth PKCE code challenge (SHA-256). RustCrypto, pure Rust.
 sha2 = "0.10"
-# Only the process APIs are used (reaping a leaked mpv, the Windows kill backstop — see
-# `player::lifetime`), so drop the default disk/network/component/user feature groups: it
-# trims a slice of unused code on every platform (and the `objc2-open-directory` crate on
-# macOS) with zero behaviour change.
-sysinfo = { version = "0.39.5", default-features = false, features = ["system"] }
+# Process APIs power the mpv lifetime backstops; network APIs provide local interface addresses
+# for the parked automatic-sync reconnect watcher. Keep the unrelated disk/component/user groups
+# disabled (including objc2-open-directory on macOS).
+sysinfo = { version = "0.39.5", default-features = false, features = ["network", "system"] }
 tao = { version = "0.34", optional = true }
 # Optional player eye-candy (the Animations settings tab). A ratatui-native spinner used
 # for the "now playing" throbber; nothing renders unless the user enables it. Permissive
@@ -148,6 +165,8 @@ unicode-normalization = "0.1"
 unicode-segmentation = "1.13"
 wry = { version = "0.55.1", default-features = false, features = ["os-webview", "protocol"], optional = true }
 yututui-core = { path = "crates/yututui-core" }
+# Wipe temporary credential/key buffers. `derive` is compile-time only.
+zeroize = { version = "1.9", features = ["derive"] }
 
 [dev-dependencies]
 tokio = { version = "1.52.3", features = ["test-util"] }

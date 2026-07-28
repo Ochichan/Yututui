@@ -125,6 +125,10 @@ impl App {
             RemoteCommand::ExportPersonalData { .. } => {
                 (RemoteResponse::err("invalid_export_dispatch"), Vec::new())
             }
+            RemoteCommand::SyncNow | RemoteCommand::SyncRevokeDevice { .. } => (
+                RemoteResponse::err("invalid_personal_sync_dispatch"),
+                Vec::new(),
+            ),
             RemoteCommand::VolumeUp => {
                 let cmds = self.on_player_action(Action::VolUp);
                 (RemoteResponse::ok(self.vol_line()), cmds)
@@ -571,6 +575,9 @@ impl App {
                         mime: None,
                     })
             }),
+            personal_sync: Some(crate::sync::service::read_current_status(
+                self.personal_state.sync.in_progress,
+            )),
         }
     }
 

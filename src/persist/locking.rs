@@ -56,6 +56,14 @@ pub(super) fn acquire_intent_lock(
     acquire_intent_lock_with_budget(path, Duration::from_secs(5))
 }
 
+pub(crate) fn with_store_intent_lock<T>(
+    path: &Path,
+    operation: impl FnOnce() -> std::io::Result<T>,
+) -> std::io::Result<T> {
+    let _lock = acquire_intent_lock(path)?;
+    operation()
+}
+
 pub(super) fn acquire_intent_lock_with_budget(
     path: &Path,
     budget: Duration,

@@ -18,9 +18,11 @@ use super::session::{ImportRecordGuard, ImportSession};
 use crate::util::safe_fs;
 
 mod recovery;
+use crate::transfer::library_modes::{
+    PublishAudience, ensure_scoped_directory, publish_modes, reject_symlink_or_non_directory,
+    validate_publish_mode,
+};
 use recovery::committed_session_path;
-mod permissions;
-use permissions::{artifact_publish_modes, ensure_scoped_directory, validate_publish_mode};
 mod reconcile;
 use reconcile::{
     ReconcileFilePair, ReconcileFilePolicy, ReconcileOptionalFilePair, pin_transaction_scopes,
@@ -415,9 +417,12 @@ fn prepare_transaction(request: ArtifactMoveRequest) -> anyhow::Result<ArtifactM
             request.destination_root.display()
         )
     })?;
-    let publish_modes = artifact_publish_modes(request.kind, &destination_root)?;
+    let modes = publish_modes(
+        artifact_publish_audience(request.kind, &destination_root),
+        &destination_root,
+    )?;
     let requested_parent =
-        ensure_scoped_directory(&destination_root, relative_parent, publish_modes.directory)?;
+        ensure_scoped_directory(&destination_root, relative_parent, modes.directory)?;
     let destination_parent = destination_root.join(relative_parent);
     let (
         destination_root_pin,
@@ -590,8 +595,8 @@ fn prepare_transaction(request: ArtifactMoveRequest) -> anyhow::Result<ArtifactM
         sidecar_stage_name: format!(".ytt-stage-{stage_tag}-sidecar"),
         audio_stage_object_id: None,
         sidecar_stage_object_id: None,
-        audio_publish_mode: publish_modes.audio,
-        sidecar_publish_mode: publish_modes.sidecar,
+        audio_publish_mode: modes.file,
+        sidecar_publish_mode: modes.sidecar,
         audio_source_private_stage: source_private_stage,
         sidecar_source_private_stage: source_private_stage,
         verify_legacy_existing_modes: false,
@@ -778,9 +783,12 @@ fn backfill_publication_policy(path: &Path, txn: &mut ArtifactMoveTxn) -> anyhow
     #[cfg(unix)]
     {
         if txn.audio_publish_mode.is_none() && txn.sidecar_publish_mode.is_none() {
-            let modes = artifact_publish_modes(txn.kind, &txn.destination_root)?;
-            if modes.audio.is_some() || modes.sidecar.is_some() {
-                txn.audio_publish_mode = modes.audio;
+            let modes = publish_modes(
+                artifact_publish_audience(txn.kind, &txn.destination_root),
+                &txn.destination_root,
+            )?;
+            if modes.file.is_some() || modes.sidecar.is_some() {
+                txn.audio_publish_mode = modes.file;
                 txn.sidecar_publish_mode = modes.sidecar;
                 txn.verify_legacy_existing_modes = matches!(txn.kind, ArtifactMoveKind::Organize);
                 if cfg!(all(unix, not(target_os = "linux")))
@@ -1132,15 +1140,25 @@ fn is_false(value: &bool) -> bool {
     !*value
 }
 
-fn reject_symlink_or_non_directory(path: &Path) -> std::io::Result<()> {
-    let metadata = fs::symlink_metadata(path)?;
-    if metadata.file_type().is_symlink() || !metadata.is_dir() {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::PermissionDenied,
-            format!("refusing non-directory artifact scope {}", path.display()),
-        ));
+/// Decide who must be able to read what this move publishes.
+///
+/// An organise into the user's own library is the only case that leaves the app-owned inbox, so it
+/// is the only one that mirrors the destination root's group and other bits. An import download
+/// staying inside the inbox stays owner-only. Anything else asks for no explicit mode.
+/// Who reads the result is a property of the move, not of the platform, so this answers the same
+/// way everywhere. Only turning an audience into concrete bits is Unix-only, and `publish_modes`
+/// already asks for nothing on platforms without them.
+fn artifact_publish_audience(kind: ArtifactMoveKind, destination_root: &Path) -> PublishAudience {
+    if matches!(kind, ArtifactMoveKind::Organize) && import_private_root(destination_root).is_none()
+    {
+        return PublishAudience::SharedLibrary;
     }
-    Ok(())
+    if matches!(kind, ArtifactMoveKind::ImportDownload)
+        && import_private_root(destination_root).is_some()
+    {
+        return PublishAudience::Private;
+    }
+    PublishAudience::Inherited
 }
 
 fn already_committed_path(request: &ArtifactMoveRequest) -> anyhow::Result<Option<PathBuf>> {

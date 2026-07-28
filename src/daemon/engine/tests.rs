@@ -9,6 +9,19 @@ fn song(id: &str) -> Song {
     Song::remote(id, format!("title-{id}"), "artist".to_owned(), "3:00")
 }
 
+pub(super) fn personal_state_paths() -> crate::personal_state::PersonalStatePaths {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+    let root = std::env::temp_dir().join(format!(
+        "yututui-daemon-personal-state-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ));
+    std::fs::create_dir_all(&root).expect("create daemon personal-state test root");
+    crate::personal_state::PersonalStatePaths::for_data_root(root)
+}
+
 pub(in crate::daemon) fn radio_station(id: &str) -> Song {
     let mut song = Song::remote(id, format!("station-{id}"), "", "");
     song.playable = Some(crate::api::PlayableRef::RadioStream {
@@ -20,9 +33,22 @@ pub(in crate::daemon) fn radio_station(id: &str) -> Song {
 pub(in crate::daemon) fn engine_with_queue(ids: &[&str]) -> DaemonEngine {
     let mut queue = Queue::default();
     queue.set(ids.iter().map(|id| song(id)).collect(), 0);
+    let personal_state = crate::personal_state::legacy_state(
+        &Library::default(),
+        &crate::playlists::Playlists::default(),
+        &Signals::default(),
+        &StationStore::default(),
+    )
+    .expect("default personal state");
     DaemonEngine {
         maintainer: crate::util::background_task::BackgroundTask::disabled("yt-dlp maintainer"),
         player: None,
+        open_subsonic: Default::default(),
+        open_subsonic_rating_identity: None,
+        open_subsonic_pending_rating: None,
+        open_subsonic_playlist_identity: None,
+        open_subsonic_pending_playlist: None,
+        open_subsonic_pending_scrobbles: VecDeque::new(),
         player_emit: Arc::new(|_| {}),
         queue,
         playback: DaemonPlayback {
@@ -35,6 +61,13 @@ pub(in crate::daemon) fn engine_with_queue(ids: &[&str]) -> DaemonEngine {
             speed: 1.0,
         },
         config: Config::default(),
+        personal_state_revision_guard: crate::sync::OwnerRevisionGuard::new(
+            personal_state.revision,
+        ),
+        personal_state,
+        personal_state_device_id: None,
+        personal_sync_in_progress: false,
+        personal_state_paths: personal_state_paths(),
         library: Library::default(),
         playlists: crate::playlists::Playlists::default(),
         playlists_rev: 0,
@@ -59,6 +92,7 @@ pub(in crate::daemon) fn engine_with_queue(ids: &[&str]) -> DaemonEngine {
         remote_persistence_error: None,
         remote_persistence_command_active: false,
         remote_persistence_read_only: false,
+        persistence_disabled_for_test: false,
         consecutive_play_errors: 0,
         heal_pending: None,
         heal_attempted: HashSet::new(),

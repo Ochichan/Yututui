@@ -14,6 +14,12 @@ use crate::player::PlayerCmd;
 use crate::signals;
 
 impl DaemonEngine {
+    /// Retire every daemon-owned media process before slower shutdown durability barriers.
+    pub(crate) fn shutdown_media_owners(&mut self) {
+        self.video_overlay = None;
+        self.player = None;
+    }
+
     pub fn set_media_art(&mut self, ready: crate::media::artwork::MediaArtworkReady) {
         self.media_art = Some(ready);
     }
@@ -201,48 +207,20 @@ impl DaemonEngine {
         let Some(song) = self.queue.current().cloned() else {
             return;
         };
-        if song.is_radio_station() {
-            if like {
-                self.library.toggle_favorite(&song);
-                self.save_library("daemon radio favorite");
-                self.library_invalidations = self.library_invalidations.wrapping_add(1);
-            }
-            return;
-        }
-        let artist_key = signals::normalize_artist(&song.artist);
         let now = signals::unix_now();
-        let liked = self.library.is_favorite(&song.video_id);
-        let disliked = self.signals.is_disliked(&song.video_id);
-        if like {
-            if liked {
-                self.library.toggle_favorite(&song);
-                self.signals
-                    .record_like(&song.video_id, &artist_key, false, now);
-            } else {
-                if disliked {
-                    self.signals
-                        .toggle_dislike(&song.video_id, &artist_key, now);
-                }
-                let now_fav = self.library.toggle_favorite(&song);
-                self.signals
-                    .record_like(&song.video_id, &artist_key, now_fav, now);
-            }
-        } else if disliked {
-            self.signals
-                .toggle_dislike(&song.video_id, &artist_key, now);
+        let change = if like {
+            crate::rating::toggle_liked(&mut self.library, &mut self.signals, &song, now)
         } else {
-            if liked {
-                self.library.toggle_favorite(&song);
-                self.signals
-                    .record_like(&song.video_id, &artist_key, false, now);
-            }
-            self.signals
-                .toggle_dislike(&song.video_id, &artist_key, now);
+            crate::rating::toggle_disliked(&mut self.library, &mut self.signals, &song, now)
+        };
+        self.record_rating_session_event(&song, change);
+        if change.changed() {
+            self.save_library("daemon media rating library");
         }
-        self.save_library("daemon media rating library");
-        self.save_signals("daemon media rating signals");
-        // Favorites membership changed: a subscribed GUI's paged library view is stale.
-        self.library_invalidations = self.library_invalidations.wrapping_add(1);
+        if change.library_changed {
+            // Favorites membership changed: a subscribed GUI's paged library view is stale.
+            self.library_invalidations = self.library_invalidations.wrapping_add(1);
+        }
     }
 
     /// Build the OS media-session snapshot from engine state (the daemon analog of
@@ -269,6 +247,7 @@ impl DaemonEngine {
             };
             MediaTrack {
                 key: song.video_id.clone(),
+                open_subsonic_item: song.open_subsonic_item().cloned(),
                 title: song.title.clone(),
                 artist: song.artist.clone(),
                 album: if is_live { None } else { song.album.clone() },

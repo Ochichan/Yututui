@@ -248,6 +248,10 @@ impl App {
             .settings
             .as_ref()
             .is_some_and(|s| s.tab == SettingsTab::Keys);
+        let on_sync_tab = self
+            .settings
+            .as_ref()
+            .is_some_and(|s| s.tab == SettingsTab::Sync);
         let on_mouse_binding = self.settings_current_mouse_binding().is_some();
         // A color row can now live anywhere (the Graphics tab), so the "reset color" key gates
         // on the focused field's type rather than a dedicated Colors tab.
@@ -267,18 +271,15 @@ impl App {
             .keymap
             .action(KeyContext::Settings, k.into())
             .or_else(|| Self::settings_safety_action(k));
+        if on_sync_tab && let Some(commands) = self.on_sync_settings_action(action, k) {
+            return commands;
+        }
         match action {
             // `q`/Esc commit the draft before leaving the screen. The action name stays
             // SettingsCancel for compatibility with existing keybinding ids.
             Some(Action::SettingsCancel | Action::Back) => self.close_settings(),
-            Some(Action::FocusNext) => {
-                self.settings_switch_tab(true);
-                Vec::new()
-            }
-            Some(Action::FocusPrev) => {
-                self.settings_switch_tab(false);
-                Vec::new()
-            }
+            Some(Action::FocusNext) => self.settings_switch_tab(true),
+            Some(Action::FocusPrev) => self.settings_switch_tab(false),
             Some(Action::MoveUp) => {
                 self.settings_move_row(-1);
                 Vec::new()
@@ -481,9 +482,11 @@ impl App {
         }
     }
 
-    pub(in crate::app) fn settings_switch_tab(&mut self, forward: bool) {
+    pub(in crate::app) fn settings_switch_tab(&mut self, forward: bool) -> Vec<Cmd> {
+        let mut entered_sync = false;
         if let Some(st) = self.settings.as_mut() {
             st.tab = st.tab.stepped(forward);
+            entered_sync = st.tab == SettingsTab::Sync;
             st.row = 0;
             st.editing_text = false;
             st.capturing = None;
@@ -492,10 +495,20 @@ impl App {
             self.bridges.reset_settings_scroll();
             self.dirty = true;
         }
+        if entered_sync {
+            self.select_sync_area(self.server.settings.area)
+        } else {
+            Vec::new()
+        }
     }
 
     pub(in crate::app) fn settings_move_row(&mut self, delta: i32) {
         if let Some(st) = self.settings.as_mut() {
+            if st.tab == SettingsTab::Sync {
+                self.personal_state.sync_ui.move_row(delta);
+                self.dirty = true;
+                return;
+            }
             // The Keys tab is a list of remappable bindings rather than `Field`s.
             let n = match st.tab {
                 SettingsTab::Keys => {

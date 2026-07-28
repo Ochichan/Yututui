@@ -60,6 +60,8 @@ pub(crate) struct SessionTuning {
     pub playback_reply_timeout: Duration,
     /// How long a personal-data export may wait on filesystem work.
     pub personal_export_reply_timeout: Duration,
+    /// How long a manual WebDAV merge may wait on its bounded network phase.
+    pub manual_sync_reply_timeout: Duration,
     /// Upper bound for one socket frame write/flush and for writer teardown.
     pub write_timeout: Duration,
     /// Deterministic fault injection: hold an accepted response before its actual socket write.
@@ -76,6 +78,7 @@ impl Default for SessionTuning {
             reply_timeout: Duration::from_secs(2),
             playback_reply_timeout: Duration::from_secs(20),
             personal_export_reply_timeout: Duration::from_secs(5 * 60),
+            manual_sync_reply_timeout: Duration::from_secs(10 * 60),
             write_timeout: Duration::from_secs(2),
             #[cfg(test)]
             wire_write_delay: Duration::ZERO,
@@ -89,6 +92,9 @@ impl SessionTuning {
 
         match command {
             RemoteCommand::ExportPersonalData { .. } => self.personal_export_reply_timeout,
+            RemoteCommand::SyncNow | RemoteCommand::SyncRevokeDevice { .. } => {
+                self.manual_sync_reply_timeout
+            }
             RemoteCommand::Next
             | RemoteCommand::Prev
             | RemoteCommand::TogglePause

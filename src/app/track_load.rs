@@ -15,23 +15,35 @@ impl App {
         if let Some(reason) = song.unplayable_youtube_ref_reason() {
             return Err(SkippedReason::UnplayableYoutube(reason.to_owned()));
         }
-        let playback_target = song
-            .playback_target_checked()
+        let playback_destination = song
+            .playback_destination_checked()
             .map_err(|error| SkippedReason::InvalidUrl(error.to_string()))?;
         let mut invalid_prefetch = None;
-        let (url, prefetched_url) = match self.prefetch.resolved.peek_fresh_url(&song.video_id) {
-            Some(prefetched) => match crate::api::validate_playable_url(song.source, &prefetched) {
-                Ok(url) => (url, Some(prefetched)),
+        let (destination, prefetched_url) = match (
+            playback_destination,
+            self.prefetch.resolved.peek_fresh_url(&song.video_id),
+        ) {
+            (
+                crate::playback_target::PlaybackDestination::Direct(playback_target),
+                Some(prefetched),
+            ) => match crate::api::validate_playable_url(song.source, &prefetched) {
+                Ok(url) => (
+                    crate::playback_target::PlaybackDestination::Direct(url),
+                    Some(prefetched),
+                ),
                 Err(error) => {
                     invalid_prefetch = Some((song.video_id.clone(), error.to_string()));
-                    (playback_target, None)
+                    (
+                        crate::playback_target::PlaybackDestination::Direct(playback_target),
+                        None,
+                    )
                 }
             },
-            None => (playback_target, None),
+            (destination, _) => (destination, None),
         };
         Ok(PreparedTrackLoad {
             song,
-            url,
+            destination,
             prefetched_url,
             invalid_prefetch,
         })
@@ -50,7 +62,7 @@ impl App {
     ) -> Vec<Cmd> {
         let PreparedTrackLoad {
             song,
-            url,
+            destination: _,
             prefetched_url,
             invalid_prefetch,
         } = load;
@@ -66,7 +78,12 @@ impl App {
                 .claim_loaded_url(&song.video_id, prefetched);
         }
         self.prefetch.last_load_prefetched = prefetched_url.is_some();
-        tracing::info!(url = %url, prefetched = self.prefetch.last_load_prefetched, "load track");
+        tracing::info!(
+            video_id = %song.video_id,
+            source = song.source.id_prefix(),
+            prefetched = self.prefetch.last_load_prefetched,
+            "load track"
+        );
 
         self.begin_source_logical_item();
         self.reset_progress();

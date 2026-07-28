@@ -23,6 +23,17 @@ impl App {
     /// same pending/pump path as bulk downloads; a lone song dispatches immediately since the
     /// in-flight cap dwarfs 1, so the visible behavior is unchanged.
     pub(in crate::app) fn start_download(&mut self, song: Song) -> Vec<Cmd> {
+        if song.source == crate::search_source::SearchSource::OpenSubsonic {
+            self.status.kind = StatusKind::Info;
+            self.status.text = t!(
+                "Music-server downloads are not available yet",
+                "음악 서버 곡 다운로드는 아직 지원하지 않아요",
+                "音楽サーバーの曲はまだダウンロードできません"
+            )
+            .to_owned();
+            self.dirty = true;
+            return Vec::new();
+        }
         if song.is_local() {
             self.status.text = format!(
                 "{}: {}",
@@ -53,7 +64,10 @@ impl App {
             .filter(|song| {
                 // Local files are already on disk; radio stations are live streams, not
                 // downloadable tracks — neither belongs in a bulk fetch.
-                if song.is_local() || song.is_radio_station() {
+                if song.is_local()
+                    || song.is_radio_station()
+                    || song.source == crate::search_source::SearchSource::OpenSubsonic
+                {
                     return false;
                 }
                 if let Some(yt) = song.youtube_id()

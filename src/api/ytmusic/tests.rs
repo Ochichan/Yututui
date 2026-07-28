@@ -281,6 +281,30 @@ async fn disabled_sources_and_non_track_recommendation_sources_fail_before_netwo
     .to_string();
     assert!(err.contains("Radio Browser streams are not used"));
 
+    let server_cfg = SearchConfig {
+        open_subsonic: true,
+        ..SearchConfig::default()
+    };
+    let err = YtMusicApi::Anonymous
+        .search_one_source("artist", SearchSource::OpenSubsonic, &server_cfg)
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("handled by the OpenSubsonic actor"));
+
+    let err = related_tracks_from_source(
+        "Song - Artist",
+        SearchSource::OpenSubsonic,
+        &server_cfg,
+        5,
+        &excluded,
+        StreamingMode::Balanced,
+    )
+    .await
+    .unwrap_err()
+    .to_string();
+    assert!(err.contains("not used for automatic recommendations"));
+
     let err = related_tracks_from_source(
         "Song - Artist",
         SearchSource::All,
@@ -298,19 +322,27 @@ async fn disabled_sources_and_non_track_recommendation_sources_fail_before_netwo
 #[tokio::test]
 async fn provider_source_helpers_reject_unusable_config_without_provider_calls() {
     let cfg = SearchConfig::default();
-    let err = search_external_source(SearchSource::RadioBrowser, "q", &cfg, 5)
+    let err = provider_search::search(SearchSource::RadioBrowser, "q", &cfg, 5)
         .await
         .unwrap_err()
         .to_string();
     assert!(err.contains("not a track recommendation source"));
 
-    let err = search_external_source(SearchSource::All, "q", &cfg, 5)
+    let err = provider_search::search(SearchSource::All, "q", &cfg, 5)
         .await
         .unwrap_err()
         .to_string();
     assert!(err.contains("not a track recommendation source"));
 
-    let err = search_external_source(SearchSource::Jamendo, "q", &cfg, 5)
+    let mut server_cfg = cfg.clone();
+    server_cfg.open_subsonic = true;
+    let err = provider_search::search(SearchSource::OpenSubsonic, "q", &server_cfg, 5)
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("not a track recommendation source"));
+
+    let err = provider_search::search(SearchSource::Jamendo, "q", &cfg, 5)
         .await
         .unwrap_err()
         .to_string();

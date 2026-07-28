@@ -141,16 +141,23 @@ impl DaemonEngine {
     pub(super) fn gui_library_remove(&mut self, scope: &str, video_id: &str) -> RemoteResponse {
         let removed = match scope {
             "favorites" => {
-                let mut removed = false;
-                while let Some(index) = self
+                let Some(song) = self
                     .library
                     .favorites
                     .iter()
-                    .position(|song| song.video_id == video_id)
-                {
-                    removed |= self.library.remove_favorite_at(index);
-                }
-                removed
+                    .find(|song| song.video_id == video_id)
+                    .cloned()
+                else {
+                    return RemoteResponse::err("unknown_track");
+                };
+                crate::rating::set(
+                    &mut self.library,
+                    &mut self.signals,
+                    &song,
+                    crate::personal_state::Rating::Neutral,
+                    crate::signals::unix_now(),
+                )
+                .changed()
             }
             "history" => {
                 let mut removed = false;
@@ -284,8 +291,8 @@ impl DaemonEngine {
     /// accepted (its sole sender binds the player model's current track); the cycle
     /// transitions mirror the TUI's `Action::CycleRating` (src/app/player.rs) lockstep —
     /// neutral → like → dislike → neutral over library favorites + dislike signals.
-    /// The daemon skips the App-only session-event/affinity recorder, matching its
-    /// OS-media rating path (`media_set_rating`).
+    /// Persistent affinity and immediate session recommendation feedback are both shared with
+    /// the App owner; radio favorites remain outside track recommendation feedback.
     pub(super) fn gui_rate(
         &mut self,
         video_id: &str,
@@ -300,43 +307,15 @@ impl DaemonEngine {
         if song.video_id != video_id {
             return RemoteResponse::err("unknown_track");
         }
-        if song.is_radio_station() {
-            self.library.toggle_favorite(&song);
-            self.save_library("daemon GUI radio rating");
-            self.library_invalidations = self.library_invalidations.wrapping_add(1);
-            return RemoteResponse::ok("rating cycled".to_string());
-        }
-        let artist_key = crate::signals::normalize_artist(&song.artist);
         let now = crate::signals::unix_now();
-        let liked = self.library.is_favorite(&song.video_id);
-        let disliked = self.signals.is_disliked(&song.video_id);
-        match (liked, disliked) {
-            // neutral → like
-            (false, false) => {
-                let now_fav = self.library.toggle_favorite(&song);
-                self.signals
-                    .record_like(&song.video_id, &artist_key, now_fav, now);
-            }
-            // like → dislike
-            (true, _) => {
-                self.library.toggle_favorite(&song);
-                self.signals
-                    .record_like(&song.video_id, &artist_key, false, now);
-                self.signals
-                    .toggle_dislike(&song.video_id, &artist_key, now);
-            }
-            // dislike → neutral: signals-only, like the App leg — no library write and
-            // no invalidation push for a mutation the library never saw.
-            (false, true) => {
-                self.signals
-                    .toggle_dislike(&song.video_id, &artist_key, now);
-                self.save_signals("daemon GUI rating signals");
-                return RemoteResponse::ok("rating cycled".to_string());
-            }
+        let change = crate::rating::cycle(&mut self.library, &mut self.signals, &song, now);
+        self.record_rating_session_event(&song, change);
+        if change.changed() {
+            self.save_library("daemon GUI rating library");
         }
-        self.save_library("daemon GUI rating library");
-        self.save_signals("daemon GUI rating signals");
-        self.library_invalidations = self.library_invalidations.wrapping_add(1);
+        if change.library_changed {
+            self.library_invalidations = self.library_invalidations.wrapping_add(1);
+        }
         RemoteResponse::ok("rating cycled".to_string())
     }
 
@@ -527,6 +506,52 @@ mod tests {
         let unknown = engine.gui_library_remove("nonsense", "fav");
         assert_eq!(reason(&unknown), Some("bad_request"));
         assert_eq!(engine.library_invalidations(), before + 3);
+    }
+
+    #[test]
+    fn favorite_removal_neutralizes_rating_and_commits_all_personal_state_projections() {
+        let mut engine = super::super::tests::engine_with_queue(&[]);
+        let song = song("fav", "Favorite Song", "Artist");
+        let artist_key = crate::signals::normalize_artist(&song.artist);
+        crate::rating::set(
+            &mut engine.library,
+            &mut engine.signals,
+            &song,
+            crate::personal_state::Rating::Liked,
+            1,
+        );
+        engine.save_library("seed liked rating");
+        let liked_revision = engine.personal_state_revision();
+
+        assert!(engine.gui_library_remove("favorites", "fav").ok);
+
+        assert_eq!(
+            crate::rating::current(engine.library(), engine.signals(), "fav"),
+            crate::personal_state::Rating::Neutral
+        );
+        assert_eq!(engine.signals().artist_weight(&artist_key), 0.0);
+        assert!(engine.personal_state_revision() > liked_revision);
+        let projection = crate::personal_state::project(&engine.personal_state).unwrap();
+        assert!(projection.legacy.favorites.is_empty());
+        assert!(
+            projection
+                .legacy
+                .signals
+                .tracks
+                .values()
+                .all(|signal| !signal.disliked)
+        );
+        assert!(
+            projection
+                .legacy
+                .signals
+                .artist_affinity
+                .get(&artist_key)
+                .copied()
+                .unwrap_or(0.0)
+                .abs()
+                < f32::EPSILON
+        );
     }
 
     #[test]

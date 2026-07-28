@@ -397,6 +397,17 @@ impl OwnedGeneration {
     /// Anonymous generations are linked from their exact handle. Named fallbacks are moved with
     /// the platform's no-replace primitive; Windows binds the rename directly to this file
     /// handle. The returned handle is reopened read-only at the final name.
+    ///
+    /// A named stage may also be promoted inside a directory the app does not privately own, but
+    /// only when it never leaves that one directory: the source parent and `destination` must be
+    /// the same pinned object. Staying inside one directory is what makes a user-selected
+    /// destination reachable at all, because the anonymous residence is Linux-only and a rename
+    /// out of an app-owned staging directory fails with `EXDEV` across a mount. The private
+    /// namespace was standing in for the identity checks that bracket the rename below, which
+    /// still run. What it cannot promise for a directory other writers can reach is that the name
+    /// is not swapped between the pre-rename check and the rename itself; a swap is detected
+    /// afterwards and reported, and it grants nothing a writer of that directory did not already
+    /// have.
     pub(crate) fn promote_noreplace(
         self,
         destination: &PinnedDir,
@@ -409,10 +420,14 @@ impl OwnedGeneration {
         self.verify()?;
         self.file.sync_all()?;
 
-        if self.residence == GenerationResidence::Named && !self.parent.inner.private_namespace {
+        let promotes_within_one_directory = self.parent.identity() == destination.identity();
+        if self.residence == GenerationResidence::Named
+            && !self.parent.inner.private_namespace
+            && !promotes_within_one_directory
+        {
             return Err(io::Error::new(
                 io::ErrorKind::Unsupported,
-                "named no-replace promotion requires an app-owned private source namespace",
+                "named no-replace promotion out of its own directory requires an app-owned private source namespace",
             ));
         }
 

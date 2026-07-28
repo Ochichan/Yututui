@@ -494,7 +494,7 @@ ytt data export --to ~/safe-existing-dir # 指定した保存先へ
 
 > **プライバシー上の注意:** 認証情報とメディア本体は除外されますが、**再生履歴を含む個人ファイル**です。ファイル自体は暗号化されません。安全な場所に保管し、共有するときは内容を確認してください。
 
-この機能は現在**エクスポート専用**です。`ytt` には、この JSON をインポートまたは復元するコマンドはまだありません。
+この JSON を戻す方法は、下のエクスポート・インポートの項を参照してください。
 
 </details>
 
@@ -533,6 +533,73 @@ ytt tools unpin               # 通常の managed/system 選択に戻す
 `YTM_YTDLP` は引き続き最も強い override です。OS の設定で値を変えた場合は、新しいターミナルを開くか、その環境変数を解除してから `ytt tools use ...` の設定を反映させてください。
 
 アプリ自身の yt-dlp 呼び出しは、既定であなたの yt-dlp 設定ファイルを無視するので、シェルのダウンロード用オプションがパース出力を壊しません。アプリのパース呼び出しにも yt-dlp 設定を使うなら `YTM_YTDLP_USER_CONFIG=1`。mpv の `ytdl_hook` 経由の再生は引き続き yt-dlp 設定に従い、検索・プレイリスト取得・メタデータ・プリフェッチ解決・ダウンロードだけが既定で無視します。
+
+</details>
+
+<details>
+<summary><b>端末間の暗号化同期</b></summary>
+
+お気に入り・再生履歴・プレイリスト・好みのシグナルを WebDAV フォルダー（Nextcloud、ownCloud、たいていの NAS）経由で複数台にそろえます。アップロード前にローカルですべて暗号化されるため、サーバーには暗号文しか残らず、分かるのはサイズと時刻だけです。自分でオンにするまで無効です。
+
+```sh
+ytt sync setup                        # vault を作成。リカバリーキットの保存が必須
+ytt sync status [--json]              # Off / Up to date / Syncing / Offline — will retry / Needs attention
+ytt sync now                          # ローカルとリモートの状態をいまマージ
+
+ytt sync pair create                  # 10 分間有効な使い捨て接続コードを表示
+ytt sync pair join <CODE>             # 新しい端末で実行し、既存の端末で承認
+ytt sync pair join --resume           # 中断した参加をコードなしで再開
+ytt sync pair cancel                  # 終わっていないローカルの参加を破棄
+
+ytt sync devices [--json]             # 有効な端末と削除済み端末
+ytt sync revoke <DEVICE_ID>           # 端末を削除し暗号化チェックポイントを鍵かけ直す
+ytt sync recovery export --to <DIR>   # リカバリーキットを検証してコピー
+ytt sync audit [--json]               # 個人情報を伏せた同期監査ログ
+```
+
+WebDAV の資格情報は画面に表示せずに入力し、コマンド引数としては受け取りません。エンドポイントは loopback でないかぎり HTTPS が必須です。status と audit の出力はエンドポイント・パス・秘密情報を意図的に除いています。
+
+**リカバリーキットはこのパソコン以外に保管してください。** 誰も再発行できません。ただしキットだけから vault を建て直すコマンドはまだないので、キットを復元手段と考えず、承認済みの端末を最低 1 台は残してください。端末を削除すると以降アップロードされたものは鍵かけ直されますが、その端末が**すでに受け取った**ぶんは取り消せません。
+
+アプリ内では **設定（`o`）→ 同期** に同じ流れがあります。
+
+</details>
+
+<details>
+<summary><b>自分の音楽サーバー（OpenSubsonic / Navidrome）</b></summary>
+
+```sh
+ytt server setup                                   # サーバー接続を試して保存
+ytt server status [--json]                         # 秘密情報を伏せた接続状態
+ytt server remove                                  # プロフィールを削除（ローカルデータは維持）
+
+ytt server scrobbles list [--json]                 # 判断待ちの再生レポート
+ytt server scrobbles retry <OPAQUE_ID>             # 未送信として再試行
+ytt server scrobbles mark-sent <OPAQUE_ID>         # 再試行せず送信済みとして扱う
+
+ytt server playlists pending [--json]              # 判断待ちのプレイリスト作成
+ytt server playlists abandon <LOCAL_PLAYLIST_ID>   # ガードを忘れるだけ（どちらも削除しない）
+
+ytt server history enable --experimental           # Navidrome の詳細履歴（既定はオフ）
+ytt server history disable                         # 保存した専用パスワードも削除
+```
+
+パスワードと API キーは画面に表示せずに入力し、コマンド引数としては受け取りません。パスワード認証はリクエストごとに新しい salt トークンを使うため、平文のパスワードは送信されません。実験的な詳細履歴は専用パスワードを別に要求し、オフにしても通常のサーバー接続には影響しません。
+
+アプリ内では **設定（`o`）→ 音楽サーバー**。
+
+</details>
+
+<details>
+<summary><b>個人データのエクスポート・インポート</b></summary>
+
+```sh
+ytt data export [--to DIR] [--schema 1|2]   # バージョン付き JSON。資格情報とメディアは含まない
+ytt data import <FILE>                      # マージのプレビュー（既定）
+ytt data import <FILE> --apply              # 原子的に適用
+```
+
+エクスポートは暗号化されず再生履歴を含むため、個人ファイルとして扱ってください。別のデータセットは何も削除せずにマージされ、同じデータセットのバンドルは因果順にマージされるので、自分の古いエクスポートを取り込み直しても新しい再生履歴は巻き戻りません。
 
 </details>
 

@@ -89,6 +89,9 @@
       onchange={(e) =>
         settings.apply('search', 'default_source', e.currentTarget.value as SearchSource)}
     >
+      {#if search?.default_source === 'open_subsonic'}
+        <option value="open_subsonic" selected disabled>Music server</option>
+      {/if}
       {#each SOURCES as [value, label] (value)}
         <option {value} selected={(search?.default_source ?? 'youtube') === value}>{label}</option>
       {/each}

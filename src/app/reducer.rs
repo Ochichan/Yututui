@@ -37,6 +37,7 @@ impl App {
         // leftover `Info` color from a previous green toast.
         self.status.kind = StatusKind::Error;
         let mut cmds = self.dispatch(msg);
+        cmds.extend(self.start_pending_sync_ui_refresh());
         // A refill is scoped to the exact queue membership/order snapshot it started from.
         // Observe revisions after every owner reduction so an admitted manual replacement cannot
         // leave an old same-seed chain eligible merely because that video id is still present.
@@ -125,8 +126,29 @@ impl App {
         cmd: crate::remote::proto::RemoteCommand,
         reply: crate::remote::server::RemoteReply,
     ) -> Vec<Cmd> {
-        if let crate::remote::proto::RemoteCommand::ExportPersonalData { directory } = cmd {
-            return self.start_personal_export(PathBuf::from(directory), Some(reply));
+        if let crate::remote::proto::RemoteCommand::ExportPersonalData { directory, schema } = cmd {
+            return self.start_personal_export(
+                PathBuf::from(directory),
+                schema.unwrap_or(2),
+                Some(reply),
+            );
+        }
+        match cmd {
+            crate::remote::proto::RemoteCommand::SyncNow => {
+                return self.start_personal_sync(PersonalSyncAction::SyncNow, reply);
+            }
+            crate::remote::proto::RemoteCommand::SyncRevokeDevice { device_id } => {
+                let device_id = match crate::personal_state::DeviceId::new(device_id) {
+                    Ok(device_id) => device_id,
+                    Err(_) => {
+                        let _ =
+                            reply.send(crate::remote::proto::RemoteResponse::err("bad_device_id"));
+                        return Vec::new();
+                    }
+                };
+                return self.start_personal_sync(PersonalSyncAction::Revoke(device_id), reply);
+            }
+            _ => {}
         }
         let deferred = Self::remote_reply_plan(&cmd);
         let (resp, mut cmds) = self.apply_remote(cmd);
@@ -180,7 +202,7 @@ impl App {
         if self.expire_lyrics_delay_osd(Instant::now()) {
             self.dirty = true;
         }
-        Vec::new()
+        self.poll_sync_ui_if_due()
     }
 
     fn handle_player(&mut self, pm: PlayerMsg) -> Vec<Cmd> {
@@ -987,6 +1009,29 @@ impl App {
         {
             return Vec::new();
         }
+        // The Settings-owned Sync wizard captures every pointer event. Ordinary clicks keep
+        // flowing through its hit-tested modal route. The paired double-click is consumed so the
+        // first press cannot both open and immediately confirm a destructive step.
+        if self.personal_state.sync_ui.modal_open() {
+            match &msg {
+                Msg::MouseDoubleClick { .. }
+                | Msg::MouseRightClick { .. }
+                | Msg::MouseRightDoubleClick { .. }
+                | Msg::MouseDrag { .. }
+                | Msg::MouseScroll { .. } => return Vec::new(),
+                _ => {}
+            }
+        }
+        if self.server.settings.modal_open() {
+            match &msg {
+                Msg::MouseDoubleClick { .. }
+                | Msg::MouseRightClick { .. }
+                | Msg::MouseRightDoubleClick { .. }
+                | Msg::MouseDrag { .. }
+                | Msg::MouseScroll { .. } => return Vec::new(),
+                _ => {}
+            }
+        }
         // A picker-opening/applying press owns its paired double-click. Check this before the
         // open-modal route: the second press of a swatch double-click arrives after the first has
         // opened the picker and must not be reinterpreted against the newly rendered popup.
@@ -1055,6 +1100,24 @@ impl App {
             })) => {
                 return self.finish_personal_export(result, reply);
             }
+            Msg::Data(DataMsg::PersonalSyncPrepared(prepared)) => {
+                return self.finish_personal_sync(*prepared);
+            }
+            Msg::Data(DataMsg::PersonalSyncPersisted(persisted)) => {
+                return self.finish_personal_sync_persistence(*persisted);
+            }
+            Msg::Data(DataMsg::SyncActivationPersisted(persisted)) => {
+                return self.finish_sync_activation_persistence(*persisted);
+            }
+            Msg::Data(DataMsg::SyncUi(event)) => {
+                return self.finish_sync_ui_event(event);
+            }
+            Msg::Server(ServerEvent::Settings(event)) => {
+                return self.finish_music_server_event(event);
+            }
+            Msg::Server(ServerEvent::Library(event)) => {
+                return self.finish_server_library_event(event);
+            }
             Msg::Media(cmd) => return self.apply_media(cmd),
             Msg::MediaArtworkReady(ready) => {
                 // No redraw: this only feeds the OS media session, not the TUI.
@@ -1065,6 +1128,7 @@ impl App {
                 return self.handle_api_mode_resolved(mode, had_cookie);
             }
             Msg::StatusTick => return self.handle_status_tick(),
+            Msg::AutomaticSyncTick => return self.poll_automatic_sync(),
             Msg::LyricsTick => {
                 if self.lyrics_tick_at(Instant::now()) {
                     self.dirty = true;
@@ -1145,6 +1209,22 @@ impl App {
             Msg::PersistFailed { store, error } => {
                 return self.handle_persist_failed(store, error);
             }
+            Msg::PersonalStatePersisted {
+                revision,
+                state_identity,
+            } => {
+                return if self.personal_state.ledger.revision == revision
+                    && self
+                        .personal_state
+                        .ledger
+                        .identity()
+                        .is_ok_and(|identity| identity == state_identity)
+                {
+                    self.note_personal_state_mutation()
+                } else {
+                    Vec::new()
+                };
+            }
             Msg::Streaming(sm) => return self.handle_streaming(sm),
             // --- DJ Gem assistant intents ---------------------------------------
             Msg::Ai(am) => return self.handle_ai(am),
@@ -1153,7 +1233,16 @@ impl App {
             Msg::Tools(event) => return self.handle_tools(event),
             Msg::Transfer(event) => return self.on_transfer_event(event),
             Msg::Data(DataMsg::TransferPlaylistPersisted(result)) => {
-                return self.on_transfer_playlist_persisted(*result.commit, result.persistence);
+                let TransferPlaylistPersistence {
+                    commit,
+                    persistence,
+                    personal_state,
+                } = *result;
+                return self.on_transfer_playlist_persisted_with_personal_state(
+                    *commit,
+                    persistence,
+                    personal_state,
+                );
             }
         }
         Vec::new()

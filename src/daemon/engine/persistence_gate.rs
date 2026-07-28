@@ -36,7 +36,7 @@ fn save_failure_injected(_kind: StoreKind) -> bool {
     false
 }
 
-fn save_store(kind: StoreKind, save: impl FnOnce() -> std::io::Result<()>) -> std::io::Result<()> {
+fn save_store<T>(kind: StoreKind, save: impl FnOnce() -> std::io::Result<T>) -> std::io::Result<T> {
     if save_failure_injected(kind) {
         return Err(std::io::Error::other(format!(
             "injected {} save failure",
@@ -47,6 +47,44 @@ fn save_store(kind: StoreKind, save: impl FnOnce() -> std::io::Result<()>) -> st
 }
 
 impl DaemonEngine {
+    fn reconcile_personal_state(
+        &self,
+        playlists: &crate::playlists::Playlists,
+    ) -> Result<crate::personal_state::PersonalStateV2, crate::personal_state::PersonalStateError>
+    {
+        match &self.personal_state_device_id {
+            Some(device_id) => crate::personal_state::reconcile_runtime_as(
+                &self.personal_state,
+                device_id,
+                &self.library,
+                playlists,
+                &self.signals,
+                &self.station,
+            ),
+            None => crate::personal_state::reconcile_runtime(
+                &self.personal_state,
+                &self.library,
+                playlists,
+                &self.signals,
+                &self.station,
+            ),
+        }
+    }
+
+    pub(super) fn personal_state_paths(
+        &self,
+    ) -> Result<crate::personal_state::PersonalStatePaths, crate::personal_state::PersonalStateError>
+    {
+        #[cfg(test)]
+        {
+            Ok(self.personal_state_paths.clone())
+        }
+        #[cfg(not(test))]
+        {
+            crate::personal_state::PersonalStatePaths::current()
+        }
+    }
+
     pub(super) fn reject_remote_recovery(&mut self, error: StartupRecoveryError) -> RemoteResponse {
         let error = EngineError::from(error);
         let message = error.to_string();
@@ -88,6 +126,10 @@ impl DaemonEngine {
     }
 
     fn should_skip_remote_save(&self) -> bool {
+        #[cfg(test)]
+        if self.persistence_disabled_for_test {
+            return true;
+        }
         self.remote_persistence_command_active
             && (self.remote_persistence_write_failed || self.remote_persistence_read_only)
     }
@@ -112,21 +154,90 @@ impl DaemonEngine {
     }
 
     pub(super) fn save_library(&mut self, context: &str) {
+        self.save_personal_state(context, StoreKind::Library);
+    }
+
+    pub(super) fn save_playlists(&mut self, context: &str) {
+        self.save_personal_state(context, StoreKind::Playlists);
+    }
+
+    fn save_personal_state(&mut self, context: &str, failure_kind: StoreKind) {
         if self.should_skip_remote_save() {
             return;
         }
-        if let Err(error) = save_store(StoreKind::Library, || self.library.save()) {
+        if let Err(error) = self.commit_live_personal_state(failure_kind) {
             self.record_persistence_failure(context, error);
         }
     }
 
-    pub(super) fn save_playlists(&mut self, context: &str) {
+    /// Make every mutation currently visible in the daemon projections durable before a
+    /// detached personal-sync worker observes it.
+    ///
+    /// The exact enrolled device authors any synthesized operation. The live ledger and
+    /// projections are swapped only after the multi-store transaction is confirmed, so a
+    /// transient write failure leaves the user's in-memory mutation available for a later retry.
+    pub(super) fn persist_live_personal_state_for_sync(
+        &mut self,
+    ) -> Result<crate::personal_state::PersonalStateV2, crate::sync::service::SyncServiceError>
+    {
+        if let Err(error) = current_recovery_status() {
+            self.record_persistence_failure(
+                "daemon personal sync preflight",
+                std::io::Error::other(error.to_string()),
+            );
+            return Err(crate::sync::service::SyncServiceError::Storage);
+        }
         if self.should_skip_remote_save() {
-            return;
+            return Err(crate::sync::service::SyncServiceError::Storage);
         }
-        if let Err(error) = save_store(StoreKind::Playlists, || self.playlists.save()) {
-            self.record_persistence_failure(context, error);
+        match self.commit_live_personal_state(StoreKind::PersonalState) {
+            Ok(state) => Ok(state),
+            Err(error) => {
+                self.record_persistence_failure("daemon personal sync source", error);
+                Err(crate::sync::service::SyncServiceError::Storage)
+            }
         }
+    }
+
+    fn commit_live_personal_state(
+        &mut self,
+        failure_kind: StoreKind,
+    ) -> Result<crate::personal_state::PersonalStateV2, std::io::Error> {
+        let commit = self
+            .reconcile_personal_state(&self.playlists)
+            .and_then(|state| {
+                crate::personal_state::PersonalStateCommit::prepare_for_runtime(
+                    state,
+                    self.playlists.revision(),
+                )
+            });
+        let commit = match commit {
+            Ok(commit) => commit,
+            Err(error) => return Err(std::io::Error::other(error.to_string())),
+        };
+        let paths = match self.personal_state_paths() {
+            Ok(paths) => paths,
+            Err(error) => return Err(std::io::Error::other(error.to_string())),
+        };
+        let installed = save_store(failure_kind, || {
+            commit.commit(&paths).map_err(std::io::Error::other)
+        })?;
+        if installed != *commit.state() {
+            return Err(std::io::Error::other(
+                "personal state changed while the daemon transaction was installing",
+            ));
+        }
+        let (library, mut playlists, signals, station) = commit.runtime_stores();
+        let playlists_changed = playlists.inherit_revision_from(&self.playlists);
+        self.install_personal_state(installed.clone());
+        self.library = library;
+        self.playlists = playlists;
+        self.signals = signals;
+        self.station = station;
+        if playlists_changed {
+            self.bump_playlists_rev();
+        }
+        Ok(installed)
     }
 
     /// Persist an owner candidate without touching the live daemon store. The caller may swap it
@@ -149,23 +260,51 @@ impl DaemonEngine {
                 ),
             );
         }
-        match save_store(StoreKind::Playlists, || candidate.save()) {
-            Ok(()) => Ok(()),
+        let commit = self
+            .reconcile_personal_state(candidate)
+            .and_then(|state| {
+                crate::personal_state::PersonalStateCommit::prepare_for_runtime(
+                    state,
+                    candidate.revision(),
+                )
+            })
+            .map_err(|error| {
+                crate::transfer::local_playlist::LocalPlaylistStoreError::resumable(format!(
+                    "failed to prepare daemon transfer playlists: {error}"
+                ))
+            })?;
+        let paths = self.personal_state_paths().map_err(|error| {
+            crate::transfer::local_playlist::LocalPlaylistStoreError::resumable(format!(
+                "failed to resolve personal-state storage: {error}"
+            ))
+        })?;
+        let installed = match save_store(StoreKind::Playlists, || {
+            commit.commit(&paths).map_err(std::io::Error::other)
+        }) {
+            Ok(installed) => installed,
             Err(error) => {
                 let message = format!("failed to save daemon transfer playlists: {error}");
                 self.record_persistence_failure("daemon transfer playlists", error);
-                Err(crate::transfer::local_playlist::LocalPlaylistStoreError::resumable(message))
+                return Err(
+                    crate::transfer::local_playlist::LocalPlaylistStoreError::resumable(message),
+                );
             }
+        };
+        if installed != *commit.state() {
+            let error = std::io::Error::other(
+                "personal state changed while the daemon transfer was installing",
+            );
+            let message = format!("failed to save daemon transfer playlists: {error}");
+            self.record_persistence_failure("daemon transfer playlists", error);
+            Err(crate::transfer::local_playlist::LocalPlaylistStoreError::resumable(message))
+        } else {
+            self.install_personal_state(installed);
+            Ok(())
         }
     }
 
     pub(super) fn save_signals(&mut self, context: &str) {
-        if self.should_skip_remote_save() {
-            return;
-        }
-        if let Err(error) = save_store(StoreKind::Signals, || self.signals.save()) {
-            self.record_persistence_failure(context, error);
-        }
+        self.save_personal_state(context, StoreKind::Signals);
     }
 
     pub(super) fn save_session(&mut self) {
@@ -176,6 +315,21 @@ impl DaemonEngine {
         if let Err(error) = save_store(StoreKind::Session, || snapshot.save()) {
             self.record_persistence_failure("daemon session", error);
         }
+    }
+
+    /// Test seam: make every durable save a no-op for an engine built outside a real daemon.
+    ///
+    /// Under `#[cfg(test)]` every store resolves inside one process-wide sandbox, so an engine
+    /// constructed for a unit test writes the same files as every other test. A save that fails
+    /// there is not merely a lost write: `finish_remote_persistence` replaces the command's
+    /// success-shaped response with `durability_unconfirmed`, which reads as a behavioural
+    /// difference the test never intended to exercise.
+    ///
+    /// Deliberately not `remote_persistence_read_only`: `preflight_remote_persistence` resets that
+    /// on every command, so it cannot express a standing choice made once at construction.
+    #[cfg(test)]
+    pub(in crate::daemon) fn silence_remote_persistence_for_test(&mut self) {
+        self.persistence_disabled_for_test = true;
     }
 
     pub(super) fn finish_remote_persistence(
@@ -231,7 +385,7 @@ pub(super) fn fail_recovery_for_test(error: StartupRecoveryError) -> TestRecover
 }
 
 #[cfg(test)]
-pub(super) struct TestSaveFailureGuard {
+pub(in crate::daemon) struct TestSaveFailureGuard {
     previous: Option<StoreKind>,
 }
 
@@ -243,7 +397,7 @@ impl Drop for TestSaveFailureGuard {
 }
 
 #[cfg(test)]
-pub(super) fn fail_store_saves_for_test(kind: StoreKind) -> TestSaveFailureGuard {
+pub(in crate::daemon) fn fail_store_saves_for_test(kind: StoreKind) -> TestSaveFailureGuard {
     let previous = TEST_SAVE_FAILURE.with(|failure| failure.replace(Some(kind)));
     TestSaveFailureGuard { previous }
 }

@@ -536,12 +536,10 @@ impl App {
             return Vec::new();
         };
         if !self.onboarding.settings_tab_visited {
-            self.settings_select_tab(SettingsTab::Playback.index());
-            return Vec::new();
+            return self.settings_select_tab(SettingsTab::Playback.index());
         }
         if tab != SettingsTab::General {
-            self.settings_select_tab(SettingsTab::General.index());
-            return Vec::new();
+            return self.settings_select_tab(SettingsTab::General.index());
         }
         let cmds = self.advance_beginner_step();
         self.focus_beginner_mode_setting();

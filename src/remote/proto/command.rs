@@ -144,9 +144,20 @@ pub enum RemoteCommand {
     /// Danger zone: reset the whole config to defaults (the GUI double-confirms).
     ResetAllSettings,
     /// Write a portable, credential-free snapshot to this existing absolute directory.
-    /// Additive since v8 and capability-gated by `personal-export-v1`.
+    /// Additive since v8 and capability-gated by `personal-export-v1`; schema 2 additionally
+    /// requires `personal-state-v2`.
     ExportPersonalData {
         directory: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        schema: Option<u32>,
+    },
+    /// Run one bidirectional encrypted personal-state sync through the process which owns the
+    /// writer lease. Additive since v8 and capability-gated by `webdav-sync-v1`.
+    SyncNow,
+    /// Revoke one explicitly selected device, rotate the encrypted vault membership, and sync
+    /// the resulting state through the primary writer. The WebDAV credential never crosses IPC.
+    SyncRevokeDevice {
+        device_id: String,
     },
     // ── Deferred v8 GUI commands (additive; capability-gated by `v8-commands`) ─────────
     //
@@ -365,6 +376,8 @@ impl RemoteCommand {
             | RemoteCommand::SetGeminiKey { .. }
             | RemoteCommand::ResetAllSettings
             | RemoteCommand::ExportPersonalData { .. }
+            | RemoteCommand::SyncNow
+            | RemoteCommand::SyncRevokeDevice { .. }
             | RemoteCommand::Rate { .. }
             | RemoteCommand::QueueMove { .. }
             | RemoteCommand::QueueRemoveMany { .. }
@@ -437,7 +450,19 @@ impl RemoteCommand {
             | RemoteCommand::EnqueueTracks { video_ids } => validate_track_ids(video_ids),
             RemoteCommand::Apply { change } => validate_gui_setting_change(change),
             RemoteCommand::SetGeminiKey { key } => validate_gemini_key(key),
-            RemoteCommand::ExportPersonalData { directory } => validate_export_directory(directory),
+            RemoteCommand::ExportPersonalData { directory, schema } => {
+                validate_export_directory(directory)?;
+                if schema.is_some_and(|schema| !matches!(schema, 1 | 2)) {
+                    return Err(validation_error("bad_export_schema"));
+                }
+                Ok(())
+            }
+            RemoteCommand::SyncRevokeDevice { device_id } => {
+                if crate::personal_state::DeviceId::new(device_id).is_err() {
+                    return Err(validation_error("bad_device_id"));
+                }
+                Ok(())
+            }
             RemoteCommand::QueueMove { from, to, .. }
                 if *from >= REMOTE_MAX_TRACK_IDS || *to >= REMOTE_MAX_TRACK_IDS =>
             {
@@ -830,12 +855,26 @@ mod tests {
         assert!(RemoteCommand::TogglePause.requires_confirmation());
         let export = RemoteCommand::ExportPersonalData {
             directory: std::env::temp_dir().to_string_lossy().into_owned(),
+            schema: None,
         };
         assert_eq!(
             export.request_retry_class(),
             RequestRetryClass::RetainedOutcome
         );
         assert!(export.requires_confirmation());
+        assert_eq!(
+            RemoteCommand::SyncNow.request_retry_class(),
+            RequestRetryClass::RetainedOutcome
+        );
+        assert!(RemoteCommand::SyncNow.requires_confirmation());
+        let revoke = RemoteCommand::SyncRevokeDevice {
+            device_id: "device-a".to_owned(),
+        };
+        assert_eq!(
+            revoke.request_retry_class(),
+            RequestRetryClass::RetainedOutcome
+        );
+        assert!(revoke.requires_confirmation());
     }
 
     #[test]
@@ -885,6 +924,7 @@ mod tests {
         let directory = std::env::temp_dir().to_string_lossy().into_owned();
         let command = RemoteCommand::ExportPersonalData {
             directory: directory.clone(),
+            schema: Some(2),
         };
         assert!(command.validate().is_ok());
 
@@ -902,11 +942,42 @@ mod tests {
                 "export_directory_too_long",
             ),
         ] {
-            let error = RemoteCommand::ExportPersonalData { directory }
-                .validate()
-                .unwrap_err();
+            let error = RemoteCommand::ExportPersonalData {
+                directory,
+                schema: None,
+            }
+            .validate()
+            .unwrap_err();
             assert_eq!(error.reason(), reason);
         }
+    }
+
+    #[test]
+    fn sync_commands_round_trip_and_validate_device_ids() {
+        for (command, expected_wire) in [
+            (RemoteCommand::SyncNow, r#"{"cmd":"sync_now"}"#),
+            (
+                RemoteCommand::SyncRevokeDevice {
+                    device_id: "device-a".to_owned(),
+                },
+                r#"{"cmd":"sync_revoke_device","device_id":"device-a"}"#,
+            ),
+        ] {
+            assert!(command.validate().is_ok());
+            let line = serde_json::to_string(&command).unwrap();
+            assert_eq!(line, expected_wire);
+            let back: RemoteCommand = serde_json::from_str(&line).unwrap();
+            assert_eq!(back, command);
+        }
+        assert_eq!(
+            RemoteCommand::SyncRevokeDevice {
+                device_id: "\n".to_owned(),
+            }
+            .validate()
+            .unwrap_err()
+            .reason(),
+            "bad_device_id"
+        );
     }
 
     #[test]

@@ -388,6 +388,7 @@ mod tests {
             track_id: None,
             position_epoch: 0,
             artwork: None,
+            personal_sync: None,
         });
         assert_eq!(tooltip_for_state(&state), "Paused: Artist - Song");
         let idle_daemon = TrayState::Connected(StatusSnapshot {
@@ -410,6 +411,7 @@ mod tests {
             track_id: None,
             position_epoch: 0,
             artwork: None,
+            personal_sync: None,
         });
         assert_eq!(tooltip_for_state(&idle_daemon), "YuTuTui! daemon idle");
         assert_eq!(

@@ -17,6 +17,8 @@
 //!   vs `true` with nothing loaded). The script then must keep them equal.
 
 mod harness;
+mod personal_sync;
+mod rating_recommendation;
 
 use std::sync::Arc;
 
@@ -188,6 +190,19 @@ fn command_classifier_pins_shared_and_owner_boundary_exceptions() {
     assert_eq!(
         command_parity_class(&RemoteCommand::ExportPersonalData {
             directory: "/tmp".to_owned(),
+            schema: None,
+        }),
+        CommandParityClass::BothOwnerLoopIntercepted
+    );
+    // The other two intercepted commands. Their behavioural parity lives in
+    // `parity_tests::personal_sync`; pinning the class here keeps the classifier honest.
+    assert_eq!(
+        command_parity_class(&RemoteCommand::SyncNow),
+        CommandParityClass::BothOwnerLoopIntercepted
+    );
+    assert_eq!(
+        command_parity_class(&RemoteCommand::SyncRevokeDevice {
+            device_id: "device-a".to_owned(),
         }),
         CommandParityClass::BothOwnerLoopIntercepted
     );
@@ -325,6 +340,88 @@ async fn accepted_seek_uses_fast_precision_and_one_epoch_in_both_owners() {
     assert_eq!(app.playback.position_epoch, app_epoch + 1);
     assert_eq!(engine_position_epoch, engine_epoch + 1);
     assert_parity("accepted fast seek", &app, &engine);
+}
+
+#[tokio::test]
+async fn open_subsonic_load_uses_the_same_typed_destination_and_epoch_in_both_owners() {
+    let (mut app, mut engine) = hermetic_pair();
+    let item = crate::open_subsonic::OpenSubsonicItemRef::new(
+        crate::open_subsonic::BackendId::new("backend-a").unwrap(),
+        crate::open_subsonic::AccountScopeId::new("account-a").unwrap(),
+        crate::open_subsonic::ItemId::new("song-a").unwrap(),
+    );
+    let item_id = item.item_id().as_str().to_owned();
+    let server_song = Song::from_source(
+        crate::search_source::SearchSource::OpenSubsonic,
+        item_id,
+        "Server song",
+        "Server artist",
+        "3:00",
+        crate::api::PlayableRef::OpenSubsonic {
+            item,
+            cover_art_id: None,
+        },
+    );
+    let server_video_id = server_song.video_id.clone();
+    let previous = song("previous");
+    let previous_video_id = previous.video_id.clone();
+    let mut queue = Queue::default();
+    queue.set(vec![server_song, previous], 1);
+    let snapshot = queue.snapshot();
+    app.queue.restore_snapshot(snapshot.clone());
+    engine.restore_queue_snapshot(snapshot, RNG_SEED);
+    app.install_seek_parity_state(&previous_video_id, 12.0, 180.0);
+    let mut engine_player = engine.install_seek_parity_player(&previous_video_id, 12.0, 180.0);
+    let epochs = PositionEpochs::capture(&app, &engine);
+
+    let (reply_tx, mut reply_rx) = oneshot::channel();
+    let app_commands = app.update(Msg::Remote(
+        RemoteCommand::QueuePlay { position: 0 },
+        reply_tx.into(),
+    ));
+    let app_load = app_commands
+        .iter()
+        .flat_map(Cmd::player_commands)
+        .find_map(|command| match command {
+            crate::player::PlayerCmd::Load(load) => Some(load.clone()),
+            _ => None,
+        })
+        .expect("App OpenSubsonic load");
+    admit_app_player_intents(&mut app, app_commands);
+    assert!(reply_rx.try_recv().expect("App queue-play reply").ok);
+
+    let (engine_reply, shutdown, effects) = engine
+        .handle_remote(RemoteCommand::QueuePlay { position: 0 })
+        .await;
+    assert!(engine_reply.ok);
+    assert!(!shutdown);
+    assert!(effects.is_empty());
+    let engine_load = match recv_parity_player_command(&mut engine_player).await {
+        crate::player::PlayerCmd::Load(load) => load,
+        _ => panic!("daemon OpenSubsonic load"),
+    };
+
+    assert_eq!(app_load, engine_load);
+    assert_eq!(
+        app_load.destination().credentialed_target(),
+        Some(
+            &crate::playback_target::CredentialedPlaybackRef::OpenSubsonic {
+                backend_id: "backend-a".to_owned(),
+                account_scope_id: "account-a".to_owned(),
+                item_id: "song-a".to_owned(),
+            }
+        )
+    );
+    assert_eq!(
+        app.queue.current().map(|song| song.video_id.as_str()),
+        Some(server_video_id.as_str())
+    );
+    epochs.assert_delta(
+        "OpenSubsonic queue load",
+        PositionEpochs::capture(&app, &engine),
+        1,
+    );
+    assert_parity("OpenSubsonic queue load", &app, &engine);
 }
 
 #[tokio::test]
@@ -664,7 +761,7 @@ async fn revision_checked_queue_remove_is_stale_safe_and_owner_parity_holds() {
         .await;
     assert!(!shutdown);
     assert!(effects.is_empty());
-    assert!(app_resp.ok && engine_resp.ok);
+    assert_accepted("guarded remove", &app, &engine, &app_resp, &engine_resp);
     assert_eq!(app_resp.reason, engine_resp.reason);
     assert_parity("fresh revision-checked remove", &app, &engine);
 }
@@ -777,7 +874,7 @@ async fn revision_guarded_move_and_clear_reject_stale_and_accept_fresh_or_absent
         })
         .await;
     assert!(!shutdown);
-    assert!(app_resp.ok && engine_resp.ok);
+    assert_accepted("guarded move", &app, &engine, &app_resp, &engine_resp);
     assert_eq!(app_resp.reason, engine_resp.reason);
     assert_parity("fresh revision-checked move", &app, &engine);
 
@@ -792,16 +889,63 @@ async fn revision_guarded_move_and_clear_reject_stale_and_accept_fresh_or_absent
     let unguarded = RemoteCommand::QueueClearUpcoming { expected_rev: None };
     let app_resp = app_apply(&mut app, unguarded.clone());
     let (engine_resp, ..) = engine.handle_remote(unguarded).await;
-    assert!(app_resp.ok && engine_resp.ok);
+    assert_accepted("unguarded clear", &app, &engine, &app_resp, &engine_resp);
     assert_eq!(app_resp.reason, engine_resp.reason);
     assert_parity("unguarded clear-upcoming", &app, &engine);
 }
 
 #[tokio::test]
+async fn track_rating_cycle_and_recommendation_projection_stay_in_parity() {
+    let (mut app, mut engine) = hermetic_pair();
+    assert_parity("track rating baseline", &app, &engine);
+
+    for step in ["liked", "disliked", "neutral"] {
+        let command = RemoteCommand::Rate {
+            video_id: "b".to_owned(),
+            rating: RateChange::Cycle,
+        };
+        let app_response = app_apply(&mut app, command.clone());
+        let (engine_response, shutdown, effects) = engine.handle_remote(command).await;
+        assert!(!shutdown);
+        assert!(effects.is_empty());
+        assert_eq!(
+            app_response.reason, engine_response.reason,
+            "track rating {step}: owners disagree on the reason"
+        );
+        assert_eq!(
+            serde_json::to_value(&*app.signals).unwrap(),
+            serde_json::to_value(engine.signals()).unwrap(),
+            "track rating {step}: recommendation projections diverged"
+        );
+        assert_parity(&format!("track rating {step}"), &app, &engine);
+    }
+}
+
+#[tokio::test]
+async fn media_like_repairs_dislike_and_clears_like_in_parity() {
+    let (mut app, mut engine) = hermetic_pair();
+    for _ in 0..2 {
+        let command = RemoteCommand::Rate {
+            video_id: "b".to_owned(),
+            rating: RateChange::Cycle,
+        };
+        app_apply(&mut app, command.clone());
+        engine.handle_remote(command).await;
+    }
+    assert!(app.signals.is_disliked("b"));
+
+    for step in ["liked", "neutral"] {
+        app.update(Msg::Media(MediaCommand::Like));
+        let (shutdown, effects) = engine.handle_media(MediaCommand::Like).await;
+        assert!(!shutdown);
+        assert!(effects.is_empty());
+        assert_parity(&format!("media like {step}"), &app, &engine);
+    }
+}
+
+#[tokio::test]
 async fn radio_station_rating_cycle_stays_in_parity() {
-    // The radio branch of the rating cycle is dual-implemented by hand (App
-    // player.rs vs daemon gui_rate) — pin it: the cycle toggles radio-favorite
-    // membership, which projects through TrackModel.favorite on both owners.
+    // The shared reducer keeps binary station favorites out of track-rating signals.
     let (mut app, mut engine) = hermetic_pair();
     let mut station = Song::remote("st1", "station-st1", "", "");
     station.playable = Some(crate::api::PlayableRef::RadioStream {

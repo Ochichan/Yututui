@@ -673,16 +673,14 @@ impl super::RuntimeHandles {
         }
     }
 
-    /// Close owner/player/background admission and retire the active process before slower
-    /// shutdown.
+    /// Close player/background admission and retire the active process before slower shutdown.
     /// Repeated calls are harmless, which lets every owner-exit branch latch teardown eagerly and
     /// the common cleanup path enforce it once more defensively.
     pub fn begin_player_shutdown(&mut self, app: &mut App) {
-        // This is the shutdown ordering boundary for every owner producer. Close the shared
-        // ingress first, while task admission is still open: completions which finish from this
-        // point onward retain their exact event in the task outbox. Consequently no later actor
-        // event can enter the main queue and overtake that fallback during the final drain.
-        self.worker_tx.close_admission();
+        // Manual WebDAV preparation is deliberately detached from the joined runtime task set.
+        // Settle its retained caller before remote wire shutdown; a late candidate is discarded by
+        // the reducer and cannot install after this owner boundary.
+        app.settle_personal_sync_shutdown();
         let follow_ups =
             begin_player_shutdown_state(&mut self.player, &mut self.pending_player_intents, app);
         for follow_up in follow_ups {
@@ -693,9 +691,10 @@ impl super::RuntimeHandles {
         for follow_up in app.settle_recorder_owner_shutdown() {
             self.dispatch(app, follow_up);
         }
-        // Automatic recorder Saves cross their synchronous journal boundary above. Their terminal
-        // result now targets the fallback outbox because owner ingress is already closed. Closing
-        // the pool rejects any later worker while the accepted journal/source remains recoverable.
+        // Automatic recorder Saves cross their synchronous journal boundary above. Closing the
+        // pool rejects any later worker while accepted completions retain their terminal outbox.
+        // The shared owner ingress and credential runtime stay live until the scrobble producer is
+        // joined and its final playback report crosses local durability.
         self.background_tasks.close_admission();
     }
 

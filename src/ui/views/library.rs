@@ -10,7 +10,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 use unicode_width::UnicodeWidthStr;
 
-use crate::app::{App, LibraryTab, MouseTarget, ScrollSurface};
+use crate::app::{App, LibrarySource, LibraryTab, MouseTarget, ScrollSurface};
 use crate::i18n::Language;
 use crate::library::FavoriteLookup;
 use crate::t;
@@ -18,6 +18,10 @@ use crate::theme::ThemeRole as R;
 use crate::ui::buttons;
 
 pub fn render(frame: &mut Frame, app: &App, area: Rect) {
+    if !app.local_dedicated_mode && app.server.library.source == LibrarySource::OpenSubsonic {
+        super::server_library::render(frame, app, area);
+        return;
+    }
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(app.theme.style(R::BorderPrimary))
@@ -87,6 +91,9 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         // Inside an opened playlist the spacer row carries a clickable breadcrumb back
         // to the playlist list.
         render_playlist_breadcrumb(frame, app, rows[1]);
+    } else {
+        // Keep the source selector visible without adding a row or reflowing the local list.
+        super::server_library::render_source_selector(frame, app, rows[1]);
     }
     if playlists_root {
         render_playlist_list(frame, app, rows[2]);

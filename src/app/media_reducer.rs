@@ -353,63 +353,52 @@ impl App {
         };
         if song.is_radio_station() {
             // Stations only have favorite membership; a dislike has no meaning.
-            if like {
-                self.library_mut().toggle_favorite(&song);
-                self.dirty = true;
-                return vec![Cmd::Persist(PersistCmd::Library)];
-            }
-            return Vec::new();
+            let change = if like {
+                crate::rating::toggle_liked(
+                    Arc::make_mut(&mut self.library),
+                    Arc::make_mut(&mut self.signals),
+                    &song,
+                    signals::unix_now(),
+                )
+            } else {
+                crate::rating::toggle_disliked(
+                    Arc::make_mut(&mut self.library),
+                    Arc::make_mut(&mut self.signals),
+                    &song,
+                    signals::unix_now(),
+                )
+            };
+            self.record_rating_session_event(&song, change);
+            self.dirty |= change.changed();
+            return change
+                .changed()
+                .then_some(Cmd::Persist(PersistCmd::Library))
+                .into_iter()
+                .collect();
         }
-        let artist_key = signals::normalize_artist(&song.artist);
         let now = signals::unix_now();
-        let liked = self.library.is_favorite(&song.video_id);
-        let disliked = self.signals.is_disliked(&song.video_id);
-        self.dirty = true;
-        if like {
-            if liked {
-                // Un-like → neutral (undo the affinity lift).
-                self.library_mut().toggle_favorite(&song);
-                self.signals_mut()
-                    .record_like(&song.video_id, &artist_key, false, now);
-                return vec![
-                    Cmd::Persist(PersistCmd::Library),
-                    Cmd::Persist(PersistCmd::Signals),
-                ];
-            }
-            if disliked {
-                self.signals_mut()
-                    .toggle_dislike(&song.video_id, &artist_key, now);
-            }
-            let now_fav = self.library_mut().toggle_favorite(&song);
-            self.signals_mut()
-                .record_like(&song.video_id, &artist_key, now_fav, now);
-            let comp = self.playback_completion();
-            self.record_session_event(&artist_key, Outcome::Like, comp);
-            vec![
-                Cmd::Persist(PersistCmd::Library),
-                Cmd::Persist(PersistCmd::Signals),
-            ]
+        let change = if like {
+            crate::rating::toggle_liked(
+                Arc::make_mut(&mut self.library),
+                Arc::make_mut(&mut self.signals),
+                &song,
+                now,
+            )
         } else {
-            if disliked {
-                // Un-dislike → neutral.
-                self.signals_mut()
-                    .toggle_dislike(&song.video_id, &artist_key, now);
-                return vec![Cmd::Persist(PersistCmd::Signals)];
-            }
-            let mut cmds = Vec::new();
-            if liked {
-                self.library_mut().toggle_favorite(&song);
-                self.signals_mut()
-                    .record_like(&song.video_id, &artist_key, false, now);
-                cmds.push(Cmd::Persist(PersistCmd::Library));
-            }
-            self.signals_mut()
-                .toggle_dislike(&song.video_id, &artist_key, now);
-            let comp = self.playback_completion();
-            self.record_session_event(&artist_key, Outcome::Dislike, comp);
-            cmds.push(Cmd::Persist(PersistCmd::Signals));
-            cmds
-        }
+            crate::rating::toggle_disliked(
+                Arc::make_mut(&mut self.library),
+                Arc::make_mut(&mut self.signals),
+                &song,
+                now,
+            )
+        };
+        self.dirty = true;
+        self.record_rating_session_event(&song, change);
+        change
+            .changed()
+            .then_some(Cmd::Persist(PersistCmd::Library))
+            .into_iter()
+            .collect()
     }
 
     /// MPRIS `OpenUri`: parse a YouTube / YouTube Music URL and play it now (inserted
@@ -480,6 +469,7 @@ impl App {
             };
             MediaTrack {
                 key: song.video_id.clone(),
+                open_subsonic_item: song.open_subsonic_item().cloned(),
                 title,
                 artist,
                 album: if is_live { None } else { song.album.clone() },

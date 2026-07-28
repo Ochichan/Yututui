@@ -101,6 +101,9 @@ pub struct MediaCaps {
 pub struct MediaTrack {
     /// Stable per-track key (the queue `video_id`; also keys the artwork cache).
     pub key: String,
+    /// Exact credential-owning server identity, when this queue entry came from OpenSubsonic.
+    /// It contains no URL or secret and lets the shared playback observer submit exact scrobbles.
+    pub open_subsonic_item: Option<crate::open_subsonic::OpenSubsonicItemRef>,
     pub title: String,
     /// Display artist; empty when unknown (adapters omit the field then).
     pub artist: String,
@@ -741,6 +744,7 @@ mod tests {
         MediaSnapshot {
             track: Some(MediaTrack {
                 key: key.to_owned(),
+                open_subsonic_item: None,
                 title: "t".to_owned(),
                 artist: "a".to_owned(),
                 album: None,
@@ -902,6 +906,7 @@ mod tests {
     fn track(key: &str) -> MediaTrack {
         MediaTrack {
             key: key.to_owned(),
+            open_subsonic_item: None,
             title: format!("title-{key}"),
             artist: "artist".to_owned(),
             album: None,

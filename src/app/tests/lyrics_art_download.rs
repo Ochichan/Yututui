@@ -227,6 +227,41 @@ fn local_track_uses_local_art_source() {
 }
 
 #[test]
+fn server_track_uses_exact_actor_backed_art_source_without_a_url() {
+    let mut app = App::new(100);
+    app.config.album_art = Some(true);
+    app.art.picker = Some(Picker::halfblocks());
+    let item = crate::open_subsonic::OpenSubsonicItemRef::new(
+        crate::open_subsonic::BackendId::new("backend").unwrap(),
+        crate::open_subsonic::AccountScopeId::new("account").unwrap(),
+        crate::open_subsonic::ItemId::new("song").unwrap(),
+    );
+    let song = Song::from_source(
+        crate::search_source::SearchSource::OpenSubsonic,
+        "song",
+        "Server song",
+        "Server artist",
+        "3:00",
+        crate::api::PlayableRef::OpenSubsonic {
+            item: item.clone(),
+            cover_art_id: Some(crate::open_subsonic::CoverArtId::new("cover").unwrap()),
+        },
+    );
+
+    assert!(matches!(
+        app.artwork_source(&song),
+        Some(ArtSource::OpenSubsonic {
+            item: actual,
+            cover_art_id,
+            ..
+        }) if actual == item && cover_art_id.as_str() == "cover"
+    ));
+    let encoded = serde_json::to_string(&song).unwrap();
+    assert!(!encoded.contains("http://"));
+    assert!(!encoded.contains("https://"));
+}
+
+#[test]
 fn art_fit_rect_centers_by_aspect() {
     let mut app = App::new(100);
     app.art.picker = Some(Picker::halfblocks()); // font cell 10x20 px

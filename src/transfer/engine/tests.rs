@@ -970,64 +970,66 @@ fn ytm_playlist_pause_is_only_between_chunks() {
     assert!(!should_pause_after_chunk(9, 10));
 }
 
-#[tokio::test]
-async fn run_job_resume_rematch_resets_checkpointed_matches_without_persisting() {
-    let original_spec = spec(TransferDest::YtmLikes);
-    let mut cp = Checkpoint::new(
-        "job_with_underscores_no_persist".to_owned(),
-        original_spec.clone(),
-        vec![
-            TrackEntry {
-                input: TrackInput {
-                    known_video_id: Some("cached-yt-id".to_owned()),
-                    ..input("Known Id", &["Artist A"])
+#[test]
+fn run_job_resume_rematch_resets_checkpointed_matches_without_persisting() {
+    crate::test_util::block_on_isolated("resume-rematch", async {
+        let original_spec = spec(TransferDest::YtmLikes);
+        let mut cp = Checkpoint::new(
+            "job_with_underscores_no_persist".to_owned(),
+            original_spec.clone(),
+            vec![
+                TrackEntry {
+                    input: TrackInput {
+                        known_video_id: Some("cached-yt-id".to_owned()),
+                        ..input("Known Id", &["Artist A"])
+                    },
+                    outcome: Some(matched("cached-yt-id")),
+                    review_decision: None,
+                    written: true,
                 },
-                outcome: Some(matched("cached-yt-id")),
-                review_decision: None,
-                written: true,
-            },
-            entry(
-                input("Already Missing", &["Artist B"]),
-                Some(MatchOutcome::NotFound),
-            ),
-        ],
-    );
-    cp.stage = Stage::Writing;
-    cp.skipped_local = 2;
+                entry(
+                    input("Already Missing", &["Artist B"]),
+                    Some(MatchOutcome::NotFound),
+                ),
+            ],
+        );
+        cp.stage = Stage::Writing;
+        cp.skipped_local = 2;
 
-    let mut resumed_spec = original_spec;
-    resumed_spec.dry_run = true;
-    resumed_spec.rematch = true;
-    let mut ctx = JobCtx {
-        ytm: None,
-        spotify: None,
-        search_config: SearchConfig::default(),
-        market: None,
-    };
-    let mut progress = Vec::new();
-    let mut local_playlists = crate::transfer::local_playlist::DiskLocalPlaylistStore;
+        let mut resumed_spec = original_spec;
+        resumed_spec.dry_run = true;
+        resumed_spec.rematch = true;
+        let mut ctx = JobCtx {
+            ytm: None,
+            spotify: None,
+            search_config: SearchConfig::default(),
+            market: None,
+        };
+        let mut progress = Vec::new();
+        let mut local_playlists = crate::transfer::local_playlist::DiskLocalPlaylistStore;
 
-    let report = run_job_with_store(
-        cp.job_id.clone(),
-        resumed_spec,
-        Some(cp),
-        &mut ctx,
-        &mut local_playlists,
-        &mut |p| progress.push(p),
-    )
-    .await
-    .unwrap_or_else(|err| panic!("resume dry-run should not need clients: {}", err.error));
+        let report = run_job_with_store(
+            cp.job_id.clone(),
+            resumed_spec,
+            Some(cp),
+            &mut ctx,
+            &mut local_playlists,
+            &mut |p| progress.push(p),
+        )
+        .await
+        .unwrap_or_else(|err| panic!("resume dry-run should not need clients: {}", err.error));
 
-    assert_eq!(report.job_id, "job_with_underscores_no_persist");
-    assert_eq!(report.total, 2);
-    assert_eq!(report.matched, 0);
-    assert_eq!(report.skipped_local, 2);
-    assert!(report.ambiguous.is_empty());
-    assert!(report.not_found.is_empty());
-    assert!(
-        progress.is_empty(),
-        "writing-stage dry-run should not emit progress"
-    );
+        assert_eq!(report.job_id, "job_with_underscores_no_persist");
+        assert_eq!(report.total, 2);
+        assert_eq!(report.matched, 0);
+        assert_eq!(report.skipped_local, 2);
+        assert!(report.ambiguous.is_empty());
+        assert!(report.not_found.is_empty());
+        assert!(
+            progress.is_empty(),
+            "writing-stage dry-run should not emit progress"
+        );
+    });
 }
 
 #[tokio::test]
@@ -1054,57 +1056,59 @@ async fn match_stage_requires_ytm_client_for_unresolved_tracks() {
     assert!(cp.tracks[0].outcome.is_none());
 }
 
-#[tokio::test]
-async fn write_stage_dedupes_matches_before_missing_client_error() {
-    let mut cp = Checkpoint::new(
-        "job_write_missing_client".to_owned(),
-        spec(TransferDest::YtmLikes),
-        vec![
-            entry(input("First", &["A"]), Some(matched("dup-id"))),
-            entry(input("Duplicate", &["B"]), Some(matched("dup-id"))),
-            entry(
-                input("Take Best", &["C"]),
-                Some(MatchOutcome::Ambiguous {
-                    candidates: vec![AmbiguousCandidate {
-                        key: "ambig-id".to_owned(),
-                        score: 0.79,
-                        display: "C - Candidate".to_owned(),
-                        score_breakdown: None,
-                    }],
-                }),
-            ),
-            entry(input("Missing", &["D"]), Some(MatchOutcome::NotFound)),
-        ],
-    );
-    cp.stage = Stage::Writing;
-    cp.spec.take_best = true;
-    let mut ctx = JobCtx {
-        ytm: None,
-        spotify: None,
-        search_config: SearchConfig::default(),
-        market: None,
-    };
-    let mut report = build_report(&cp, 0);
-    let mut progress = Vec::new();
-    let mut local_playlists = crate::transfer::local_playlist::DiskLocalPlaylistStore;
+#[test]
+fn write_stage_dedupes_matches_before_missing_client_error() {
+    crate::test_util::block_on_isolated("dedupe-missing-client", async {
+        let mut cp = Checkpoint::new(
+            "job_write_missing_client".to_owned(),
+            spec(TransferDest::YtmLikes),
+            vec![
+                entry(input("First", &["A"]), Some(matched("dup-id"))),
+                entry(input("Duplicate", &["B"]), Some(matched("dup-id"))),
+                entry(
+                    input("Take Best", &["C"]),
+                    Some(MatchOutcome::Ambiguous {
+                        candidates: vec![AmbiguousCandidate {
+                            key: "ambig-id".to_owned(),
+                            score: 0.79,
+                            display: "C - Candidate".to_owned(),
+                            score_breakdown: None,
+                        }],
+                    }),
+                ),
+                entry(input("Missing", &["D"]), Some(MatchOutcome::NotFound)),
+            ],
+        );
+        cp.stage = Stage::Writing;
+        cp.spec.take_best = true;
+        let mut ctx = JobCtx {
+            ytm: None,
+            spotify: None,
+            search_config: SearchConfig::default(),
+            market: None,
+        };
+        let mut report = build_report(&cp, 0);
+        let mut progress = Vec::new();
+        let mut local_playlists = crate::transfer::local_playlist::DiskLocalPlaylistStore;
 
-    let err = write_stage(
-        &mut cp,
-        &mut ctx,
-        &mut local_playlists,
-        None,
-        &mut |p| progress.push(p),
-        &mut report,
-    )
-    .await
-    .expect_err("YTM likes write should require a YTM client");
+        let err = write_stage(
+            &mut cp,
+            &mut ctx,
+            &mut local_playlists,
+            None,
+            &mut |p| progress.push(p),
+            &mut report,
+        )
+        .await
+        .expect_err("YTM likes write should require a YTM client");
 
-    assert!(!err.resumable);
-    assert!(err.error.to_string().contains("YouTube Music cookie"));
-    assert_eq!(report.duplicates_dropped, 1);
-    assert_eq!(report.written, 0);
-    assert!(progress.is_empty());
-    assert!(cp.tracks.iter().all(|track| !track.written));
+        assert!(!err.resumable);
+        assert!(err.error.to_string().contains("YouTube Music cookie"));
+        assert_eq!(report.duplicates_dropped, 1);
+        assert_eq!(report.written, 0);
+        assert!(progress.is_empty());
+        assert!(cp.tracks.iter().all(|track| !track.written));
+    });
 }
 
 #[tokio::test]
@@ -1310,140 +1314,144 @@ fn fast_auto_accept_never_promotes_blocked_or_rejected_candidates() {
     ));
 }
 
-#[tokio::test]
-async fn write_stage_creates_local_playlist_for_spotify_liked_source() {
-    let playlist_name = "Spotify Liked Songs Local Write Test".to_owned();
-    let mut cp = Checkpoint::new(
-        "job-liked-local-playlist".to_owned(),
-        spec(TransferDest::LocalPlaylist {
-            name: Some(playlist_name.clone()),
-        }),
-        vec![entry(
-            input("Liked Song", &["Artist A"]),
-            Some(matched("vid-liked")),
-        )],
-    );
-    cp.stage = Stage::Writing;
-    cp.dest_name = Some(default_dest_name(&cp.spec.dest, "Spotify Liked Songs"));
-    let mut ctx = JobCtx {
-        ytm: None,
-        spotify: None,
-        search_config: SearchConfig::default(),
-        market: None,
-    };
-    let mut report = build_report(&cp, 0);
-    let mut progress = Vec::new();
-    let mut local_playlists = crate::transfer::local_playlist::DiskLocalPlaylistStore;
+#[test]
+fn write_stage_creates_local_playlist_for_spotify_liked_source() {
+    crate::test_util::block_on_isolated("liked-local-playlist", async {
+        let playlist_name = "Spotify Liked Songs Local Write Test".to_owned();
+        let mut cp = Checkpoint::new(
+            "job-liked-local-playlist".to_owned(),
+            spec(TransferDest::LocalPlaylist {
+                name: Some(playlist_name.clone()),
+            }),
+            vec![entry(
+                input("Liked Song", &["Artist A"]),
+                Some(matched("vid-liked")),
+            )],
+        );
+        cp.stage = Stage::Writing;
+        cp.dest_name = Some(default_dest_name(&cp.spec.dest, "Spotify Liked Songs"));
+        let mut ctx = JobCtx {
+            ytm: None,
+            spotify: None,
+            search_config: SearchConfig::default(),
+            market: None,
+        };
+        let mut report = build_report(&cp, 0);
+        let mut progress = Vec::new();
+        let mut local_playlists = crate::transfer::local_playlist::DiskLocalPlaylistStore;
 
-    write_stage(
-        &mut cp,
-        &mut ctx,
-        &mut local_playlists,
-        None,
-        &mut |p| progress.push(p),
-        &mut report,
-    )
-    .await
-    .unwrap_or_else(|err| panic!("local write should not need service clients: {}", err.error));
+        write_stage(
+            &mut cp,
+            &mut ctx,
+            &mut local_playlists,
+            None,
+            &mut |p| progress.push(p),
+            &mut report,
+        )
+        .await
+        .unwrap_or_else(|err| panic!("local write should not need service clients: {}", err.error));
 
-    let store = crate::playlists::Playlists::load();
-    let playlist = store
-        .find(&playlist_name)
-        .expect("liked songs local import should create a playlist");
+        let store = crate::playlists::Playlists::load();
+        let playlist = store
+            .find(&playlist_name)
+            .expect("liked songs local import should create a playlist");
 
-    assert_eq!(playlist.songs.len(), 1);
-    assert_eq!(playlist.songs[0].video_id, "vid-liked");
-    assert_eq!(playlist.songs[0].title, "Liked Song");
-    assert_eq!(cp.dest_id.as_deref(), Some(playlist.id.as_str()));
-    assert_eq!(report.written, 1);
-    assert_eq!(progress.len(), 1);
-    assert!(cp.tracks[0].written);
+        assert_eq!(playlist.songs.len(), 1);
+        assert_eq!(playlist.songs[0].video_id, "vid-liked");
+        assert_eq!(playlist.songs[0].title, "Liked Song");
+        assert_eq!(cp.dest_id.as_deref(), Some(playlist.id.as_str()));
+        assert_eq!(report.written, 1);
+        assert_eq!(progress.len(), 1);
+        assert!(cp.tracks[0].written);
+    });
 }
 
-#[tokio::test]
-async fn write_reviewed_local_job_writes_ready_rows_idempotently() {
-    let job_id = random_job_id("job-local-reviewed-write");
-    let playlist_name = format!("Reviewed Write {}", job_id);
-    let mut accepted = entry(
-        input("Accepted Song", &["Artist"]),
-        Some(ambiguous(vec![ambiguous_candidate(
-            "vid-accepted",
-            0.78,
-            false,
-            None,
-        )])),
-    );
-    accepted.review_decision = Some(ReviewDecision::Accepted {
-        key: "vid-accepted".to_owned(),
-        score: 0.78,
-        display: "Artist - Accepted Song".to_owned(),
+#[test]
+fn write_reviewed_local_job_writes_ready_rows_idempotently() {
+    crate::test_util::block_on_isolated("reviewed-local-idempotent", async {
+        let job_id = random_job_id("job-local-reviewed-write");
+        let playlist_name = format!("Reviewed Write {}", job_id);
+        let mut accepted = entry(
+            input("Accepted Song", &["Artist"]),
+            Some(ambiguous(vec![ambiguous_candidate(
+                "vid-accepted",
+                0.78,
+                false,
+                None,
+            )])),
+        );
+        accepted.review_decision = Some(ReviewDecision::Accepted {
+            key: "vid-accepted".to_owned(),
+            score: 0.78,
+            display: "Artist - Accepted Song".to_owned(),
+        });
+        let already_written = TrackEntry {
+            written: true,
+            ..entry(
+                input("Already Written", &["Artist"]),
+                Some(matched("vid-written")),
+            )
+        };
+        let mut cp = Checkpoint::new(
+            job_id.clone(),
+            spec(TransferDest::LocalPlaylist {
+                name: Some(playlist_name.clone()),
+            }),
+            vec![
+                entry(
+                    input("Duplicate First", &["Artist"]),
+                    Some(matched("vid-duplicate")),
+                ),
+                accepted,
+                entry(
+                    input("Duplicate Second", &["Artist"]),
+                    Some(matched("vid-duplicate")),
+                ),
+                already_written,
+            ],
+        );
+        cp.source_name = Some("Spotify source".to_owned());
+        cp.dest_name = Some(playlist_name.clone());
+        cp.stage = Stage::Done;
+        cp.save().expect("save completed dry-run checkpoint");
+        crate::transfer::session::ImportSession::from_checkpoint(&cp)
+            .save()
+            .expect("save completed import session");
+        let mut progress = Vec::new();
+        let mut local_playlists = crate::transfer::local_playlist::DiskLocalPlaylistStore;
+
+        let report = write_reviewed_local_job_with_store(&job_id, &mut local_playlists, &mut |p| {
+            progress.push(p)
+        })
+        .await
+        .unwrap_or_else(|err| panic!("reviewed local write failed: {}", err.error));
+
+        assert_eq!(report.written, 2);
+        assert_eq!(report.job_id, job_id);
+        assert_eq!(progress.len(), 3);
+        assert_eq!(progress.last().map(|p| p.written), Some(4));
+        let saved = Checkpoint::load(&job_id).expect("load written checkpoint");
+        assert!(saved.tracks.iter().all(|track| track.written));
+        assert_eq!(saved.stage, Stage::Done);
+        let playlist_id = saved.dest_id.clone().expect("destination id checkpointed");
+
+        let store = crate::playlists::Playlists::load();
+        let playlist = store.find(&playlist_id).expect("playlist remains");
+        let ids: Vec<_> = playlist
+            .songs
+            .iter()
+            .map(|song| song.video_id.as_str())
+            .collect();
+        assert_eq!(ids.iter().filter(|id| **id == "vid-duplicate").count(), 1);
+        assert_eq!(ids.iter().filter(|id| **id == "vid-accepted").count(), 1);
+
+        let session = crate::transfer::session::ImportSession::load(&job_id)
+            .expect("load written import session");
+        assert_eq!(
+            session.destination.key.as_deref(),
+            Some(playlist_id.as_str())
+        );
     });
-    let already_written = TrackEntry {
-        written: true,
-        ..entry(
-            input("Already Written", &["Artist"]),
-            Some(matched("vid-written")),
-        )
-    };
-    let mut cp = Checkpoint::new(
-        job_id.clone(),
-        spec(TransferDest::LocalPlaylist {
-            name: Some(playlist_name.clone()),
-        }),
-        vec![
-            entry(
-                input("Duplicate First", &["Artist"]),
-                Some(matched("vid-duplicate")),
-            ),
-            accepted,
-            entry(
-                input("Duplicate Second", &["Artist"]),
-                Some(matched("vid-duplicate")),
-            ),
-            already_written,
-        ],
-    );
-    cp.source_name = Some("Spotify source".to_owned());
-    cp.dest_name = Some(playlist_name.clone());
-    cp.stage = Stage::Done;
-    cp.save().expect("save completed dry-run checkpoint");
-    crate::transfer::session::ImportSession::from_checkpoint(&cp)
-        .save()
-        .expect("save completed import session");
-    let mut progress = Vec::new();
-    let mut local_playlists = crate::transfer::local_playlist::DiskLocalPlaylistStore;
-
-    let report = write_reviewed_local_job_with_store(&job_id, &mut local_playlists, &mut |p| {
-        progress.push(p)
-    })
-    .await
-    .unwrap_or_else(|err| panic!("reviewed local write failed: {}", err.error));
-
-    assert_eq!(report.written, 2);
-    assert_eq!(report.job_id, job_id);
-    assert_eq!(progress.len(), 3);
-    assert_eq!(progress.last().map(|p| p.written), Some(4));
-    let saved = Checkpoint::load(&job_id).expect("load written checkpoint");
-    assert!(saved.tracks.iter().all(|track| track.written));
-    assert_eq!(saved.stage, Stage::Done);
-    let playlist_id = saved.dest_id.clone().expect("destination id checkpointed");
-
-    let store = crate::playlists::Playlists::load();
-    let playlist = store.find(&playlist_id).expect("playlist remains");
-    let ids: Vec<_> = playlist
-        .songs
-        .iter()
-        .map(|song| song.video_id.as_str())
-        .collect();
-    assert_eq!(ids.iter().filter(|id| **id == "vid-duplicate").count(), 1);
-    assert_eq!(ids.iter().filter(|id| **id == "vid-accepted").count(), 1);
-
-    let session = crate::transfer::session::ImportSession::load(&job_id)
-        .expect("load written import session");
-    assert_eq!(
-        session.destination.key.as_deref(),
-        Some(playlist_id.as_str())
-    );
 }
 
 #[tokio::test]

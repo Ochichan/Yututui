@@ -267,6 +267,7 @@ fn golden_v7_status_response_is_byte_stable() {
         track_id: None,
         position_epoch: 0,
         artwork: None,
+        personal_sync: None,
     };
     let line = serde_json::to_string(&RemoteResponse::status(snap)).unwrap();
     assert_eq!(
@@ -302,6 +303,7 @@ fn golden_v8_status_artwork_is_additive() {
         track_id: None,
         position_epoch: 0,
         artwork: None,
+        personal_sync: None,
     };
     // Absent artwork never appears on the wire (v7 byte stability).
     let artless_line = serde_json::to_string(&artless).unwrap();
@@ -310,6 +312,7 @@ fn golden_v8_status_artwork_is_additive() {
     assert!(!artless_line.contains("queue_rev"));
     assert!(!artless_line.contains("track_id"));
     assert!(!artless_line.contains("position_epoch"));
+    assert!(!artless_line.contains("personal_sync"));
 
     // Present artwork serializes as a nested ref with `mime` omitted when unknown,
     // and round-trips.
@@ -325,6 +328,30 @@ fn golden_v8_status_artwork_is_additive() {
     assert!(line.contains(r#""artwork":{"key":"vid","path":"/tmp/vid.jpg"}"#));
     let back: StatusSnapshot = serde_json::from_str(&line).unwrap();
     assert_eq!(back, with_art);
+}
+
+#[test]
+fn personal_sync_status_is_additive_and_old_status_json_defaults_to_absent() {
+    let legacy = r#"{"title":null,"artist":null,"paused":true,"volume":30,"position":0,"total":0,"streaming":false}"#;
+    let mut status: StatusSnapshot = serde_json::from_str(legacy).unwrap();
+    assert!(status.personal_sync.is_none());
+
+    status.personal_sync = Some(crate::sync::service::SyncStatusReport {
+        state: crate::sync::SyncHealthState::UpToDate,
+        label: "Up to date".to_owned(),
+        configured: true,
+        device_id: Some("device-a".to_owned()),
+        last_attempt_unix: Some(10),
+        last_success_unix: Some(10),
+        failure: None,
+        recovery_action: None,
+    });
+    let line = serde_json::to_string(&status).unwrap();
+    assert!(line.contains(
+        r#""personal_sync":{"state":"up_to_date","label":"Up to date","configured":true,"device_id":"device-a","last_attempt_unix":10,"last_success_unix":10}"#
+    ));
+    let round_trip: StatusSnapshot = serde_json::from_str(&line).unwrap();
+    assert_eq!(round_trip, status);
 }
 
 #[test]

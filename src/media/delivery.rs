@@ -321,6 +321,7 @@ mod tests {
         MediaSnapshot {
             track: Some(MediaTrack {
                 key: format!("track-{title}"),
+                open_subsonic_item: None,
                 title: title.to_owned(),
                 artist: format!("artist-{title}"),
                 album: Some(format!("album-{title}")),

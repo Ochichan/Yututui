@@ -83,15 +83,44 @@ mod search_types;
 pub use search_types::*;
 mod types;
 pub use types::*;
+mod server_library;
+pub use server_library::{
+    LibrarySource, SERVER_LIBRARY_PAGE_LIMIT, ServerLibraryCommand, ServerLibraryDetailTarget,
+    ServerLibraryEvent, ServerLibraryFailure, ServerLibraryState, ServerPlaylistCreateModal,
+    ServerPlaylistCreateStage, ServerPlaylistPreviewKind, ServerPlaylistPreviewModal,
+    ServerPlaylistPreviewStage, ServerPlaylistRecoveryAction, ServerPlaylistRecoveryModal,
+    ServerPlaylistRecoveryStage,
+};
+mod server_history_settings;
+mod server_settings;
+pub use server_settings::{
+    MusicServerBusy, MusicServerCommand, MusicServerCredentialMode, MusicServerEvent,
+    MusicServerFailure, MusicServerHealth, MusicServerHistoryHealth, MusicServerIdentityIntent,
+    MusicServerRefreshOutcome, MusicServerSettingsState, MusicServerSetupField,
+    MusicServerSetupForm, MusicServerSetupInput, MusicServerSummary, MusicServerWizard, SyncArea,
+    TrackPublishOutcome, TrackPublishReport,
+};
+mod server;
+pub use server::{ServerEvent, ServerUiState};
 
+mod automatic_sync;
 mod bootstrap;
 mod data_export;
 mod feedback;
 mod helpers;
+mod open_subsonic_bridge;
+mod personal_sync;
+mod rating_action;
 pub(crate) use helpers::open_in_browser;
 pub(in crate::app) use helpers::{
     fetch_lyrics_cmd, rect_contains, song_label, spawn_video_overlay,
 };
+pub(crate) use personal_sync::PersonalStateRuntime;
+pub use personal_sync::{
+    PersonalSyncAction, PersonalSyncCommit, PersonalSyncPersisted, PersonalSyncPrepared,
+    PersonalSyncReply,
+};
+pub(crate) use personal_sync::{PersonalSyncCommitStage, PersonalSyncPersistOutcome};
 mod mode_switch;
 mod navigation;
 mod onboarding;
@@ -166,8 +195,18 @@ mod settings_reducer;
 mod spotify_import_reducer;
 mod stream_metadata;
 mod streaming_reducer;
+mod sync_activation;
+mod sync_ui;
 pub(in crate::app) use clipboard::{copy_to_clipboard, spotify_auth_url_status};
 pub use streaming_reducer::StreamingMsg;
+pub use sync_activation::{SyncActivationCommit, SyncActivationPersisted};
+pub(crate) use sync_activation::{
+    SyncActivationCommitStage, SyncActivationKind, SyncActivationPersistOutcome,
+};
+pub(crate) use sync_ui::{
+    ConnectionField as SyncConnectionField, FormError as SyncFormError, SyncConnectionForm,
+    SyncJoinRequest, SyncRecoveryForm, SyncUiCommand, SyncUiEvent, SyncUiState, SyncWizard,
+};
 
 /// Autoplay/streaming and play-error breaker thresholds used by App reducers. Re-exported so
 /// this module's submodules keep resolving the names; refill admission itself lives in the
@@ -297,6 +336,9 @@ pub struct App {
     pub transfer_running: bool,
     /// Portable personal-data export state shared by Settings and authenticated remote requests.
     pub(crate) personal_export: PersonalDataExportState,
+    /// Canonical mergeable state plus its enrolled device and manual-sync coordination.
+    /// The legacy stores below remain runtime projections of this domain state.
+    pub(crate) personal_state: PersonalStateRuntime,
 
     // Playback ----------------------------------------------------------------
     /// Live playback transport: position, duration, pause state, volume, and speed
@@ -389,6 +431,8 @@ pub struct App {
     /// Library-screen state: active tab, list cursor + multi-select anchor, local
     /// download-folder rows, and the pending file-delete confirmation.
     pub library_ui: LibraryView,
+    /// OpenSubsonic browsing and redacted settings state, isolated from the local library.
+    pub server: ServerUiState,
     /// Cross-frame cache of the visible library rows (dedup + filter are O(library) and
     /// used to run on every frame *and* every navigation event). Keyed on the source
     /// revisions/lengths + tab + filter; see `library_reducer`. Interior mutability so

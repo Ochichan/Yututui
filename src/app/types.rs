@@ -6,6 +6,13 @@
 
 use super::*;
 
+#[path = "types/library.rs"]
+mod library;
+pub use library::LibraryTab;
+#[path = "types/scroll_surface.rs"]
+mod scroll_surface;
+pub use scroll_surface::ScrollSurface;
+
 /// Pending owner-mediated transfer commit. The candidate is intentionally not installed into
 /// live App state until this exact persistence generation is confirmed.
 pub struct TransferPlaylistCommit {
@@ -32,6 +39,7 @@ pub(crate) enum TransferPlaylistCommitKind {
 pub struct TransferPlaylistPersistence {
     pub(crate) commit: Box<TransferPlaylistCommit>,
     pub(crate) persistence: crate::persist::TargetFlushOutcome,
+    pub(crate) personal_state: crate::personal_state::PersonalStateV2,
 }
 
 pub enum DownloadMsg {
@@ -158,6 +166,8 @@ pub enum Msg {
     /// Periodic wake-up while transient status or lyric-sync OSD state is showing. Lets the
     /// reducer expire the status after [`STATUS_TTL`] and collapse the OSD after three seconds.
     StatusTick,
+    /// Monotonic owner-lane wake for a due automatic personal-state synchronization.
+    AutomaticSyncTick,
     /// 100 ms synced-lyrics clock. The runtime arms it only while the full Player lyric panel is
     /// visible and actively playing; the reducer redraws only when the stored active row changes.
     LyricsTick,
@@ -176,6 +186,8 @@ pub enum Msg {
     Recorder(crate::recorder::job::RecorderEvent),
     /// Search results, playlist-track fetches, and artist-page fetches.
     Search(SearchMsg),
+    /// A redacted settings result or bounded OpenSubsonic library result.
+    Server(ServerEvent),
     /// Local-data work completed: a download scan or portable personal-data export.
     Data(DataMsg),
     /// Local Deck index load/scan result.
@@ -206,6 +218,8 @@ pub enum Msg {
         store: crate::persist::StoreKind,
         error: String,
     },
+    #[rustfmt::skip]
+    PersonalStatePersisted { revision: u64, state_identity: String },
     /// A streaming/autoplay pipeline message — a prefetched/resolved direct URL, related-track
     /// candidates, the metadata-preflighted picks, a fallback failure, or the DJ Gem reranker's
     /// chosen picks. See [`StreamingMsg`].
@@ -270,7 +284,14 @@ pub enum DataMsg {
     /// A portable personal-data export worker event.
     PersonalDataExport(PersonalDataExportMsg),
     /// Targeted persistence confirmation for an owner-mediated transfer playlist patch.
-    TransferPlaylistPersisted(TransferPlaylistPersistence),
+    TransferPlaylistPersisted(Box<TransferPlaylistPersistence>),
+    /// Detached WebDAV preparation completed and is ready for the primary owner to revision-check
+    /// and atomically install.
+    PersonalSyncPrepared(Box<PersonalSyncPrepared>),
+    /// Exact persistence-actor result for a detached WebDAV candidate or its local rebase.
+    PersonalSyncPersisted(Box<PersonalSyncPersisted>),
+    SyncActivationPersisted(Box<SyncActivationPersisted>),
+    SyncUi(SyncUiEvent),
 }
 
 /// Events produced by the portable personal-data export worker.
@@ -294,6 +315,8 @@ pub(crate) struct PersonalDataExportState {
 /// secret-bearing types only as far as the blocking worker; projection there produces the
 /// allowlisted [`crate::data_export::ExportSnapshot`] before anything is written.
 pub struct PersonalDataExportSources {
+    pub(crate) personal_state: crate::personal_state::PersonalStateV2,
+    pub(crate) personal_state_device_id: Option<crate::personal_state::DeviceId>,
     pub(crate) config: Config,
     pub(crate) library: Library,
     pub(crate) playlists: Playlists,
@@ -307,6 +330,16 @@ pub enum DataCmd {
     ScanDownloads(PathBuf),
     /// Run one portable personal-data export.
     PersonalDataExport(PersonalDataExportCmd),
+    /// Prepare a manual encrypted sync on a blocking worker. Only the owner-lane completion may
+    /// install the detached candidate.
+    PersonalSync {
+        action: PersonalSyncAction,
+        attempt: u8,
+        personal_state: Box<crate::personal_state::PersonalStateV2>,
+        revision_guard: crate::sync::OwnerRevisionGuard,
+        reply: PersonalSyncReply,
+    },
+    SyncUi(SyncUiCommand),
 }
 
 /// Effects in the portable personal-data export domain.
@@ -315,6 +348,7 @@ pub enum PersonalDataExportCmd {
     /// reply channel is carried only for `ytt data export`; the in-TUI button uses `None`.
     Export {
         directory: PathBuf,
+        schema: u32,
         sources: Box<PersonalDataExportSources>,
         reply: Option<crate::remote::RemoteReply>,
     },
@@ -347,6 +381,10 @@ pub enum Cmd {
     UpdateSeen { tag: String },
     /// Search queries and remote search-row fetches.
     Search(SearchCmd),
+    /// Test, commit, refresh, or remove the one configured music-server profile.
+    MusicServer(MusicServerCommand),
+    /// OpenSubsonic library fetches and explicit playlist preview/apply requests.
+    ServerLibrary(ServerLibraryCommand),
     /// Persist a store to disk (or clear one) via the debounced persistence actor. The
     /// [`PersistCmd`] payload selects which store; for the marker variants the runtime clones
     /// the live snapshot from `App` at dispatch time (`Config` carries its own owned snapshot).
@@ -469,6 +507,9 @@ pub enum PersistCmd {
     /// Persist one transfer candidate under an exact target generation. Live playlists stay
     /// unchanged until the completion returns to the reducer.
     TransferPlaylistCommit(Box<TransferPlaylistCommit>),
+    /// Install one WebDAV candidate through the PersonalState persistence ordering lane.
+    PersonalSyncCommit(Box<PersonalSyncCommit>),
+    SyncActivationCommit(Box<SyncActivationCommit>),
 }
 
 /// Blocking Local Deck work requested by the reducer.
@@ -670,6 +711,24 @@ pub enum MouseTarget {
     SearchSourceSelect(SearchSource),
     /// A Library tab header.
     LibraryTab(LibraryTab),
+    /// Switch between the local YuTuTui library and the configured music-server library.
+    LibrarySource(LibrarySource),
+    /// One of the five read-only music-server library sections.
+    ServerLibrarySection(crate::open_subsonic::ServerLibrarySection),
+    /// A generation-stamped server row. Old frames fail closed after paging or drill-down.
+    ServerLibraryRow {
+        generation: u64,
+        index: usize,
+    },
+    ServerLibraryBack {
+        generation: u64,
+    },
+    ServerLibraryPreviousPage {
+        generation: u64,
+    },
+    ServerLibraryNextPage {
+        generation: u64,
+    },
     /// A Local Deck sidebar section, by index into [`LocalSection::ALL`].
     LocalNav(usize),
     /// A row in the Local Deck list, by display index.
@@ -703,6 +762,26 @@ pub enum MouseTarget {
     MouseHelp,
     /// A Settings tab header, by index into [`SettingsTab::ALL`].
     SettingsTab(usize),
+    /// An action or detail row in the privacy-safe Sync settings projection. Clicking selects
+    /// the row and delegates to the same action path as Enter; informational rows safely no-op.
+    SettingsSyncRow(usize),
+    /// One of the four plain-language areas inside the top-level Sync settings tab.
+    SettingsSyncArea(SyncArea),
+    /// A redacted music-server settings action row.
+    SettingsMusicServerRow(usize),
+    /// A field/action in the move-only music-server setup wizard.
+    MusicServerWizardField(usize),
+    MusicServerWizardPrimary,
+    MusicServerWizardSecondary,
+    MusicServerWizardReveal,
+    /// A field in the move-only Sync setup/join/recovery wizard.
+    SyncWizardField(usize),
+    /// The wizard's affirmative action (continue, approve, merge, remove, or finish).
+    SyncWizardPrimary,
+    /// The wizard's non-affirmative action (back, cancel, or reject).
+    SyncWizardSecondary,
+    /// Reveal or mask the currently focused secret field. The target carries no secret value.
+    SyncWizardReveal,
     /// A clickable value control on a Settings field row — the checkbox of a toggle or the
     /// `<` / `>` arrow of a Select/Slider. Carries the field-row index and the nudge direction,
     /// so a click is the mouse equivalent of ←/→ on that row.
@@ -788,6 +867,18 @@ pub enum MouseTarget {
     ConfirmSettings,
     /// Cancel button on a Settings confirmation modal.
     CancelSettings,
+    /// Apply button on a prepared server-playlist import/link preview.
+    ConfirmServerPlaylistPreview,
+    /// Back button on a server-playlist import/link preview.
+    CancelServerPlaylistPreview,
+    /// Create-and-link button on the local-to-server playlist confirmation.
+    ConfirmServerPlaylistCreate,
+    /// Back button on the local-to-server playlist confirmation.
+    CancelServerPlaylistCreate,
+    /// Confirm a destructive linked-playlist recovery action.
+    ConfirmServerPlaylistRecovery,
+    /// Back out of a linked-playlist recovery confirmation.
+    CancelServerPlaylistRecovery,
     /// Confirm button on the radio-mode confirmation modal.
     ConfirmRadioMode,
     /// Cancel button on the radio-mode confirmation modal.
@@ -845,27 +936,6 @@ pub enum MouseTarget {
 pub struct MouseButtonRegion {
     pub rect: Rect,
     pub target: MouseTarget,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ScrollSurface {
-    Library,
-    Search,
-    LocalFind,
-    /// The search results-filter popup's list.
-    SearchFilter,
-    /// The artist detail screen's top-songs list.
-    ArtistSongs,
-    /// The artist detail screen's albums/singles list.
-    ArtistAlbums,
-    AiTranscript,
-    AiSuggestions,
-    Settings,
-    Queue,
-    /// The radio "now playing" (지듣노) card's title line — marquee-only, no scrollbar.
-    NowPlaying,
-    /// The player/mini/docked title row — marquee-only, no scrollbar.
-    PlayerTitle,
 }
 
 /// Who authored a line in the DJ Gem chat transcript.
@@ -985,55 +1055,6 @@ pub enum ActiveSearchSurface {
 pub struct TrackLyrics {
     pub video_id: Arc<str>,
     pub lines: std::sync::Arc<[LyricLine]>,
-}
-
-/// The lists in the library view.
-#[derive(Debug, Default, PartialEq, Eq, Clone, Copy)]
-pub enum LibraryTab {
-    #[default]
-    All,
-    Favorites,
-    History,
-    RadioFavorites,
-    Radio,
-    Downloads,
-    Playlists,
-}
-
-impl LibraryTab {
-    pub const NORMAL: [Self; 5] = [
-        Self::All,
-        Self::Favorites,
-        Self::History,
-        Self::Downloads,
-        Self::Playlists,
-    ];
-
-    pub const RADIO_MODE: [Self; 2] = [Self::RadioFavorites, Self::Radio];
-
-    pub fn label(self) -> &'static str {
-        match self {
-            LibraryTab::All => t!("All", "전체", "すべて"),
-            LibraryTab::Favorites => t!("Favorites", "즐겨찾기", "お気に入り"),
-            LibraryTab::History => t!("History", "기록", "履歴"),
-            LibraryTab::RadioFavorites => t!("Radio Likes", "라디오 좋아요", "ラジオ高評価"),
-            LibraryTab::Radio => t!("Radio History", "라디오 히스토리", "ラジオ履歴"),
-            LibraryTab::Downloads => t!("Downloads", "다운로드", "ダウンロード"),
-            LibraryTab::Playlists => t!("Playlists", "플레이리스트", "プレイリスト"),
-        }
-    }
-
-    pub fn compact_label(self) -> &'static str {
-        match self {
-            LibraryTab::All => t!("All", "전체", "すべて"),
-            LibraryTab::Favorites => t!("Fav", "즐겨찾기", "お気に入り"),
-            LibraryTab::History => t!("Hist", "기록", "履歴"),
-            LibraryTab::RadioFavorites => t!("R-Like", "라디오 좋아요", "ラジオ高評価"),
-            LibraryTab::Radio => t!("R-Hist", "라디오 기록", "ラジオ履歴"),
-            LibraryTab::Downloads => t!("Down", "다운", "DL"),
-            LibraryTab::Playlists => t!("Lists", "플리", "リスト"),
-        }
-    }
 }
 
 /// Pending confirmation for entering or leaving the dedicated Radio UI mode.

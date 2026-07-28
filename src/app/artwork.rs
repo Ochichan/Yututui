@@ -684,12 +684,15 @@ impl App {
                 self.overlays.pending_settings_confirm.is_some(),
                 ART_OVERLAY_SETTINGS_CONFIRM_BIT,
             )
-            // Bit 9 is shared by Library/Local file-operation confirm modals. They are modal
-            // and use the same centered footprint, so one bit tracks them without claiming
-            // another scarce overlay bit.
+            // Bit 9 is shared by Library/Local confirmation modals, including the explicit
+            // server-playlist preview. They are modal and use the same centered footprint, so
+            // one bit tracks them without claiming another scarce overlay bit.
             | flag(
                 self.library_ui.confirm_delete.is_some()
                     || self.library_ui.confirm_download.is_some()
+                    || self.server.library.playlist_preview.is_some()
+                    || self.server.library.playlist_create.is_some()
+                    || self.server.library.playlist_recovery.is_some()
                     || self.local_mode.pending_organize_confirm.is_some()
                     || self.local_mode.pending_accept_all_confirm.is_some()
                     || self.local_mode.pending_import_record_delete.is_some()
@@ -866,12 +869,23 @@ impl App {
         {
             return None;
         }
-        Some(match &song.local_path {
-            Some(path) => ArtSource::Local(path.clone()),
-            None => ArtSource::Remote {
-                video_id: song.youtube_id()?.to_owned(),
+        if let Some(path) = &song.local_path {
+            return Some(ArtSource::Local(path.clone()));
+        }
+        if let Some(crate::api::PlayableRef::OpenSubsonic {
+            item,
+            cover_art_id: Some(cover_art_id),
+        }) = &song.playable
+        {
+            return Some(ArtSource::OpenSubsonic {
+                item: item.clone(),
+                cover_art_id: cover_art_id.clone(),
                 quality: self.config.album_art_quality,
-            },
+            });
+        }
+        Some(ArtSource::Remote {
+            video_id: song.youtube_id()?.to_owned(),
+            quality: self.config.album_art_quality,
         })
     }
 

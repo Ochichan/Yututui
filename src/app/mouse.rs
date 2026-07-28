@@ -155,6 +155,7 @@ impl App {
             || self.local_mode.find.refine_popup.open
             || self.local_import_confirmation_open()
             || self.overlays.pending_settings_confirm.is_some()
+            || self.server.library.playlist_modal_open()
             || self.library_ui.confirm_delete.is_some()
             || self.library_ui.confirm_playlist_delete.is_some()
             || self.library_ui.create_input.is_some()
@@ -197,6 +198,9 @@ impl App {
         }
         let target = self.mouse_target_at(col, row);
         if let Some(commands) = self.artist_mouse_double_click(target.as_ref()) {
+            return commands;
+        }
+        if let Some(commands) = self.server_library_mouse_double_click(target.as_ref()) {
             return commands;
         }
         match target {
@@ -348,7 +352,7 @@ impl App {
         self.interaction.context_menu_press = false;
         self.interaction.drag_selection = None;
         self.interaction.drag_scrollbar = None;
-        if self.overlays.why_gem_video_id.is_some() {
+        if self.personal_state.sync_ui.modal_open() || self.overlays.why_gem_video_id.is_some() {
             self.cancel_seekbar_scrub();
             self.interaction.ai_transcript_drag = None;
             return Vec::new();
@@ -504,11 +508,7 @@ impl App {
         }
         match self.mode {
             Mode::Library => {
-                let len = if self.local_dedicated_mode {
-                    self.local_rows_len()
-                } else {
-                    self.library_len()
-                };
+                let len = self.library_rows_len_for_wheel();
                 self.bridges.library_scroll.wheel(up, n, len);
                 self.dirty = true;
             }

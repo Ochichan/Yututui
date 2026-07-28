@@ -14,11 +14,14 @@ use crate::remote::proto::{
     InstanceMode, RETAINED_REQUEST_OUTCOMES_CAPABILITY, RemoteCommand, StatusSnapshot,
 };
 use crate::remote::server::RemoteEvent;
-use crate::remote::{LONG_FORM_SEEK_OPTIMIZATION_CAPABILITY, PERSONAL_EXPORT_CAPABILITY};
+use crate::remote::{
+    LONG_FORM_SEEK_OPTIMIZATION_CAPABILITY, PERSONAL_EXPORT_CAPABILITY,
+    PERSONAL_STATE_V2_CAPABILITY, WEB_DAV_SYNC_CAPABILITY,
+};
 use crate::util::process::{self, ProcessProfile};
-
 mod accounts_host;
 mod ai_host;
+mod capabilities;
 mod cli;
 mod downloads_host;
 mod effects;
@@ -30,10 +33,12 @@ mod observer_plan;
 #[cfg(test)]
 mod parity_tests;
 mod personal_export;
+mod personal_sync;
 mod serve_setup;
 mod shutdown_drain;
 mod transfer_host;
 
+use capabilities::daemon_capabilities;
 use cli::{ParseOutcome, parse};
 use effects::{DaemonEffectTasks, dispatch_engine_effects, dispatch_session_engine_effects};
 #[cfg(any(windows, test))]
@@ -43,7 +48,7 @@ use events::{DaemonEvent, DaemonEventSender, emit_daemon_event, record_daemon_ev
 use events::{DaemonTelemetrySlot, emit_daemon_callback_result};
 use gui_search_pending::{GuiSearchPending, PendingGuiSearch};
 use serve_setup::transport_or_return;
-use shutdown_drain::drain_daemon_shutdown_ingress;
+use shutdown_drain::{drain_playback_report_frontier, playback_report_frontier_succeeded};
 
 const EXIT_OK: i32 = 0;
 const EXIT_TRANSPORT: i32 = 1;
@@ -373,6 +378,7 @@ async fn run_owner_loop(
     let mut effect_tasks = DaemonEffectTasks::new();
     let mut gui_search_pending = GuiSearchPending::default();
     let mut personal_export = personal_export::PersonalExport::default();
+    let mut personal_sync = personal_sync::PersonalSync::default();
     let mut pending_events: VecDeque<DaemonEvent> = VecDeque::new();
     if !shutdown.is_triggered() {
         let initial_effects = engine.initial_effects();
@@ -385,7 +391,7 @@ async fn run_owner_loop(
             initial_effects,
         ));
     }
-
+    personal_sync.enable_automatic(&mut engine, &event_tx, &shutdown);
     'owner: loop {
         effect_tasks.reap_finished();
         gui_search_pending.prune_closed();
@@ -401,6 +407,10 @@ async fn run_owner_loop(
                 _ = shutdown.wait() => {
                     engine.suppress_transport_recovery_for_shutdown();
                     break 'owner;
+                },
+                wake = personal_sync.wait_for_automatic_wake() => {
+                    personal_sync.handle_automatic_wake(wake, &mut engine, &event_tx, &shutdown);
+                    continue;
                 },
                 _ = tokio::time::sleep_until(tokio::time::Instant::from_std(
                     media.retry_deadline().unwrap_or_else(Instant::now)
@@ -473,15 +483,18 @@ async fn run_owner_loop(
             .unwrap_or(DaemonEvent::Ai(crate::ai::AiEvent::Thinking(false)));
         match event {
             DaemonEvent::Remote(RemoteEvent::Command(command, reply)) => match command {
-                RemoteCommand::ExportPersonalData { directory } => {
+                RemoteCommand::ExportPersonalData { directory, schema } => {
                     personal_export.start_engine(
-                        directory,
+                        personal_export::Target::new(directory, schema.unwrap_or(2)),
                         reply,
                         &engine,
                         &event_tx,
                         &shutdown,
                         &mut effect_tasks,
                     );
+                }
+                command @ (RemoteCommand::SyncNow | RemoteCommand::SyncRevokeDevice { .. }) => {
+                    personal_sync.start_command(command, reply, &mut engine, &event_tx, &shutdown);
                 }
                 command => {
                     let Some((response, wants_shutdown, effects)) =
@@ -514,15 +527,18 @@ async fn run_owner_loop(
                 origin,
                 reply,
             }) => match command {
-                RemoteCommand::ExportPersonalData { directory } => {
+                RemoteCommand::ExportPersonalData { directory, schema } => {
                     personal_export.start_engine(
-                        directory,
+                        personal_export::Target::new(directory, schema.unwrap_or(2)),
                         reply,
                         &engine,
                         &event_tx,
                         &shutdown,
                         &mut effect_tasks,
                     );
+                }
+                command @ (RemoteCommand::SyncNow | RemoteCommand::SyncRevokeDevice { .. }) => {
+                    personal_sync.start_command(command, reply, &mut engine, &event_tx, &shutdown);
                 }
                 command => {
                     let requester_key = engine::RequesterKey::new(
@@ -693,6 +709,21 @@ async fn run_owner_loop(
                 ));
             }
             DaemonEvent::PersonalExportFinished(finished) => personal_export.finish(finished),
+            DaemonEvent::PersonalSyncFinished(finished) => {
+                personal_sync.finish(*finished, &mut engine, &event_tx, &shutdown)
+            }
+            DaemonEvent::OpenSubsonicBridge(import) => {
+                engine.accept_open_subsonic_bridge_import(&import);
+            }
+            DaemonEvent::OpenSubsonicReady => {}
+            DaemonEvent::Scrobble(crate::scrobble::ScrobbleEvent::OpenSubsonic {
+                event_id,
+                kind,
+                track,
+                confirmation,
+            }) => {
+                engine.queue_open_subsonic_scrobble(event_id, kind, track, confirmation);
+            }
             DaemonEvent::Scrobble(event) => {
                 accounts_host::on_scrobble_event(event, &mut engine, &mut publisher);
             }
@@ -717,6 +748,8 @@ async fn run_owner_loop(
             engine.suppress_transport_recovery_for_shutdown();
             break;
         }
+        engine.maintain_open_subsonic_bridge();
+        personal_sync.observe(&mut engine, &event_tx, &shutdown);
         // Queue/session/settings mutations can invalidate an in-flight autoplay request even
         // when the seed id still exists. Settle that owner generation before publishing this
         // turn so a later pool/preflight result cannot mutate the replacement session.
@@ -819,36 +852,30 @@ async fn run_owner_loop(
     // admission before the generic owner ingress so no accepted request can appear without a
     // wire-settlement token beyond the drain frontier.
     publisher.quiesce_owner_admission();
-    // Reject callback producers before awaiting any task that may itself be inside a callback.
-    // This breaks the owner-waits-producer / producer-waits-owner shutdown cycle under saturation.
-    event_tx.close_admission();
-    // Audio and overlay ownership ends before any slower remote/durability barrier. Keep the OS
-    // signal consumer alive until later teardown, but do not make normal daemon stop latency part
-    // of an mpv lifetime.
+    // Seal playback time while the projection and credential owner are still live.
+    shutdown_drain::seal_final_playback_observation(&mut scrobble, &engine);
     engine.shutdown_media_owners();
     // Remove the OS media surface before the slower task barrier. Its callbacks now see a closed
     // ingress, and a fast successor must not compete with a stale Now Playing/MPRIS/SMTC target.
     let _ = media.set_enabled(false);
-    let drain = drain_daemon_shutdown_ingress(
+    // The scrobble actor may discover a final threshold while draining observations which were
+    // accepted before shutdown. Keep pumping its owner events until the actor joins; closing the
+    // ingress first would reject the exact OpenSubsonic submission before bridge persistence.
+    let (scrobble_outcome, open_subsonic_outcome, drain) = drain_playback_report_frontier(
+        &mut scrobble,
         &event_tx,
         &mut event_rx,
         &mut pending_events,
         &publisher,
         &mut personal_export,
+        &mut engine,
     )
     .await;
     // A worker that completed before the admission frontier was settled by the drain above.
     // Anything still retained cannot re-enter now, so release its wire settlement explicitly.
     personal_export.shutdown();
-    tracing::debug!(
-        remote_requests = drain.remote_requests,
-        subscribe_requests = drain.subscribe_requests,
-        terminal_events = drain.terminal_events,
-        personal_export_completions = drain.personal_export_completions,
-        coalesced_events = drain.coalesced_events,
-        retired_events = drain.retired_events,
-        "daemon shutdown ingress drained"
-    );
+    personal_sync.shutdown();
+    drain.log_summary();
     if !publisher.wait_for_wire_settlements().await {
         // Only a last scheduler margin after the structural writer budget timed out (and logged).
         crate::remote::await_shutdown_reply_grace().await;
@@ -863,17 +890,10 @@ async fn run_owner_loop(
     signal_handlers.shutdown().await;
     engine.shutdown_background().await;
     effect_tasks.shutdown().await;
-    // The deadline reports slow shutdown but never cancels accepted local durability. A failed
-    // final frontier is a transport failure, not a clean daemon exit.
-    match scrobble
-        .shutdown_and_join(Duration::from_millis(1500))
-        .await
-    {
-        Ok(()) => EXIT_OK,
-        Err(error) => {
-            tracing::warn!(%error, "scrobble shutdown durability was not confirmed");
-            EXIT_TRANSPORT
-        }
+    if playback_report_frontier_succeeded(scrobble_outcome, open_subsonic_outcome) {
+        EXIT_OK
+    } else {
+        EXIT_TRANSPORT
     }
 }
 
@@ -914,6 +934,9 @@ fn route_gui_search_completion(
 fn log_scrobble_event(event: crate::scrobble::ScrobbleEvent) {
     use crate::scrobble::ScrobbleEvent;
     match event {
+        ScrobbleEvent::OpenSubsonic { .. } => {
+            tracing::warn!("music server playback report missed its owner route");
+        }
         ScrobbleEvent::SessionInvalid(kind) => {
             tracing::warn!(
                 service = kind.label(),
@@ -1052,28 +1075,6 @@ async fn current_status() -> Result<StatusSnapshot, ClientError> {
     let response = client::send(RemoteCommand::Status).await?;
     response.status.ok_or(ClientError::MalformedResponse)
 }
-
-fn daemon_capabilities() -> Vec<String> {
-    vec![
-        "remote-control".to_string(),
-        "status".to_string(),
-        "queue-control".to_string(),
-        RETAINED_REQUEST_OUTCOMES_CAPABILITY.to_string(),
-        "headless-playback".to_string(),
-        "session-resume".to_string(),
-        "autoplay-streaming".to_string(),
-        "search-playback".to_string(),
-        // v8 sessions with live push (docs/gui/02 §10).
-        "events-v8".to_string(),
-        PERSONAL_EXPORT_CAPABILITY.to_string(),
-        LONG_FORM_SEEK_OPTIMIZATION_CAPABILITY.to_string(),
-        // C6: the entire deferred v8 GUI command surface is dispatched (queue ops,
-        // rating, video, library, playlists, downloads, AI, accounts, transfer,
-        // keymap/theme) — advertising this dissolves the frontend's patch-bay gates.
-        "v8-commands".to_string(),
-    ]
-}
-
 fn spawn_daemon_process(options: &StartOptions) -> Result<(), DaemonError> {
     let exe = match &options.executable {
         Some(path) => path.clone(),

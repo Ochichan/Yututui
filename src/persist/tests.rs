@@ -8,6 +8,8 @@ use serde::{Deserialize, Serialize};
 mod handle;
 #[path = "tests/panic_shadow_seal.rs"]
 mod panic_shadow_seal;
+#[path = "tests/personal_state.rs"]
+mod personal_state;
 #[path = "tests/protocol_model.rs"]
 mod protocol_model;
 #[path = "tests/races.rs"]
@@ -91,6 +93,10 @@ fn test_operation(
 
 #[test]
 fn debounce_windows_match_store_durability_policy() {
+    assert_eq!(
+        debounce(StoreKind::PersonalState),
+        Duration::from_millis(300)
+    );
     assert_eq!(debounce(StoreKind::Library), Duration::from_millis(300));
     assert_eq!(debounce(StoreKind::Signals), Duration::from_millis(300));
     assert_eq!(debounce(StoreKind::Downloads), Duration::from_millis(500));
@@ -1200,7 +1206,7 @@ async fn disk_full_during_write_preserves_a_newer_coalesced_snapshot() {
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
         assert_eq!(failures.len(), 1);
-        let PersistEvent::WriteFailed { store, error } = &failures[0];
+        let (store, error) = failures[0].write_failure().unwrap();
         assert_eq!(*store, StoreKind::Config);
         assert!(error.contains("no space left on device"));
     }
@@ -1291,7 +1297,7 @@ async fn first_high_value_failure_emits_one_status_event() {
 
     let guard = events.lock().unwrap();
     assert_eq!(guard.len(), 1);
-    let PersistEvent::WriteFailed { store, error } = &guard[0];
+    let (store, error) = guard[0].write_failure().unwrap();
     assert_eq!(*store, StoreKind::Library);
     assert!(error.contains("permission denied"));
 }

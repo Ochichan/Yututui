@@ -70,14 +70,26 @@ pub(super) fn spawn_signals(
 
 pub(super) async fn start_engine(
     resume: bool,
-    player_event_tx: DaemonEventSender,
+    event_tx: DaemonEventSender,
     shutdown: &crate::player::lifetime::ShutdownLatch,
 ) -> Option<Result<engine::DaemonEngine, engine::EngineError>> {
+    let player_event_tx = event_tx.clone();
+    let bridge_event_tx = event_tx.clone();
+    let ready_event_tx = event_tx;
     await_owner_handler(
         shutdown,
-        engine::DaemonEngine::start(engine::EngineOptions { resume }, move |event| {
-            record_daemon_event(&player_event_tx, DaemonEvent::Player(event));
-        }),
+        engine::DaemonEngine::start(
+            engine::EngineOptions { resume },
+            move |event| {
+                record_daemon_event(&player_event_tx, DaemonEvent::Player(event));
+            },
+            move |event| {
+                record_daemon_event(&bridge_event_tx, DaemonEvent::OpenSubsonicBridge(event));
+            },
+            std::sync::Arc::new(move || {
+                record_daemon_event(&ready_event_tx, DaemonEvent::OpenSubsonicReady);
+            }),
+        ),
     )
     .await
 }

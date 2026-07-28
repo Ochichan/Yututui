@@ -38,6 +38,9 @@ impl DaemonEngine {
             RemoteCommand::ExportPersonalData { .. } => {
                 unreachable!("personal export is intercepted by the daemon owner loop")
             }
+            RemoteCommand::SyncNow | RemoteCommand::SyncRevokeDevice { .. } => {
+                unreachable!("personal sync is intercepted by the daemon owner loop")
+            }
             RemoteCommand::Status => RemoteResponse::status(self.status()),
             RemoteCommand::Quit => {
                 self.stop_playback();

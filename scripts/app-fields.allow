@@ -32,6 +32,7 @@ mousemap
 onboarding
 overlays
 personal_export
+personal_state
 playback
 playlist_picker
 playlists
@@ -46,6 +47,7 @@ romanization
 runtime_tool_checks
 search
 search_filter
+server
 session
 settings
 should_quit

@@ -35,12 +35,14 @@ mod gui_search;
 mod gui_settings;
 mod keymap_theme;
 mod media_session;
+mod open_subsonic_bridge;
+mod open_subsonic_runtime;
 mod persistence_gate;
 mod personal_export;
+pub(super) mod personal_sync;
 mod remote_dispatch;
 mod streaming;
 mod transport;
-
 use self::streaming::PendingStreamingRequest;
 #[cfg(test)]
 use self::streaming::StreamingRequestStage;
@@ -50,9 +52,13 @@ mod engine_session;
 
 pub use delivery::EngineError;
 use delivery::{record_player_delivery, require_player_delivery};
-use engine_session::data_dir;
+#[cfg(test)]
+use engine_session::SESSION_EVENTS_CAP;
+use engine_session::{DaemonOutcome, DaemonSessionEvent, data_dir};
 pub(super) use gui_search::RequesterKey;
 use gui_search::{GuiSearchAdmission, GuiSearchIndex};
+#[cfg(test)]
+pub(in crate::daemon) use persistence_gate::fail_store_saves_for_test;
 #[cfg(test)]
 use transport::TransportRecovery;
 use transport::TransportRecoveryState;
@@ -68,8 +74,6 @@ use crate::playback_policy::{
 use crate::streaming::CandidateSource;
 
 mod media_projection;
-
-const SESSION_EVENTS_CAP: usize = 20;
 
 pub struct EngineOptions {
     pub resume: bool,
@@ -131,6 +135,13 @@ pub enum EngineEffect {
 pub struct DaemonEngine {
     maintainer: crate::util::background_task::BackgroundTask,
     player: Option<PlayerRuntime>,
+    open_subsonic: open_subsonic_runtime::OpenSubsonicOwner,
+    open_subsonic_rating_identity: Option<String>,
+    open_subsonic_pending_rating: Option<open_subsonic_bridge::PendingOpenSubsonicRatingProjection>,
+    open_subsonic_playlist_identity: Option<String>,
+    open_subsonic_pending_playlist:
+        Option<open_subsonic_bridge::PendingOpenSubsonicPlaylistProjection>,
+    open_subsonic_pending_scrobbles: VecDeque<open_subsonic_bridge::PendingOpenSubsonicScrobble>,
     player_emit: Arc<dyn Fn(PlayerEvent) + Send + Sync>,
     queue: Queue,
     playback: DaemonPlayback,
@@ -141,26 +152,24 @@ pub struct DaemonEngine {
     library_invalidations: u64,
     signals: Signals,
     station: StationStore,
+    personal_state: crate::personal_state::PersonalStateV2,
+    personal_state_revision_guard: crate::sync::OwnerRevisionGuard,
+    personal_state_device_id: Option<crate::personal_state::DeviceId>,
+    personal_sync_in_progress: bool,
+    #[cfg(test)]
+    personal_state_paths: crate::personal_state::PersonalStatePaths,
     loaded_video_id: Option<String>,
-    /// One explicit lifecycle owns both the automatic-restart gate and any current-track replay
-    /// payload, so contradictory armed/pending combinations cannot be represented.
+    /// One lifecycle owns automatic-restart gating and any current-track replay payload.
     transport_recovery: TransportRecoveryState,
-    /// Monotonic identity for scheduled transport retries. Stale retry events must never
-    /// restart a newer player lifetime.
     transport_recovery_generation: u64,
-    /// Shared one-shot arbiter for same-item stale-source replacement. Its logical generation
-    /// advances only on ordinary loads; a recovery replacement advances the file generation
-    /// without rearming the item latch.
     source_recovery: crate::player::recovery::RecoveryPlanner,
     source_logical_generation: u64,
     source_file_generation: u64,
-    /// Deterministic player starts for transport-recovery tests. Production always takes
-    /// the real `player::spawn` path.
+    /// Test-only deterministic player starts; production always calls `player::spawn`.
     #[cfg(test)]
     test_player_starts: VecDeque<PlayerRuntime>,
     streaming: bool,
-    /// Compatibility projection for status/tests. The owner correlation record below is the
-    /// source of truth; this bit is updated only through the streaming request helpers.
+    /// Compatibility projection; only the streaming request helpers update this bit.
     streaming_pending: bool,
     streaming_request_seq: u64,
     pending_streaming_request: Option<PendingStreamingRequest>,
@@ -176,6 +185,9 @@ pub struct DaemonEngine {
     remote_persistence_error: Option<String>,
     remote_persistence_command_active: bool,
     remote_persistence_read_only: bool,
+    /// Test-only standing choice; see `silence_remote_persistence_for_test`.
+    #[cfg(test)]
+    persistence_disabled_for_test: bool,
     consecutive_play_errors: u8,
     /// yt-dlp self-heal bookkeeping (mirrors the TUI's `YtdlpHeal`): the in-flight
     /// healed track, the per-track one-shot guard, and the update-check cooldown.
@@ -234,28 +246,22 @@ enum PositionEpochReason {
     IdleReset,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum DaemonOutcome {
-    FullPlay,
-    Skip,
-    QuickSkip,
-}
-
-#[derive(Debug, Clone)]
-struct DaemonSessionEvent {
-    artist_key: String,
-    outcome: DaemonOutcome,
-    completion: f32,
-}
-
 impl DaemonEngine {
-    pub async fn start<F>(options: EngineOptions, emit: F) -> Result<Self, EngineError>
+    pub async fn start<F, B>(
+        options: EngineOptions,
+        emit: F,
+        bridge_emit: B,
+        ready_emit: open_subsonic_runtime::OpenSubsonicReadySink,
+    ) -> Result<Self, EngineError>
     where
         F: Fn(PlayerEvent) + Send + Sync + 'static,
+        B: Fn(crate::open_subsonic::OpenSubsonicBridgeImport) + Send + Sync + 'static,
     {
         let (config, startup) =
             crate::persist::load_verified_startup_state().map_err(EngineError::from)?;
         let crate::persist::StartupStoreSet {
+            personal_state,
+            personal_state_device_id,
             library,
             playlists,
             session_cache,
@@ -271,33 +277,30 @@ impl DaemonEngine {
             signals,
         };
         crate::persist::ensure_startup_recovery_coherent().map_err(EngineError::from)?;
-        // Orphan reaping can unlink lifeline records and kill child processes. It is safe only
-        // after all recovery-backed stores have established one coherent startup frontier.
+        // Reap only after recovery stores establish one coherent startup frontier.
         if let Some(dir) = data_dir() {
             player::lifetime::reap_orphans(&dir);
         }
         let mut engine = Self::with_state(state, Arc::new(emit));
-
-        // Resolve which yt-dlp/mpv this process runs (managed vs system vs override)
-        // before the first `ensure_player` — the mpv spawn pins ytdl_hook to it.
+        engine.install_personal_state(personal_state);
+        engine.personal_state_device_id = personal_state_device_id;
+        // Optional server discovery must not hold local restore or player startup hostage.
+        open_subsonic_runtime::initialize(&mut engine, Arc::new(bridge_emit), ready_emit);
+        // External tool discovery remains required for ordinary YouTube/local playback.
         crate::tools::init(&engine.config.tools).await;
-        // Keep the managed copy fresh for long daemon runs. No-op emit: the daemon
-        // has no status line and `check_and_update` already logs its outcomes.
+        // Keep the managed copy fresh; the daemon has no status-line emitter.
         engine.maintainer =
             crate::tools::ytdlp::spawn_maintainer(engine.config.tools.clone(), |_| {});
-
         if options.resume {
             engine.restore_session_cache(session_cache);
             if engine.queue.current().is_some() {
                 engine.load_current().await?;
             }
         }
-
         Ok(engine)
     }
 
-    /// Construct the engine from explicit state — the single init path [`start`] wraps
-    /// with disk loads, and the App↔Daemon parity harness constructs hermetically
+    /// Construct explicit state; [`start`] adds disk loads, while parity tests stay hermetic
     /// (docs/gui/10 §4; the engine must be buildable without touching `ProjectDirs`).
     pub(crate) fn with_state(
         state: EngineState,
@@ -310,6 +313,9 @@ impl DaemonEngine {
             playlists,
             signals,
         } = state;
+        let personal_state =
+            crate::personal_state::legacy_state(&library, &playlists, &signals, &station)
+                .unwrap_or_default();
         if let Some(profile) = &station.active {
             config.streaming.mode = profile.explore.to_mode();
         }
@@ -321,6 +327,12 @@ impl DaemonEngine {
         Self {
             maintainer: crate::util::background_task::BackgroundTask::disabled("yt-dlp maintainer"),
             player: None,
+            open_subsonic: Default::default(),
+            open_subsonic_rating_identity: None,
+            open_subsonic_pending_rating: None,
+            open_subsonic_playlist_identity: None,
+            open_subsonic_pending_playlist: None,
+            open_subsonic_pending_scrobbles: VecDeque::new(),
             player_emit,
             queue,
             playback: DaemonPlayback {
@@ -345,6 +357,12 @@ impl DaemonEngine {
             library_invalidations: 0,
             signals,
             station,
+            personal_state_revision_guard: Default::default(),
+            personal_state,
+            personal_state_device_id: None,
+            personal_sync_in_progress: false,
+            #[cfg(test)]
+            personal_state_paths: tests::personal_state_paths(),
             loaded_video_id: None,
             transport_recovery: TransportRecoveryState::Armed,
             transport_recovery_generation: 0,
@@ -363,6 +381,8 @@ impl DaemonEngine {
             remote_persistence_error: None,
             remote_persistence_command_active: false,
             remote_persistence_read_only: false,
+            #[cfg(test)]
+            persistence_disabled_for_test: false,
             consecutive_play_errors: 0,
             heal_pending: None,
             heal_attempted: HashSet::new(),
@@ -452,19 +472,8 @@ impl DaemonEngine {
 
     /// Stop the daemon-owned long-lived tasks before persistence/scrobble teardown.
     pub async fn shutdown_background(&mut self) {
+        self.open_subsonic.shutdown().await;
         self.maintainer.shutdown().await;
-    }
-
-    /// Retire every daemon-owned media process at the start of owner shutdown.
-    ///
-    /// The remaining remote, effect, and durability barriers can legitimately take longer than
-    /// player teardown. Keeping audio or an overlay alive through those barriers would make a
-    /// normal daemon stop appear stuck and would leave later termination signals with nothing
-    /// useful to coordinate. Recovery is suppressed before this method is called, so closing the
-    /// IPC actor cannot start a replacement player.
-    pub(crate) fn shutdown_media_owners(&mut self) {
-        self.video_overlay = None;
-        self.player = None;
     }
 
     pub fn initial_effects(&mut self) -> Vec<EngineEffect> {
@@ -889,6 +898,7 @@ impl DaemonEngine {
                         mime: None,
                     })
             }),
+            personal_sync: Some(self.personal_sync_status()),
         }
     }
 
@@ -1514,13 +1524,14 @@ impl DaemonEngine {
         }
 
         let emit = Arc::clone(&self.player_emit);
-        let (handle, guard) = player::spawn(
+        let (handle, guard) = player::spawn_with_route_provider(
             move |event| (emit)(event),
             data_dir(),
             self.config
                 .cookies_file_for_external_tools(data_dir().as_deref()),
             self.config.effective_gapless(),
             self.config.audio.runtime(),
+            self.open_subsonic.route_provider(),
         )
         .await
         .map_err(|e| EngineError::Player(format!("failed to start mpv: {e:#}")))?;

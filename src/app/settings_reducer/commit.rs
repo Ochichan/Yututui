@@ -263,6 +263,9 @@ impl App {
         self.overlays.recordings_browser = None;
         self.overlays.spotify_picker = None;
         self.overlays.audio_output_picker = None;
+        // A connection test may still be completing off-thread. Bump its generation and drop
+        // every move-only form before the Settings surface disappears; any late result is inert.
+        self.cancel_music_server_session();
         self.settings = None;
         self.mode = Mode::Player;
         self.dirty = true;

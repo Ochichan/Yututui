@@ -12,6 +12,7 @@ struct RecordingTeardown {
     background_outcomes: VecDeque<runtime::BackgroundShutdown>,
     ingress_drain: OwnerIngressDrain,
     fail_scrobble: bool,
+    fail_open_subsonic: bool,
     terminal_background_error: Option<std::io::Error>,
 }
 
@@ -20,16 +21,39 @@ impl OwnerTeardown for RecordingTeardown {
         self.steps.push("remote_quiesce");
     }
 
+    fn seal_playback_observation(&mut self) {
+        self.steps.push("final_observation");
+    }
+
     fn retire_player(&mut self) {
         self.steps.push("player");
     }
 
-    fn close_ingress(&mut self) {
-        self.steps.push("ingress");
-    }
-
     fn deactivate_media(&mut self) {
         self.steps.push("media");
+    }
+
+    async fn shutdown_scrobble_with_owner_pump(&mut self) -> (OwnerIngressDrain, Result<()>) {
+        self.steps.push("scrobble");
+        let result = if self.fail_scrobble {
+            Err(anyhow::anyhow!("injected scrobble durability failure"))
+        } else {
+            Ok(())
+        };
+        (OwnerIngressDrain::default(), result)
+    }
+
+    fn pump_open_subsonic(&mut self) -> Result<()> {
+        self.steps.push("open_subsonic");
+        if self.fail_open_subsonic {
+            Err(anyhow::anyhow!("injected music server durability failure"))
+        } else {
+            Ok(())
+        }
+    }
+
+    fn close_ingress(&mut self) {
+        self.steps.push("ingress");
     }
 
     async fn drain_owner_ingress(&mut self) -> OwnerIngressDrain {
@@ -85,14 +109,6 @@ impl OwnerTeardown for RecordingTeardown {
         self.steps.push("persistence");
         Ok(())
     }
-
-    async fn shutdown_scrobble(&mut self) -> Result<()> {
-        self.steps.push("scrobble");
-        if self.fail_scrobble {
-            anyhow::bail!("injected scrobble durability failure");
-        }
-        Ok(())
-    }
 }
 
 #[tokio::test]
@@ -114,10 +130,25 @@ async fn accepted_remote_requests_flush_before_the_hub_is_shut_down() {
         .iter()
         .position(|step| *step == "remote_quiesce")
         .unwrap();
+    let final_observation = teardown
+        .steps
+        .iter()
+        .position(|step| *step == "final_observation")
+        .unwrap();
     let player = teardown
         .steps
         .iter()
         .position(|step| *step == "player")
+        .unwrap();
+    let scrobble = teardown
+        .steps
+        .iter()
+        .position(|step| *step == "scrobble")
+        .unwrap();
+    let ingress = teardown
+        .steps
+        .iter()
+        .position(|step| *step == "ingress")
         .unwrap();
     let drain = teardown
         .steps
@@ -134,7 +165,15 @@ async fn accepted_remote_requests_flush_before_the_hub_is_shut_down() {
         .iter()
         .position(|step| *step == "remote")
         .unwrap();
-    assert!(quiesce < player && player < drain && drain < flush && flush < remote);
+    assert!(
+        quiesce < final_observation
+            && final_observation < player
+            && player < scrobble
+            && scrobble < ingress
+            && ingress < drain
+            && drain < flush
+            && flush < remote
+    );
 }
 
 #[tokio::test]
@@ -155,10 +194,13 @@ async fn owner_draw_error_runs_the_full_barrier_before_returning_the_original_er
         teardown.steps,
         [
             "remote_quiesce",
+            "final_observation",
             "player",
-            "ingress",
             "media",
+            "scrobble",
+            "ingress",
             "ingress_drain",
+            "open_subsonic",
             "remote_reply_flush",
             "remote",
             "startup",
@@ -170,7 +212,6 @@ async fn owner_draw_error_runs_the_full_barrier_before_returning_the_original_er
             "downloads",
             "runtime_finalize",
             "persistence",
-            "scrobble",
         ]
     );
     let returned_io = returned
@@ -199,10 +240,13 @@ async fn background_timeout_is_reaped_again_before_persistence_flush() {
         teardown.steps,
         [
             "remote_quiesce",
+            "final_observation",
             "player",
-            "ingress",
             "media",
+            "scrobble",
+            "ingress",
             "ingress_drain",
+            "open_subsonic",
             "remote_reply_flush",
             "remote",
             "startup",
@@ -215,7 +259,6 @@ async fn background_timeout_is_reaped_again_before_persistence_flush() {
             "runtime_background",
             "runtime_finalize",
             "persistence",
-            "scrobble",
         ]
     );
 }
@@ -242,10 +285,13 @@ async fn repeated_background_timeout_still_joins_without_a_final_deadline_before
         teardown.steps,
         [
             "remote_quiesce",
+            "final_observation",
             "player",
-            "ingress",
             "media",
+            "scrobble",
+            "ingress",
             "ingress_drain",
+            "open_subsonic",
             "remote_reply_flush",
             "remote",
             "startup",
@@ -258,7 +304,6 @@ async fn repeated_background_timeout_still_joins_without_a_final_deadline_before
             "runtime_background",
             "runtime_finalize",
             "persistence",
-            "scrobble",
         ],
         "persistence cannot start before the unbounded final ownership barrier"
     );
@@ -279,7 +324,43 @@ async fn scrobble_durability_failure_is_returned_after_the_full_barrier() {
             .to_string()
             .contains("injected scrobble durability failure")
     );
-    assert_eq!(teardown.steps.last(), Some(&"scrobble"));
+    assert!(
+        teardown.steps.iter().position(|step| *step == "scrobble")
+            < teardown.steps.iter().position(|step| *step == "ingress")
+    );
+}
+
+#[tokio::test]
+async fn open_subsonic_nonblocking_pump_runs_after_final_drain_and_failure_remains_fatal() {
+    let mut teardown = RecordingTeardown {
+        fail_open_subsonic: true,
+        ..Default::default()
+    };
+
+    let error = complete_owner_teardown(&mut teardown, None)
+        .await
+        .expect_err("an unconfirmed server bridge frontier cannot look like a clean exit");
+    assert!(
+        error
+            .to_string()
+            .contains("injected music server durability failure")
+    );
+    let drain = teardown
+        .steps
+        .iter()
+        .position(|step| *step == "ingress_drain")
+        .unwrap();
+    let open_subsonic = teardown
+        .steps
+        .iter()
+        .position(|step| *step == "open_subsonic")
+        .unwrap();
+    let persistence = teardown
+        .steps
+        .iter()
+        .position(|step| *step == "persistence")
+        .unwrap();
+    assert!(drain < open_subsonic && open_subsonic < persistence);
 }
 
 #[tokio::test]

@@ -49,7 +49,21 @@ pub fn render(frame: &mut Frame, app: &App) {
     // render pass knows it). Below the mini thresholds the whole UI is the miniplayer;
     // the overlay stack below still runs either way — modals capture keys, so they must
     // stay visible.
-    let tier = layout::tier(area);
+    let mut tier = layout::tier(area);
+    // Settings and the transient Server Library have purpose-built narrow selectors. Keep those
+    // issue-114 keyboard-only surfaces reachable at 30 columns even though ordinary playback and
+    // local-library screens still need the 32-column Mini boundary for their transport controls.
+    let issue_114_narrow_surface = app.mode == Mode::Settings
+        || (app.mode == Mode::Library
+            && !app.local_dedicated_mode
+            && app.server.library.source == crate::app::LibrarySource::OpenSubsonic);
+    if tier == layout::UiTier::Mini
+        && issue_114_narrow_surface
+        && area.width >= 30
+        && area.height >= layout::MINI_MIN_H
+    {
+        tier = layout::UiTier::Full;
+    }
     app.bridges.ui_tier.set(tier);
     if tier == layout::UiTier::Mini {
         views::mini::render(frame, app, area);
@@ -162,6 +176,17 @@ pub fn render(frame: &mut Frame, app: &App) {
     if app.library_ui.confirm_download.is_some() {
         views::library::render_confirm_download(frame, app, area);
     }
+    // Explicit server-playlist imports and links always show their deletion-free preview above
+    // the library before anything can be applied.
+    if app.server.library.playlist_preview.is_some() {
+        views::server_playlist_preview::render(frame, app, area);
+    }
+    if app.server.library.playlist_create.is_some() {
+        views::server_playlist_create::render(frame, app, area);
+    }
+    if app.server.library.playlist_recovery.is_some() {
+        views::server_playlist_recovery::render(frame, app, area);
+    }
     // The add-to-playlist picker floats over whichever screen opened it.
     if app.playlist_picker.is_some() {
         views::library::render_playlist_picker(frame, app, area);
@@ -178,6 +203,14 @@ pub fn render(frame: &mut Frame, app: &App) {
     }
     if app.tool_setup.is_some() {
         views::onboarding::render_tool_setup(frame, app, area);
+    }
+    // Sync setup and device lifecycle are Settings-owned but remain visible in Mini layout.
+    // Draw this move-only wizard at the top level so its fields and actions always win z-order.
+    if app.personal_state.sync_ui.modal_open() {
+        views::settings::render_sync_wizard(frame, app, area);
+    }
+    if app.server.settings.modal_open() {
+        views::settings::render_music_server_wizard(frame, app, area);
     }
     retro::scrub_frame(frame, app);
 }

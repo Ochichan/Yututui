@@ -109,6 +109,9 @@ fn daemon_capabilities_advertise_headless_playback() {
     assert!(daemon_capabilities().contains(&"queue-control".to_string()));
     assert!(daemon_capabilities().contains(&RETAINED_REQUEST_OUTCOMES_CAPABILITY.to_string()));
     assert!(daemon_capabilities().contains(&PERSONAL_EXPORT_CAPABILITY.to_string()));
+    assert!(daemon_capabilities().contains(&PERSONAL_STATE_V2_CAPABILITY.to_string()));
+    assert!(daemon_capabilities().contains(&WEB_DAV_SYNC_CAPABILITY.to_string()));
+    assert!(daemon_capabilities().contains(&crate::remote::OPEN_SUBSONIC_CAPABILITY.to_string()));
     assert!(daemon_capabilities().contains(&LONG_FORM_SEEK_OPTIMIZATION_CAPABILITY.to_string()));
 }
 
@@ -322,6 +325,12 @@ fn daemon_event_policy_covers_representative_events() {
         }
     );
     assert_eq!(
+        DaemonEvent::OpenSubsonicReady.policy(),
+        EventPolicy::MustDeliver {
+            lane: EventLane::WorkResult,
+        }
+    );
+    assert_eq!(
         DaemonEvent::MediaArt(crate::media::artwork::MediaArtworkReady {
             key: "track".to_owned(),
             path: "art.jpg".into(),
@@ -486,6 +495,7 @@ fn daemon_event_kind_and_telemetry_slots_are_stable() {
         DaemonEvent::Scrobble(crate::scrobble::ScrobbleEvent::QueueStalled { pending: 3 }).kind(),
         "scrobble"
     );
+    assert_eq!(DaemonEvent::OpenSubsonicReady.kind(), "open_subsonic_ready");
     assert_eq!(
         DaemonEvent::Download(crate::download::DownloadEvent::Error {
             video_id: "v".to_owned(),
@@ -1037,18 +1047,40 @@ async fn shutdown_drain_settles_pending_main_deferred_and_coalesced_events() {
             origin: crate::remote::RemoteSessionScope::for_test(9, Some("page")),
             reply: pending_reply.into(),
         }),
+        DaemonEvent::OpenSubsonicReady,
+        DaemonEvent::Scrobble(crate::scrobble::ScrobbleEvent::OpenSubsonic {
+            event_id: "shutdown-server-play-1".to_owned(),
+            kind: crate::open_subsonic::OpenSubsonicScrobbleKind::Submission,
+            track: crate::scrobble::ScrobbleTrack {
+                key: "server-song".to_owned(),
+                open_subsonic_item: Some(crate::open_subsonic::OpenSubsonicItemRef::new(
+                    crate::open_subsonic::BackendId::new("shutdown-backend").unwrap(),
+                    crate::open_subsonic::AccountScopeId::new("shutdown-account").unwrap(),
+                    crate::open_subsonic::ItemId::new("shutdown-song").unwrap(),
+                )),
+                artist: "Artist".to_owned(),
+                title: "Song".to_owned(),
+                album: None,
+                duration_secs: Some(180),
+                origin_url: None,
+                started_unix: 100,
+            },
+            confirmation: None,
+        }),
     ]);
     assert!(event_tx.close_admission());
 
     let (hub, _session, _line_rx) = crate::remote::test_register(Default::default());
     let publisher = crate::remote::publish::Publisher::new(hub);
     let mut personal_export = personal_export::PersonalExport::default();
+    let mut engine = engine::tests::engine_with_queue(&[]);
     let drain = crate::daemon::shutdown_drain::drain_daemon_shutdown_ingress(
         &event_tx,
         &mut event_rx,
         &mut pending_events,
         &publisher,
         &mut personal_export,
+        &mut engine,
     )
     .await;
 
@@ -1068,6 +1100,10 @@ async fn shutdown_drain_settles_pending_main_deferred_and_coalesced_events() {
     );
     assert_eq!(drain.coalesced_events, 1);
     assert_eq!(drain.personal_export_completions, 1);
+    assert_eq!(
+        drain.open_subsonic_events, 2,
+        "server readiness and threshold events must settle during shutdown"
+    );
     assert_eq!(
         drain.retired_events, 2,
         "Signal plus the coalesced time tick"

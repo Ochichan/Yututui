@@ -582,7 +582,13 @@ async fn replacement_cache_emergency_replays_new_item_without_old_position() {
     assert_eq!(request.position_secs, 0.0);
     assert!(!request.paused);
     assert!(request.forces_ram_only());
-    assert!(request.url.contains("new"), "must replay the new item");
+    assert!(
+        request
+            .destination
+            .direct_target()
+            .is_some_and(|target| target.contains("new")),
+        "must replay the new item"
+    );
 }
 
 #[tokio::test]

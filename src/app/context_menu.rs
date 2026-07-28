@@ -63,6 +63,11 @@ enum ContextTarget {
         index: usize,
         playlist_id: String,
     },
+    ServerLibrary {
+        generation: u64,
+        index: usize,
+        identity: ServerLibraryRowIdentity,
+    },
     Queue {
         lo: usize,
         hi: usize,
@@ -83,11 +88,44 @@ enum ContextTarget {
     },
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum ServerLibraryRowIdentity {
+    Song(crate::open_subsonic::OpenSubsonicItemRef),
+    Album(crate::open_subsonic::AlbumId),
+    Artist(crate::open_subsonic::ArtistId),
+    Playlist {
+        id: crate::open_subsonic::ServerPlaylistId,
+        access: crate::open_subsonic::ServerPlaylistAccess,
+        link: Option<crate::open_subsonic::ServerPlaylistLinkSummary>,
+    },
+}
+
+impl ServerLibraryRowIdentity {
+    const fn is_song(&self) -> bool {
+        matches!(self, Self::Song(_))
+    }
+
+    fn playlist(
+        &self,
+    ) -> Option<(
+        &crate::open_subsonic::ServerPlaylistId,
+        crate::open_subsonic::ServerPlaylistAccess,
+        Option<&crate::open_subsonic::ServerPlaylistLinkSummary>,
+    )> {
+        match self {
+            Self::Playlist { id, access, link } => Some((id, *access, link.as_ref())),
+            Self::Song(_) | Self::Album(_) | Self::Artist(_) => None,
+        }
+    }
+}
+
 impl ContextTarget {
     const fn mouse_context(&self) -> MouseContext {
         match self {
             Self::Search { .. } => MouseContext::Search,
-            Self::LibrarySongs { .. } | Self::LibraryPlaylist { .. } => MouseContext::Library,
+            Self::LibrarySongs { .. }
+            | Self::LibraryPlaylist { .. }
+            | Self::ServerLibrary { .. } => MouseContext::Library,
             Self::Queue { .. } => MouseContext::Queue,
             Self::Local { .. } | Self::LocalFind { .. } => MouseContext::Local,
         }
@@ -104,8 +142,17 @@ pub(crate) enum ContextCommand {
     AddToPlaylist,
     Download,
     ImportPlaylist,
+    ImportServerPlaylistCopy,
+    LinkServerPlaylist,
+    CreateLinkedServerPlaylist,
+    RestoreServerPlaylist,
+    UnlinkKeepServerPlaylist,
+    UnlinkKeepLocalPlaylist,
+    DeleteLinkedPlaylistBoth,
+    DeleteLinkedPlaylistLocal,
     OpenPlaylist,
     OpenArtist,
+    PublishToServer,
     Remove,
 }
 
@@ -184,6 +231,49 @@ impl ContextMenuItem {
                 "プレイリストをインポート"
             )
             .to_owned(),
+            ContextCommand::ImportServerPlaylistCopy => {
+                t!("Import a copy", "복사본 가져오기", "コピーとしてインポート").to_owned()
+            }
+            ContextCommand::LinkServerPlaylist => {
+                t!("Link and sync", "연결 및 동기화", "リンクして同期").to_owned()
+            }
+            // Kept short enough to survive the 30-column menu in every language.
+            ContextCommand::PublishToServer => t!(
+                "Copy to music server",
+                "음악 서버로 복사",
+                "音楽サーバーへコピー"
+            )
+            .to_owned(),
+            ContextCommand::CreateLinkedServerPlaylist => t!(
+                "Create linked server playlist",
+                "서버 연결 목록 만들기",
+                "サーバー連携リストを作成"
+            )
+            .to_owned(),
+            ContextCommand::RestoreServerPlaylist => t!(
+                "Restore server playlist",
+                "서버 목록 복구",
+                "サーバー側を復元"
+            )
+            .to_owned(),
+            ContextCommand::UnlinkKeepServerPlaylist => t!(
+                "Unlink; keep server",
+                "연결 해제·서버 유지",
+                "リンク解除・サーバー保持"
+            )
+            .to_owned(),
+            ContextCommand::UnlinkKeepLocalPlaylist => t!(
+                "Unlink; keep local",
+                "연결 해제·로컬 유지",
+                "リンク解除・ローカル保持"
+            )
+            .to_owned(),
+            ContextCommand::DeleteLinkedPlaylistBoth => {
+                t!("Delete both", "둘 다 삭제", "両方を削除").to_owned()
+            }
+            ContextCommand::DeleteLinkedPlaylistLocal => {
+                t!("Delete local too", "로컬 목록도 삭제", "ローカル側も削除").to_owned()
+            }
             ContextCommand::OpenPlaylist => {
                 t!("Open playlist", "플레이리스트 열기", "プレイリストを開く").to_owned()
             }
@@ -207,7 +297,10 @@ impl ContextTarget {
             Self::LibrarySongs { video_ids, .. }
             | Self::Queue { video_ids, .. }
             | Self::Search { video_ids, .. } => video_ids.len(),
-            _ => 1,
+            Self::ServerLibrary { .. }
+            | Self::LibraryPlaylist { .. }
+            | Self::Local { .. }
+            | Self::LocalFind { .. } => 1,
         }
     }
 }
@@ -216,7 +309,12 @@ impl App {
     /// Whether another modal owns input. The queue and search-filter popups are deliberately
     /// excluded: their semantic rows are valid context-menu targets.
     fn context_menu_blocked(&self) -> bool {
-        self.overlays.help_visible
+        self.personal_state.sync_ui.modal_open()
+            || self.server.settings.modal_open()
+            || self.server.library.playlist_preview.is_some()
+            || self.server.library.playlist_create.is_some()
+            || self.server.library.playlist_recovery.is_some()
+            || self.overlays.help_visible
             || self.overlays.mouse_help_visible
             || self.overlays.about_visible
             || self.overlays.why_gem_video_id.is_some()
@@ -355,6 +453,12 @@ impl App {
                 Mode::Library if self.local_dedicated_mode => {
                     MouseTarget::LocalRow(self.local_mode.ui.selected)
                 }
+                Mode::Library if self.server.library.source == LibrarySource::OpenSubsonic => {
+                    MouseTarget::ServerLibraryRow {
+                        generation: self.server.library.generation,
+                        index: self.server.library.selected,
+                    }
+                }
                 Mode::Library => MouseTarget::ListRow(self.library_ui.selected),
                 _ => return Vec::new(),
             }
@@ -447,6 +551,40 @@ impl App {
             menu.selected.saturating_add(1).min(last)
         };
         self.dirty = true;
+    }
+
+    fn server_library_context_identity(&self, index: usize) -> Option<ServerLibraryRowIdentity> {
+        use crate::open_subsonic::ServerLibraryDetail as Detail;
+        use crate::open_subsonic::ServerLibraryRow as Row;
+
+        match self.server.library.detail.as_ref() {
+            Some(Detail::AlbumSongs { songs, .. }) => songs
+                .get(index)
+                .map(|song| ServerLibraryRowIdentity::Song(song.item.clone())),
+            Some(Detail::ArtistAlbums { albums, .. }) => albums
+                .get(index)
+                .map(|album| ServerLibraryRowIdentity::Album(album.id.clone())),
+            Some(Detail::PlaylistEntries(playlist)) => playlist
+                .entries
+                .get(index)
+                .map(|song| ServerLibraryRowIdentity::Song(song.item.clone())),
+            None => self
+                .server
+                .library
+                .page
+                .as_ref()
+                .and_then(|page| page.rows.get(index))
+                .map(|row| match row {
+                    Row::Song(song) => ServerLibraryRowIdentity::Song(song.item.clone()),
+                    Row::Album(album) => ServerLibraryRowIdentity::Album(album.id.clone()),
+                    Row::Artist(artist) => ServerLibraryRowIdentity::Artist(artist.id.clone()),
+                    Row::Playlist(playlist) => ServerLibraryRowIdentity::Playlist {
+                        id: playlist.id.clone(),
+                        access: playlist.access,
+                        link: playlist.link.clone(),
+                    },
+                }),
+        }
     }
 
     fn context_target_at(&mut self, col: u16, row: u16) -> Option<ContextTarget> {
@@ -586,6 +724,20 @@ impl App {
                     download_ids,
                 })
             }
+            Mode::Library if self.server.library.source == LibrarySource::OpenSubsonic => {
+                let MouseTarget::ServerLibraryRow { generation, index } = target else {
+                    return None;
+                };
+                if generation != self.server.library.generation {
+                    return None;
+                }
+                let identity = self.server_library_context_identity(index)?;
+                Some(ContextTarget::ServerLibrary {
+                    generation,
+                    index,
+                    identity,
+                })
+            }
             Mode::Library => {
                 let index = match target {
                     MouseTarget::ListRow(index) | MouseTarget::LibraryDel(index) => index,
@@ -669,6 +821,9 @@ impl App {
                 self.library_ui.selected = *index;
                 self.library_ui.anchor = *index;
             }
+            ContextTarget::ServerLibrary {
+                generation, index, ..
+            } => self.select_server_library_row(*generation, *index),
             ContextTarget::Queue { lo, hi, .. } => {
                 let current_lo = self.queue_popup.cursor.min(self.queue_popup.anchor);
                 let current_hi = self.queue_popup.cursor.max(self.queue_popup.anchor);
@@ -714,7 +869,15 @@ impl App {
             // A multi-selection only ever holds song rows (playlist rows keep their
             // dedicated single-row menu), so the bulk commands apply directly.
             ContextTarget::Search { rows, .. } if rows.len() > 1 => {
-                vec![C::PlayNow, C::Enqueue, C::AddToPlaylist, C::Download]
+                let mut commands = vec![C::PlayNow, C::Enqueue, C::AddToPlaylist];
+                if rows.iter().all(|row| {
+                    self.search.results.get(*row).is_some_and(|song| {
+                        song.source != crate::search_source::SearchSource::OpenSubsonic
+                    })
+                }) {
+                    commands.push(C::Download);
+                }
+                commands
             }
             ContextTarget::Search {
                 rows, video_ids, ..
@@ -731,33 +894,82 @@ impl App {
                 {
                     vec![C::PlayNow, C::Enqueue, C::ImportPlaylist]
                 }
-                Some(song) if video_ids.first() == Some(&song.video_id) => vec![
-                    C::PlayNow,
-                    C::Enqueue,
-                    C::ToggleFavorite,
-                    C::AddToPlaylist,
-                    C::Download,
-                ],
+                Some(song) if video_ids.first() == Some(&song.video_id) => {
+                    let mut commands =
+                        vec![C::PlayNow, C::Enqueue, C::ToggleFavorite, C::AddToPlaylist];
+                    if song.source != crate::search_source::SearchSource::OpenSubsonic {
+                        commands.push(C::Download);
+                    }
+                    commands
+                }
                 _ => Vec::new(),
             },
-            ContextTarget::LibrarySongs { tab, .. } => {
+            ContextTarget::LibrarySongs { rows, tab, .. } => {
                 let mut commands = vec![C::PlayNow, C::Enqueue];
                 if target.count() == 1 {
                     commands.push(C::ToggleFavorite);
                 }
                 commands.extend([C::AddToPlaylist, C::Download]);
+                // Only for a single row that actually has a downloaded file, and only when a
+                // server is connected. Offering it otherwise would promise something that can
+                // only fail once the user picks it.
+                if target.count() == 1
+                    && self.server.settings.summary.configured
+                    && rows
+                        .first()
+                        .and_then(|&row| self.library_songs().get(row).cloned())
+                        .is_some_and(|song| song.local_path.is_some())
+                {
+                    commands.push(C::PublishToServer);
+                }
                 if *tab != LibraryTab::All {
                     commands.push(C::Remove);
                 }
                 commands
             }
-            ContextTarget::LibraryPlaylist { .. } => vec![
-                C::OpenPlaylist,
-                C::PlayNow,
-                C::Enqueue,
-                C::Download,
-                C::Remove,
-            ],
+            ContextTarget::LibraryPlaylist { .. } => {
+                let mut commands = vec![C::OpenPlaylist, C::PlayNow, C::Enqueue, C::Download];
+                if self.server.settings.summary.configured {
+                    commands.push(C::CreateLinkedServerPlaylist);
+                }
+                commands.push(C::Remove);
+                commands
+            }
+            ContextTarget::ServerLibrary { identity, .. } if identity.is_song() => {
+                vec![C::PlayNow, C::Enqueue, C::ToggleFavorite, C::AddToPlaylist]
+            }
+            ContextTarget::ServerLibrary { identity, .. } if identity.playlist().is_some() => {
+                let Some((_, access, link)) = identity.playlist() else {
+                    return Vec::new();
+                };
+                if let Some(link) = link {
+                    let commands = match link.health {
+                        crate::open_subsonic::ServerPlaylistLinkHealth::UpToDate => vec![
+                            C::Activate,
+                            C::ImportServerPlaylistCopy,
+                            C::UnlinkKeepServerPlaylist,
+                            C::DeleteLinkedPlaylistBoth,
+                        ],
+                        crate::open_subsonic::ServerPlaylistLinkHealth::NeedsAttention => vec![
+                            C::Activate,
+                            C::ImportServerPlaylistCopy,
+                            C::UnlinkKeepServerPlaylist,
+                        ],
+                        crate::open_subsonic::ServerPlaylistLinkHealth::ServerMissing => vec![
+                            C::RestoreServerPlaylist,
+                            C::UnlinkKeepLocalPlaylist,
+                            C::DeleteLinkedPlaylistLocal,
+                        ],
+                    };
+                    return commands.into_iter().map(ContextMenuItem::new).collect();
+                }
+                let mut commands = vec![C::Activate, C::ImportServerPlaylistCopy];
+                if access == crate::open_subsonic::ServerPlaylistAccess::Server {
+                    commands.push(C::LinkServerPlaylist);
+                }
+                commands
+            }
+            ContextTarget::ServerLibrary { .. } => vec![C::Activate],
             ContextTarget::Queue { .. } => vec![C::PlayFromHere, C::Remove],
             ContextTarget::LocalFind {
                 index,
@@ -841,6 +1053,11 @@ impl App {
             ContextTarget::LibraryPlaylist { index, playlist_id } => {
                 self.execute_library_playlist_context_command(index, playlist_id, command)
             }
+            ContextTarget::ServerLibrary {
+                generation,
+                index,
+                identity,
+            } => self.execute_server_library_context_command(generation, index, identity, command),
             ContextTarget::Queue {
                 lo,
                 hi,
@@ -947,8 +1164,7 @@ impl App {
                 None => self.enqueue(song),
             },
             ContextCommand::ToggleFavorite if is_song_row => {
-                self.library_mut().toggle_favorite(&song);
-                vec![Cmd::Persist(PersistCmd::Library)]
+                self.toggle_song_favorite_rating(&song)
             }
             ContextCommand::AddToPlaylist if is_song_row => {
                 self.open_playlist_picker(vec![song]);
@@ -1002,13 +1218,16 @@ impl App {
             ContextCommand::Enqueue => self.enqueue_many(selected),
             ContextCommand::ToggleFavorite if selected.len() == 1 => {
                 let rows_before = self.library_len();
-                self.library_mut().toggle_favorite(&selected[0]);
+                let commands = self.toggle_song_favorite_rating(&selected[0]);
                 // Un-favoriting can remove the row (Favorites/All tab): re-clamp
                 // and drop the now-stale picks; unchanged tabs keep the selection.
                 if self.library_len() != rows_before {
                     self.clamp_library_selection();
                 }
-                vec![Cmd::Persist(PersistCmd::Library)]
+                commands
+            }
+            ContextCommand::PublishToServer if selected.len() == 1 => {
+                self.start_publish_track_to_server(&selected[0])
             }
             ContextCommand::AddToPlaylist => {
                 self.open_playlist_picker(selected);
@@ -1053,9 +1272,138 @@ impl App {
                     .unwrap_or_default();
                 self.open_confirm_download(songs)
             }
+            ContextCommand::CreateLinkedServerPlaylist
+                if self.server.settings.summary.configured =>
+            {
+                let Ok(Some(snapshot)) =
+                    crate::personal_state::personal_playlist_snapshot_for_runtime_id(
+                        &self.personal_state.ledger,
+                        &playlist_id,
+                    )
+                else {
+                    return self.context_target_stale();
+                };
+                self.start_server_playlist_create(snapshot.playlist_id)
+            }
             ContextCommand::Remove => {
                 self.request_playlist_delete(index);
                 Vec::new()
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    fn execute_server_library_context_command(
+        &mut self,
+        generation: u64,
+        index: usize,
+        identity: ServerLibraryRowIdentity,
+        command: ContextCommand,
+    ) -> Vec<Cmd> {
+        if self.mode != Mode::Library
+            || self.server.library.source != LibrarySource::OpenSubsonic
+            || generation != self.server.library.generation
+            || self.server_library_context_identity(index).as_ref() != Some(&identity)
+        {
+            return self.context_target_stale();
+        }
+        self.select_server_library_row(generation, index);
+        match command {
+            ContextCommand::Activate | ContextCommand::PlayNow => {
+                self.activate_server_library_row(generation, index)
+            }
+            ContextCommand::Enqueue if identity.is_song() => self
+                .server
+                .library
+                .row_song(index)
+                .cloned()
+                .map(crate::api::Song::from_open_subsonic)
+                .map_or_else(Vec::new, |song| self.enqueue_many(vec![song])),
+            ContextCommand::ToggleFavorite if identity.is_song() => self
+                .server
+                .library
+                .row_song(index)
+                .cloned()
+                .map(crate::api::Song::from_open_subsonic)
+                .map_or_else(Vec::new, |song| self.toggle_song_favorite_rating(&song)),
+            ContextCommand::AddToPlaylist if identity.is_song() => {
+                if let Some(song) = self
+                    .server
+                    .library
+                    .row_song(index)
+                    .cloned()
+                    .map(crate::api::Song::from_open_subsonic)
+                {
+                    self.open_playlist_picker(vec![song]);
+                }
+                Vec::new()
+            }
+            ContextCommand::ImportServerPlaylistCopy => identity
+                .playlist()
+                .map(|(id, _, _)| {
+                    self.start_server_playlist_preview(
+                        id.clone(),
+                        crate::app::ServerPlaylistPreviewKind::ImportCopy,
+                    )
+                })
+                .unwrap_or_default(),
+            ContextCommand::LinkServerPlaylist => identity
+                .playlist()
+                .filter(|(_, access, _)| {
+                    *access == crate::open_subsonic::ServerPlaylistAccess::Server
+                })
+                .map(|(id, _, _)| {
+                    self.start_server_playlist_preview(
+                        id.clone(),
+                        crate::app::ServerPlaylistPreviewKind::LinkAndSync,
+                    )
+                })
+                .unwrap_or_default(),
+            ContextCommand::RestoreServerPlaylist
+            | ContextCommand::UnlinkKeepServerPlaylist
+            | ContextCommand::UnlinkKeepLocalPlaylist
+            | ContextCommand::DeleteLinkedPlaylistBoth
+            | ContextCommand::DeleteLinkedPlaylistLocal => {
+                let Some((server_id, _, Some(link))) = identity.playlist() else {
+                    return Vec::new();
+                };
+                let action = match command {
+                    ContextCommand::RestoreServerPlaylist => {
+                        crate::app::ServerPlaylistRecoveryAction::Restore
+                    }
+                    ContextCommand::UnlinkKeepServerPlaylist => {
+                        crate::app::ServerPlaylistRecoveryAction::UnlinkKeepServer
+                    }
+                    ContextCommand::UnlinkKeepLocalPlaylist => {
+                        crate::app::ServerPlaylistRecoveryAction::UnlinkKeepLocal
+                    }
+                    ContextCommand::DeleteLinkedPlaylistBoth => {
+                        crate::app::ServerPlaylistRecoveryAction::DeleteBoth
+                    }
+                    ContextCommand::DeleteLinkedPlaylistLocal => {
+                        crate::app::ServerPlaylistRecoveryAction::DeleteLocal
+                    }
+                    _ => unreachable!(),
+                };
+                let name = self
+                    .server
+                    .library
+                    .page
+                    .as_ref()
+                    .and_then(|page| page.rows.get(index))
+                    .and_then(|row| match row {
+                        crate::open_subsonic::ServerLibraryRow::Playlist(summary) => {
+                            Some(summary.name.clone())
+                        }
+                        _ => None,
+                    })
+                    .unwrap_or_else(|| t!("Playlist", "플레이리스트", "プレイリスト").to_owned());
+                self.start_server_playlist_recovery(
+                    server_id.clone(),
+                    link.local_playlist_id.clone(),
+                    name,
+                    action,
+                )
             }
             _ => Vec::new(),
         }
@@ -1163,3 +1511,7 @@ impl App {
         Vec::new()
     }
 }
+
+#[cfg(test)]
+#[path = "context_menu/tests.rs"]
+mod tests;

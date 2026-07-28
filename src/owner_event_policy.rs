@@ -130,6 +130,9 @@ pub(crate) fn scrobble_event_policy(event: &crate::scrobble::ScrobbleEvent) -> E
         | crate::scrobble::ScrobbleEvent::QueueDropped { .. } => EventPolicy::MustDeliver {
             lane: Lane::Control,
         },
+        crate::scrobble::ScrobbleEvent::OpenSubsonic { .. } => EventPolicy::MustDeliver {
+            lane: Lane::WorkResult,
+        },
         crate::scrobble::ScrobbleEvent::QueueStalled { .. } => EventPolicy::CoalesceLatest {
             lane: Lane::Telemetry,
             key: Key::ScrobbleQueueStalled,
@@ -200,6 +203,26 @@ mod tests {
             EventPolicy::CoalesceLatest {
                 lane: Lane::Telemetry,
                 key: Key::ScrobbleQueueStalled,
+            }
+        );
+        assert_eq!(
+            scrobble_event_policy(&crate::scrobble::ScrobbleEvent::OpenSubsonic {
+                event_id: "server-play-1".to_owned(),
+                kind: crate::open_subsonic::OpenSubsonicScrobbleKind::Submission,
+                track: crate::scrobble::service::ScrobbleTrack {
+                    key: "server-track".to_owned(),
+                    open_subsonic_item: None,
+                    artist: "Artist".to_owned(),
+                    title: "Title".to_owned(),
+                    album: None,
+                    duration_secs: None,
+                    origin_url: None,
+                    started_unix: 1,
+                },
+                confirmation: None,
+            }),
+            EventPolicy::MustDeliver {
+                lane: Lane::WorkResult,
             }
         );
         assert_eq!(

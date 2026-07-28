@@ -9,6 +9,59 @@ impl App {
         row: u16,
         multi: bool,
     ) -> Vec<Cmd> {
+        if self.server.settings.modal_open() {
+            return match self.mouse_target_at(col, row) {
+                Some(
+                    target @ (MouseTarget::MusicServerWizardField(_)
+                    | MouseTarget::MusicServerWizardPrimary
+                    | MouseTarget::MusicServerWizardSecondary
+                    | MouseTarget::MusicServerWizardReveal),
+                ) => self.on_music_server_wizard_mouse_target(target),
+                _ => Vec::new(),
+            };
+        }
+        // The Sync wizard is rendered last and owns the whole screen while open. Only its
+        // explicit controls act; every other click is consumed to prevent click-through.
+        if self.personal_state.sync_ui.modal_open() {
+            return match self.mouse_target_at(col, row) {
+                Some(
+                    target @ (MouseTarget::SyncWizardField(_)
+                    | MouseTarget::SyncWizardPrimary
+                    | MouseTarget::SyncWizardSecondary
+                    | MouseTarget::SyncWizardReveal),
+                ) => self.on_sync_wizard_mouse_target(target),
+                _ => Vec::new(),
+            };
+        }
+        if self.server.library.playlist_create.is_some() {
+            return match self.mouse_target_at(col, row) {
+                Some(
+                    target @ (MouseTarget::ConfirmServerPlaylistCreate
+                    | MouseTarget::CancelServerPlaylistCreate),
+                ) => self.on_mouse_target(target),
+                _ => self.cancel_server_playlist_create(),
+            };
+        }
+        if self.server.library.playlist_recovery.is_some() {
+            return match self.mouse_target_at(col, row) {
+                Some(
+                    target @ (MouseTarget::ConfirmServerPlaylistRecovery
+                    | MouseTarget::CancelServerPlaylistRecovery),
+                ) => self.on_mouse_target(target),
+                _ => self.cancel_server_playlist_recovery(),
+            };
+        }
+        // Server-playlist previews are modal. Only the explicit Apply/Back buttons act; an
+        // outside click backs out and stale hit targets fail closed in `route_mouse_target`.
+        if self.server.library.playlist_preview.is_some() {
+            return match self.mouse_target_at(col, row) {
+                Some(
+                    target @ (MouseTarget::ConfirmServerPlaylistPreview
+                    | MouseTarget::CancelServerPlaylistPreview),
+                ) => self.on_mouse_target(target),
+                _ => self.cancel_server_playlist_preview(),
+            };
+        }
         if self.tool_setup.is_some() {
             return self
                 .mouse_target_at(col, row)
@@ -589,6 +642,51 @@ impl App {
                 Vec::new()
             }
             MouseTarget::LibraryTab(_) => Vec::new(),
+            MouseTarget::LibrarySource(source)
+                if self.mode == Mode::Library && !self.local_dedicated_mode =>
+            {
+                self.select_library_source(source)
+            }
+            MouseTarget::LibrarySource(_) => Vec::new(),
+            MouseTarget::ServerLibrarySection(section)
+                if self.mode == Mode::Library
+                    && self.server.library.source == LibrarySource::OpenSubsonic =>
+            {
+                self.select_server_library_section(section)
+            }
+            MouseTarget::ServerLibrarySection(_) => Vec::new(),
+            MouseTarget::ServerLibraryRow { generation, index }
+                if self.mode == Mode::Library
+                    && self.server.library.source == LibrarySource::OpenSubsonic =>
+            {
+                self.select_server_library_row(generation, index);
+                Vec::new()
+            }
+            MouseTarget::ServerLibraryRow { .. } => Vec::new(),
+            MouseTarget::ServerLibraryBack { generation }
+                if self.mode == Mode::Library
+                    && self.server.library.source == LibrarySource::OpenSubsonic
+                    && generation == self.server.library.generation =>
+            {
+                self.back_server_library()
+            }
+            MouseTarget::ServerLibraryBack { .. } => Vec::new(),
+            MouseTarget::ServerLibraryPreviousPage { generation }
+                if self.mode == Mode::Library
+                    && self.server.library.source == LibrarySource::OpenSubsonic
+                    && generation == self.server.library.generation =>
+            {
+                self.previous_server_library_page()
+            }
+            MouseTarget::ServerLibraryPreviousPage { .. } => Vec::new(),
+            MouseTarget::ServerLibraryNextPage { generation }
+                if self.mode == Mode::Library
+                    && self.server.library.source == LibrarySource::OpenSubsonic
+                    && generation == self.server.library.generation =>
+            {
+                self.next_server_library_page()
+            }
+            MouseTarget::ServerLibraryNextPage { .. } => Vec::new(),
             MouseTarget::LocalNav(i) if self.mode == Mode::Library && self.local_dedicated_mode => {
                 let Some(section) = LocalSection::ALL.get(i).copied() else {
                     return Vec::new();
@@ -625,10 +723,61 @@ impl App {
                 Vec::new()
             }
             MouseTarget::SettingsTab(i) if self.mode == Mode::Settings => {
-                self.settings_select_tab(i);
-                Vec::new()
+                self.settings_select_tab(i)
             }
             MouseTarget::SettingsTab(_) => Vec::new(),
+            MouseTarget::SettingsSyncRow(index)
+                if self.mode == Mode::Settings
+                    && self
+                        .settings
+                        .as_ref()
+                        .is_some_and(|settings| settings.tab == SettingsTab::Sync)
+                    && index < self.sync_settings_model().rows.len() =>
+            {
+                self.personal_state.sync_ui.row = index;
+                self.dirty = true;
+                self.activate_sync_row()
+            }
+            MouseTarget::SettingsSyncRow(_) => Vec::new(),
+            MouseTarget::SettingsSyncArea(area)
+                if self.mode == Mode::Settings
+                    && self
+                        .settings
+                        .as_ref()
+                        .is_some_and(|settings| settings.tab == SettingsTab::Sync) =>
+            {
+                self.select_sync_area(area)
+            }
+            MouseTarget::SettingsSyncArea(_) => Vec::new(),
+            MouseTarget::SettingsMusicServerRow(index)
+                if self.mode == Mode::Settings
+                    && self
+                        .settings
+                        .as_ref()
+                        .is_some_and(|settings| settings.tab == SettingsTab::Sync)
+                    && self.server.settings.area == SyncArea::MusicServer =>
+            {
+                self.activate_music_server_row(index)
+            }
+            MouseTarget::SettingsMusicServerRow(_) => Vec::new(),
+            target @ (MouseTarget::MusicServerWizardField(_)
+            | MouseTarget::MusicServerWizardPrimary
+            | MouseTarget::MusicServerWizardSecondary
+            | MouseTarget::MusicServerWizardReveal) => {
+                self.on_music_server_wizard_mouse_target(target)
+            }
+            target @ (MouseTarget::SyncWizardField(_)
+            | MouseTarget::SyncWizardPrimary
+            | MouseTarget::SyncWizardSecondary
+            | MouseTarget::SyncWizardReveal) => {
+                if self.personal_state.sync_ui.modal_open() {
+                    self.on_sync_wizard_mouse_target(target)
+                } else {
+                    // A stale hit map after the modal closes must fail closed instead of
+                    // reaching the Settings surface underneath it.
+                    Vec::new()
+                }
+            }
             MouseTarget::SettingsChange { row, delta } if self.mode == Mode::Settings => {
                 if self.settings_close_spotify_import_mode_dropdown() {
                     return Vec::new();
@@ -807,6 +956,43 @@ impl App {
                 self.dirty = true;
                 Vec::new()
             }
+            MouseTarget::ConfirmServerPlaylistPreview
+                if self.server.library.playlist_preview.is_some() =>
+            {
+                self.apply_server_playlist_preview()
+            }
+            MouseTarget::CancelServerPlaylistPreview
+                if self.server.library.playlist_preview.is_some() =>
+            {
+                self.cancel_server_playlist_preview()
+            }
+            MouseTarget::ConfirmServerPlaylistPreview
+            | MouseTarget::CancelServerPlaylistPreview => Vec::new(),
+            MouseTarget::ConfirmServerPlaylistCreate
+                if self.server.library.playlist_create.is_some() =>
+            {
+                self.apply_server_playlist_create()
+            }
+            MouseTarget::CancelServerPlaylistCreate
+                if self.server.library.playlist_create.is_some() =>
+            {
+                self.cancel_server_playlist_create()
+            }
+            MouseTarget::ConfirmServerPlaylistCreate | MouseTarget::CancelServerPlaylistCreate => {
+                Vec::new()
+            }
+            MouseTarget::ConfirmServerPlaylistRecovery
+                if self.server.library.playlist_recovery.is_some() =>
+            {
+                self.apply_server_playlist_recovery()
+            }
+            MouseTarget::CancelServerPlaylistRecovery
+                if self.server.library.playlist_recovery.is_some() =>
+            {
+                self.cancel_server_playlist_recovery()
+            }
+            MouseTarget::ConfirmServerPlaylistRecovery
+            | MouseTarget::CancelServerPlaylistRecovery => Vec::new(),
             MouseTarget::ConfirmRadioMode => {
                 let Some(confirm) = self.radio_mode.pending_radio_mode_confirm else {
                     return Vec::new();

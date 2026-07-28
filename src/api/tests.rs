@@ -149,6 +149,80 @@ fn playable_refs_cover_watch_prefetch_and_share_edges() {
 }
 
 #[test]
+fn open_subsonic_refs_keep_exact_identity_without_exposing_an_upstream_url() {
+    use crate::open_subsonic::{AccountScopeId, BackendId, ItemId};
+
+    let item = OpenSubsonicItemRef::new(
+        BackendId::new("backend-a").unwrap(),
+        AccountScopeId::new("account-a").unwrap(),
+        ItemId::new("song-1").unwrap(),
+    );
+    let song = Song::from_source(
+        SearchSource::OpenSubsonic,
+        "ignored-raw-item-id",
+        "Server song",
+        "Server artist",
+        "3:00",
+        PlayableRef::OpenSubsonic {
+            item: item.clone(),
+            cover_art_id: None,
+        },
+    );
+
+    assert_eq!(song.source, SearchSource::OpenSubsonic);
+    assert_eq!(song.video_id, item.stable_track_id());
+    assert_eq!(
+        song.playable,
+        Some(PlayableRef::OpenSubsonic {
+            item: item.clone(),
+            cover_art_id: None,
+        })
+    );
+    assert!(matches!(
+        song.watch_url_checked(),
+        Err(PlayableUrlError::Invalid(message))
+            if message == "OpenSubsonic playback requires the local proxy"
+    ));
+    assert_eq!(
+        song.playback_destination_checked().unwrap(),
+        crate::playback_target::PlaybackDestination::Credentialed(
+            crate::playback_target::CredentialedPlaybackRef::OpenSubsonic {
+                backend_id: "backend-a".to_owned(),
+                account_scope_id: "account-a".to_owned(),
+                item_id: "song-1".to_owned(),
+            }
+        )
+    );
+    assert_eq!(song.watch_url(), "");
+    assert_eq!(song.playback_target(), "");
+    assert!(song.prefetch_target().is_none());
+    assert!(song.youtube_id().is_none());
+    assert!(song.share_url().is_none());
+
+    let encoded = serde_json::to_string(&song.playable).unwrap();
+    assert!(encoded.contains("\"backend_id\":\"backend-a\""));
+    assert!(encoded.contains("\"account_scope_id\":\"account-a\""));
+    assert!(encoded.contains("\"item_id\":\"song-1\""));
+    assert!(!encoded.contains("http"));
+    assert!(!encoded.contains("password"));
+    let decoded: Option<PlayableRef> = serde_json::from_str(&encoded).unwrap();
+    assert_eq!(decoded, song.playable);
+
+    let other_backend = OpenSubsonicItemRef::new(
+        BackendId::new("backend-b").unwrap(),
+        AccountScopeId::new("account-a").unwrap(),
+        ItemId::new("song-1").unwrap(),
+    );
+    let other_account = OpenSubsonicItemRef::new(
+        BackendId::new("backend-a").unwrap(),
+        AccountScopeId::new("account-b").unwrap(),
+        ItemId::new("song-1").unwrap(),
+    );
+    assert_ne!(song.video_id, other_backend.stable_track_id());
+    assert_ne!(song.video_id, other_account.stable_track_id());
+}
+
+#[test]
 fn song_constructors_sanitize_display_metadata() {
     let bidi = '\u{202e}';
     let song = Song::from_search(

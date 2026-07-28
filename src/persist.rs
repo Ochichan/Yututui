@@ -35,6 +35,8 @@ mod locking;
 mod ordered_fallback;
 #[path = "persist/owned_snapshot.rs"]
 mod owned_snapshot;
+#[path = "persist/panic_hook.rs"]
+mod panic_hook;
 #[path = "persist/panic_ownership.rs"]
 mod panic_ownership;
 #[path = "persist/panic_shadow.rs"]
@@ -52,14 +54,18 @@ use durable::allocate_process_epoch_at;
 use durable::{AcceptedJournalOrder, JournalGeneration, JournalOrder, JournalOrderSource};
 #[cfg(test)]
 pub(crate) use locking::with_intent_lock_contention_observer;
+pub(crate) use locking::with_store_intent_lock;
 use locking::{acquire_intent_lock, acquire_intent_lock_with_budget, acquire_private_lock};
 pub use ordered_fallback::PersistenceFallbackError;
 use owned_snapshot::OwnedSnapshot;
-pub use panic_ownership::install_panic_flush;
+pub use owned_snapshot::Snapshot;
+pub use panic_hook::install_panic_flush;
 use panic_ownership::{
     PanicOperation, PanicOwnedOperation, lock_inflight, remove_inflight_if_order,
     retain_newest_inflight, write_panic_operation,
 };
+#[cfg(test)]
+use panic_shadow::panic_slot;
 use panic_shadow::{PanicShadow, PanicShadowSealed};
 #[cfg(test)]
 use recovery::load_with_journal_recovery_then;
@@ -83,6 +89,7 @@ use snapshot_state::{
     JournalCompletion, PendingAction, PendingOperation, PendingQueue, ShadowCoveredOperation,
     SnapshotAdmission, publish_pending_batch, publish_pending_operation,
 };
+pub(crate) use startup::load_personal_state_device_id;
 pub use startup::{
     StartupStoreSet, load_startup_store_set, load_verified_startup_state,
     preflight_all_startup_stores,
@@ -97,6 +104,7 @@ pub(crate) use writer_lease::{persistence_access, writer_lease_allows_mutation};
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum StoreKind {
+    PersonalState,
     Library,
     Signals,
     Downloads,
@@ -110,6 +118,7 @@ pub enum StoreKind {
 impl StoreKind {
     pub fn label(self) -> &'static str {
         match self {
+            StoreKind::PersonalState => "personal state",
             StoreKind::Library => "library",
             StoreKind::Signals => "signals",
             StoreKind::Downloads => "downloads manifest",
@@ -128,51 +137,28 @@ impl StoreKind {
 
 #[derive(Debug, Clone)]
 pub enum PersistEvent {
-    WriteFailed { store: StoreKind, error: String },
-}
-
-type EventSink = Arc<dyn Fn(PersistEvent) + Send + Sync + 'static>;
-type EventSinkSlot = Arc<Mutex<Option<EventSink>>>;
-
-/// Immutable snapshot of one store, taken at send time so the actor never reaches back into
-/// `App`. The large app-owned stores use shared ownership; app mutations copy on write while a
-/// snapshot is live. Writing delegates to the store's own `save()` — same path resolution, same
-/// atomic temp-write + fsync + rename.
-pub enum Snapshot {
-    Library(Arc<crate::library::Library>),
-    Signals(Arc<crate::signals::Signals>),
-    Downloads(crate::downloads::DownloadStore),
-    Config(Box<crate::config::Config>),
-    Playlists(Arc<crate::playlists::Playlists>),
-    Station(crate::station::StationStore),
-    RomanizedTitles(crate::romanize::RomanizeCache),
-    Session(crate::session::SessionCache),
-    #[cfg(test)]
-    Test {
-        kind: StoreKind,
-        label: &'static str,
-        storage_path: Option<PathBuf>,
-        writer: Arc<dyn Fn() -> std::io::Result<()> + Send + Sync>,
+    WriteFailed {
+        store: StoreKind,
+        error: String,
+    },
+    PersonalStateCommitted {
+        revision: u64,
+        state_identity: String,
     },
 }
 
 #[cfg(test)]
-impl Snapshot {
-    fn kind(&self) -> StoreKind {
+impl PersistEvent {
+    pub(crate) fn write_failure(&self) -> Option<(&StoreKind, &String)> {
         match self {
-            Snapshot::Library(_) => StoreKind::Library,
-            Snapshot::Signals(_) => StoreKind::Signals,
-            Snapshot::Downloads(_) => StoreKind::Downloads,
-            Snapshot::Config(_) => StoreKind::Config,
-            Snapshot::Playlists(_) => StoreKind::Playlists,
-            Snapshot::Station(_) => StoreKind::Station,
-            Snapshot::RomanizedTitles(_) => StoreKind::RomanizedTitles,
-            Snapshot::Session(_) => StoreKind::Session,
-            #[cfg(test)]
-            Snapshot::Test { kind, .. } => *kind,
+            Self::WriteFailed { store, error } => Some((store, error)),
+            Self::PersonalStateCommitted { .. } => None,
         }
     }
 }
+
+type EventSink = Arc<dyn Fn(PersistEvent) + Send + Sync + 'static>;
+type EventSinkSlot = Arc<Mutex<Option<EventSink>>>;
 
 /// How long a store may sit dirty before its write lands. The deadline is armed by the
 /// *first* dirty event and not pushed back by later ones, so a continuous stream of
@@ -180,7 +166,9 @@ impl Snapshot {
 fn debounce(kind: StoreKind) -> Duration {
     match kind {
         // Ratings/favorites/likes: flush fast — this is the data a user would miss.
-        StoreKind::Library | StoreKind::Signals => Duration::from_millis(300),
+        StoreKind::PersonalState | StoreKind::Library | StoreKind::Signals => {
+            Duration::from_millis(300)
+        }
         StoreKind::Downloads | StoreKind::Config | StoreKind::Playlists | StoreKind::Station => {
             Duration::from_millis(500)
         }
@@ -1500,10 +1488,20 @@ async fn write_stores_with_inflight_tracking(
                 );
             }
             Ok((Ok(()), operation)) => {
+                let personal_state_commit = operation.ordinary_personal_state_commit();
                 remove_inflight_if_order(inflight, kind, order);
                 panic_shadow.clear_through(kind, order);
                 retries.remove(&operation.kind());
                 completions.record(kind, order);
+                if let Some(Ok((revision, state_identity))) = personal_state_commit {
+                    emit_persist_event(
+                        events,
+                        PersistEvent::PersonalStateCommitted {
+                            revision,
+                            state_identity,
+                        },
+                    );
+                }
             }
         }
     }

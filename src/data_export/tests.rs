@@ -139,6 +139,9 @@ fn completed_export_file_name_shape_is_strict() {
     assert!(is_personal_export_file_name(
         "yututui-personal-data-v1-1783704534-0123456789abcdef.json"
     ));
+    assert!(is_personal_export_file_name(
+        "yututui-personal-data-v2-1783704534-0123456789abcdef.json"
+    ));
     for invalid in [
         "yututui-personal-data-v1-1783704534-0123456789ABCDEf.json",
         "yututui-personal-data-v1-now-0123456789abcdef.json",
@@ -148,6 +151,53 @@ fn completed_export_file_name_shape_is_strict() {
     ] {
         assert!(!is_personal_export_file_name(invalid), "accepted {invalid}");
     }
+}
+
+#[test]
+fn v1_export_decodes_once_as_a_v2_legacy_baseline() {
+    let snapshot = fixture_snapshot();
+    let bytes = serde_json::to_vec(&snapshot).unwrap();
+    let decoded = decode_personal_state_export(&bytes).unwrap();
+
+    assert_eq!(decoded.schema_version, 2);
+    assert_eq!(
+        crate::personal_state::project(&decoded)
+            .unwrap()
+            .legacy
+            .favorites
+            .len(),
+        1,
+        "local and downloaded copies with the same exact YouTube id collapse"
+    );
+    assert_eq!(
+        decoded
+            .operations
+            .iter()
+            .filter(|operation| matches!(
+                operation.operation,
+                crate::personal_state::Operation::LegacyBaseline { .. }
+            ))
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn v2_export_round_trips_and_rejects_private_metadata_claims() {
+    let state = crate::personal_state::legacy_state(
+        &Library::default(),
+        &Playlists::default(),
+        &Signals::default(),
+        &StationStore::default(),
+    )
+    .unwrap();
+    let bytes = serde_json::to_vec(&state).unwrap();
+    assert_eq!(decode_personal_state_export(&bytes).unwrap(), state);
+
+    let mut unsafe_state = state;
+    unsafe_state.metadata.credentials_included = true;
+    let bytes = serde_json::to_vec(&unsafe_state).unwrap();
+    assert!(decode_personal_state_export(&bytes).is_err());
 }
 
 #[test]
@@ -340,4 +390,78 @@ fn symlink_destination_is_rejected() {
     assert!(fs::read_dir(&real).expect("list real").next().is_none());
     fs::remove_file(link).expect("remove symlink");
     fs::remove_dir_all(real).expect("cleanup");
+}
+
+fn multi_device_personal_state() -> (
+    crate::personal_state::PersonalStateV2,
+    crate::personal_state::DeviceId,
+) {
+    use crate::personal_state::{
+        CausalStamp, DeviceId, DeviceRecord, Dot, Operation, OperationEnvelope, OperationOrigin,
+    };
+
+    let mut state =
+        crate::personal_state::PersonalStateV2::empty("multi-device-export".to_owned()).unwrap();
+    let mut local_device = None;
+    for raw_device_id in ["device-a", "device-b"] {
+        let secrets = crate::sync::DeviceSecretMaterial::generate_for(raw_device_id).unwrap();
+        let device_id = DeviceId::new(raw_device_id).unwrap();
+        local_device.get_or_insert_with(|| device_id.clone());
+        let dot = Dot {
+            device_id: device_id.clone(),
+            sequence: 1,
+        };
+        let observed = state.version_vector.clone();
+        state.operations.push(OperationEnvelope {
+            operation_id: format!("add-{raw_device_id}"),
+            stamp: CausalStamp {
+                dot: dot.clone(),
+                observed,
+                recorded_at_unix: 1,
+            },
+            origin: OperationOrigin::Local,
+            operation: Operation::AddDevice {
+                device: DeviceRecord {
+                    device_id,
+                    name: raw_device_id.to_owned(),
+                    revoked: false,
+                    public_identity: Some(secrets.public_identity()),
+                },
+            },
+        });
+        state.version_vector.observe(&dot);
+    }
+    crate::personal_state::refresh_device_registry(&mut state).unwrap();
+    state.normalize().unwrap();
+    (state, local_device.expect("fixture has a local device"))
+}
+
+#[test]
+fn v2_export_uses_explicit_enrolled_device_for_multi_device_state() {
+    let directory = test_directory("multi-device-v2");
+    let (state, local_device) = multi_device_personal_state();
+    let library = Library::default();
+    let playlists = Playlists::default();
+    let signals = Signals::default();
+    let station = StationStore::default();
+
+    assert!(
+        reconcile_v2_sources(&state, None, &library, &playlists, &signals, &station,).is_err(),
+        "multi-device state must never guess which device owns a new causal dot"
+    );
+    let exported = export_v2_from_sources(
+        &directory,
+        &state,
+        Some(&local_device),
+        &library,
+        &playlists,
+        &signals,
+        &station,
+    )
+    .expect("explicit enrolled device permits v2 export");
+    let decoded: crate::personal_state::PersonalStateV2 =
+        serde_json::from_slice(&fs::read(exported).unwrap()).unwrap();
+    assert_eq!(decoded.device_registry, state.device_registry);
+
+    fs::remove_dir_all(directory).expect("cleanup");
 }

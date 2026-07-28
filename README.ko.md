@@ -504,7 +504,7 @@ ytt data export --to ~/existing-folder # 이미 있는 다른 폴더를 선택
 
 인증 쿠키, API 키, OAuth 토큰과 계정 식별값; 모든 파일시스템 경로와 기기별 오디오 설정; 재생·원본·아트워크·라디오 스트림 URL; 다운로드·녹음한 미디어와 manifest·sidecar; 전송 대기 중인 스크로블, 전송 작업·리포트와 세션 큐; AI 사용 데이터, 생성 캐시·아트워크 캐시·로그; 관리형 도구의 바이너리·경로, 데스크톱 창 배치와 복구 백업은 제외됩니다.
 
-이 JSON은 **암호화되지 않으며**, 비밀번호나 토큰은 없어도 개인적인 감상 기록은 들어 있습니다. 보관하거나 공유할 때 개인 파일로 다루세요. 현재 버전은 **내보내기 전용**으로, 가져오기나 복원 명령은 아직 없습니다.
+이 JSON은 **암호화되지 않으며**, 비밀번호나 토큰은 없어도 개인적인 감상 기록은 들어 있습니다. 보관하거나 공유할 때 개인 파일로 다루세요. 다시 가져오는 방법은 아래 내보내기·가져오기 항목에 있습니다.
 
 </details>
 
@@ -530,6 +530,73 @@ ytt tools unpin               # 기본 managed/system 선택 정책으로 복귀
 `YTM_YTDLP`는 여전히 가장 강한 override입니다. OS 설정에서 값을 바꿨다면 새 터미널을 열거나 해당 환경 변수를 해제해야 `ytt tools use ...` 설정이 기대대로 적용됩니다.
 
 앱 자체의 yt-dlp 호출은 기본적으로 여러분의 yt-dlp 설정 파일을 무시하므로, 셸 다운로드용 옵션이 파싱 출력을 깨지 않습니다. 앱 파싱 호출에도 yt-dlp 설정을 쓰려면 `YTM_YTDLP_USER_CONFIG=1`. mpv의 `ytdl_hook`을 통한 재생은 여전히 yt-dlp 설정을 따르고, 검색·플레이리스트 조회·메타데이터·프리페치 해석·다운로드만 기본적으로 무시합니다.
+
+</details>
+
+<details>
+<summary><b>기기 간 암호화 동기화</b></summary>
+
+즐겨찾기·감상 기록·플레이리스트·취향 신호를 WebDAV 폴더(Nextcloud, ownCloud, 대부분의 NAS)를 통해 여러 기기에서 같은 상태로 유지합니다. 업로드 전에 로컬에서 전부 암호화되므로 서버에는 암호문만 남고, 파일 크기와 시각 외에는 아무것도 알 수 없습니다. 직접 켜기 전까지는 꺼져 있습니다.
+
+```sh
+ytt sync setup                        # vault 생성. 복구 키트를 반드시 저장
+ytt sync status [--json]              # Off / Up to date / Syncing / Offline — will retry / Needs attention
+ytt sync now                          # 지금 로컬과 원격 상태를 병합
+
+ytt sync pair create                  # 10분짜리 일회용 연결 코드 출력
+ytt sync pair join <CODE>             # 새 기기에서 실행, 기존 기기에서 승인
+ytt sync pair join --resume           # 중단된 연결을 코드 없이 이어서
+ytt sync pair cancel                  # 끝내지 않은 로컬 연결 폐기
+
+ytt sync devices [--json]             # 활성/제거된 기기 목록
+ytt sync revoke <DEVICE_ID>           # 기기 제거 후 암호화 체크포인트 재잠금
+ytt sync recovery export --to <DIR>   # 복구 키트를 검증하고 복사
+ytt sync audit [--json]               # 개인 정보를 제거한 동기화 감사 로그
+```
+
+WebDAV 자격증명은 화면 표시 없이 입력받으며 명령 인자로는 받지 않습니다. 엔드포인트는 loopback이 아닌 한 HTTPS여야 합니다. status와 audit 출력에서는 엔드포인트·경로·비밀값을 의도적으로 제외합니다.
+
+**복구 키트는 이 컴퓨터가 아닌 곳에 보관하세요.** 누구도 대신 재발급할 수 없습니다. 다만 키트만으로 vault를 다시 세우는 명령은 아직 없으니, 키트를 복원 수단으로 믿기보다 승인된 기기를 최소 한 대 남겨 두세요. 기기를 제거하면 그 이후 올라간 모든 것이 다시 잠기지만, 그 기기가 이미 받아 간 내용까지 되돌리지는 못합니다.
+
+앱에서는 **설정(`o`) → 동기화**에 같은 흐름이 있습니다.
+
+</details>
+
+<details>
+<summary><b>내 음악 서버 (OpenSubsonic / Navidrome)</b></summary>
+
+```sh
+ytt server setup                                   # 서버 연결을 시험하고 저장
+ytt server status [--json]                         # 비밀값을 제거한 연결 상태
+ytt server remove                                  # 프로필 삭제 (로컬 데이터는 유지)
+
+ytt server scrobbles list [--json]                 # 결정이 필요한 재생 리포트
+ytt server scrobbles retry <OPAQUE_ID>             # 미전송으로 간주하고 재시도
+ytt server scrobbles mark-sent <OPAQUE_ID>         # 재시도 없이 전송됨으로 처리
+
+ytt server playlists pending [--json]              # 결정이 필요한 플레이리스트 생성
+ytt server playlists abandon <LOCAL_PLAYLIST_ID>   # 가드만 잊기 (양쪽 모두 삭제 안 함)
+
+ytt server history enable --experimental           # Navidrome 상세 기록 (기본 꺼짐)
+ytt server history disable                         # 저장된 전용 비밀번호도 함께 삭제
+```
+
+비밀번호와 API 키는 화면 표시 없이 입력받으며 명령 인자로는 받지 않습니다. 비밀번호 인증은 요청마다 새로 만든 salt 토큰을 쓰므로 평문 비밀번호는 전송되지 않습니다. 실험적 상세 기록은 전용 비밀번호를 따로 요구하며, 꺼도 일반 서버 접속에는 영향이 없습니다.
+
+앱에서는 **설정(`o`) → 음악 서버**.
+
+</details>
+
+<details>
+<summary><b>개인 데이터 내보내기 · 가져오기</b></summary>
+
+```sh
+ytt data export [--to DIR] [--schema 1|2]   # 버전이 붙은 JSON. 자격증명·미디어 없음
+ytt data import <FILE>                      # 병합 미리보기 (기본값)
+ytt data import <FILE> --apply              # 원자적으로 적용
+```
+
+내보낸 파일은 암호화되지 않으며 감상 기록이 들어 있으므로 개인 파일로 취급하세요. 외부 데이터셋은 아무것도 지우지 않고 병합되고, 같은 데이터셋에서 나온 번들은 인과 순서로 병합되므로 예전 내보내기를 다시 가져와도 최신 감상 기록이 되돌아가지 않습니다.
 
 </details>
 

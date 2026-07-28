@@ -30,12 +30,12 @@ mod terminal_events;
 mod terminal_output;
 use buffered_events::BufferedWorkerEvents;
 use perf_stats::PerfStats;
+use player_startup::spawn_audio_player;
 #[cfg(test)]
 use player_startup::spawn_player_startup;
-use player_startup::{PlayerStartup, spawn_audio_player};
 use recorder_status::recorder_capacity_blocked_status;
 use runtime_paths::{TerminalRuntimePaths, resolve as terminal_runtime_paths};
-use teardown::{OwnerIngressDrain, OwnerTeardown, complete_owner_teardown};
+use teardown::{LiveOwnerTeardown, complete_owner_teardown};
 use terminal_events::TerminalEventWorker;
 #[cfg(test)]
 use terminal_output::finish_draw_cycle;
@@ -270,220 +270,6 @@ impl TerminalBackgroundTasks {
     }
 }
 
-struct LiveOwnerTeardown<'a> {
-    app: &'a mut App,
-    handles: &'a mut runtime::RuntimeHandles,
-    player_startup: &'a mut PlayerStartup,
-    terminal_background: &'a mut TerminalBackgroundTasks,
-    media: &'a mut media::MediaSession,
-    publisher: Option<&'a remote::publish::Publisher>,
-    remote_guard: Option<&'a mut remote::server::InstanceGuard>,
-    persist: &'a persist::PersistHandle,
-    pending_worker_events: &'a mut BufferedWorkerEvents,
-    pending_shutdown_events: &'a mut VecDeque<RuntimeEvent>,
-    worker_rx: &'a mut tokio::sync::mpsc::Receiver<RuntimeEvent>,
-}
-
-impl LiveOwnerTeardown<'_> {
-    fn reduce_runtime_shutdown_event(
-        &mut self,
-        event: RuntimeEvent,
-        drain: &mut OwnerIngressDrain,
-    ) {
-        match event {
-            RuntimeEvent::Remote(
-                remote_event @ (remote::server::RemoteEvent::Command(_, _)
-                | remote::server::RemoteEvent::SessionCommand { .. }),
-            ) => {
-                drain.remote_requests += 1;
-                self.handles
-                    .reduce_shutdown_event(self.app, RuntimeEvent::Remote(remote_event));
-            }
-            RuntimeEvent::Remote(remote::server::RemoteEvent::SessionSubscribe {
-                session,
-                frame_id,
-                page_id,
-                topics: _,
-                settlement,
-            }) => {
-                drain.subscribe_requests += 1;
-                if !self.publisher.is_some_and(|publisher| {
-                    publisher.reject_subscribe_for_shutdown(
-                        &session,
-                        page_id.as_deref(),
-                        frame_id,
-                        settlement,
-                    )
-                }) {
-                    tracing::debug!(
-                        frame_id,
-                        ?page_id,
-                        "retired queued session subscribe during owner shutdown"
-                    );
-                }
-            }
-            RuntimeEvent::TelemetryWake => {
-                for coalesced in self.handles.drain_background_coalesced() {
-                    self.reduce_runtime_shutdown_event(coalesced, drain);
-                }
-            }
-            event => self.handles.reduce_shutdown_event(self.app, event),
-        }
-    }
-}
-
-impl OwnerTeardown for LiveOwnerTeardown<'_> {
-    fn quiesce_remote(&mut self) {
-        if let Some(guard) = self.remote_guard.as_deref_mut() {
-            guard.quiesce_owner_admission();
-        } else if let Some(publisher) = self.publisher {
-            publisher.quiesce_owner_admission();
-        }
-    }
-
-    fn retire_player(&mut self) {
-        self.handles.begin_player_shutdown(self.app);
-    }
-
-    fn close_ingress(&mut self) {
-        // Reject new producers without closing the receiver: callback retries are released, while
-        // already accepted main/deferred/coalesced events remain available to the final drain.
-        self.handles.close_event_ingress();
-    }
-
-    fn deactivate_media(&mut self) {
-        let _ = self.media.set_enabled(false);
-    }
-
-    async fn drain_owner_ingress(&mut self) -> OwnerIngressDrain {
-        let mut drain = OwnerIngressDrain::default();
-        while let Some(event) = self.pending_worker_events.pop_front() {
-            self.reduce_runtime_shutdown_event(event, &mut drain);
-        }
-        while let Some(event) = self.pending_shutdown_events.pop_front() {
-            self.reduce_runtime_shutdown_event(event, &mut drain);
-        }
-        loop {
-            while let Ok(event) = self.worker_rx.try_recv() {
-                self.reduce_runtime_shutdown_event(event, &mut drain);
-            }
-            if self.handles.background_ingress_is_idle() {
-                match self.worker_rx.try_recv() {
-                    Ok(event) => {
-                        self.reduce_runtime_shutdown_event(event, &mut drain);
-                        continue;
-                    }
-                    Err(
-                        tokio::sync::mpsc::error::TryRecvError::Empty
-                        | tokio::sync::mpsc::error::TryRecvError::Disconnected,
-                    ) => break,
-                }
-            }
-            // The drainer may publish after the empty try-receive or may have completed its final
-            // send without retiring in-flight accounting yet. Yield and recheck both predicates;
-            // never wait on a receiver whose sender handles deliberately remain alive.
-            tokio::task::yield_now().await;
-        }
-        for coalesced in self.handles.drain_background_coalesced() {
-            self.reduce_runtime_shutdown_event(coalesced, &mut drain);
-        }
-        self.worker_rx.close();
-        drain
-    }
-
-    async fn await_remote_reply_flush(&mut self) {
-        if let Some(publisher) = self.publisher
-            && !publisher.wait_for_wire_settlements().await
-        {
-            // The structural barrier owns the normal path. This tiny final window is only a
-            // scheduler fallback after the bounded writer budget was exhausted and logged.
-            remote::await_shutdown_reply_grace().await;
-        }
-    }
-
-    async fn shutdown_remote(&mut self) {
-        // The endpoint must be unlinked while this guard still owns the listener. If the hub were
-        // latched first, the listener could drop and a successor could rebind before our late
-        // path cleanup, letting the old process delete the new socket.
-        if let Some(guard) = self.remote_guard.as_deref_mut() {
-            guard.release_endpoint();
-        }
-        if let Some(publisher) = self.publisher {
-            publisher.shutting_down();
-        }
-        if let Some(guard) = self.remote_guard.as_deref_mut() {
-            guard.shutdown().await;
-        }
-    }
-
-    async fn reap_player_startup(&mut self) {
-        self.player_startup.cancel_and_join().await;
-    }
-
-    fn close_video(&mut self) {
-        self.app.close_video();
-    }
-
-    async fn shutdown_terminal_background(&mut self) -> Option<std::io::Error> {
-        self.terminal_background.shutdown().await
-    }
-
-    async fn shutdown_resolver(&mut self) {
-        self.handles
-            .resolver_shutdown(Duration::from_millis(3500))
-            .await;
-    }
-
-    async fn shutdown_runtime_background(&mut self) -> runtime::BackgroundShutdown {
-        // Runtime-local jobs close admission together with the player barrier. Cancellable work
-        // is aborted; real blocking work gets a bounded join window and reports exact leftovers.
-        // The teardown driver preserves a timeout and invokes this once more after transfer and
-        // download actors stop, before persistence flush.
-        self.handles
-            .background_shutdown(Duration::from_millis(3500))
-            .await
-    }
-
-    async fn shutdown_transfer(&mut self) {
-        // Transfer owns auth, playlist, and import child tasks. Stop it while the runtime ingress
-        // still exists so the actor can interrupt reliable retries, then reap every child.
-        self.handles
-            .transfer_shutdown(Duration::from_millis(3500))
-            .await;
-    }
-
-    async fn shutdown_downloads(&mut self) {
-        // Stop yt-dlp/ffmpeg process groups before slower persistence/scrobble work.
-        self.handles
-            .download_shutdown(Duration::from_millis(3500))
-            .await;
-    }
-
-    async fn finalize_runtime_background(&mut self) {
-        let fallback = self.handles.finalize_background().await;
-        // Main/deferred/coalesced work was settled before the remote/session owner closed. Only
-        // exact terminal completions which crossed the closed-ingress boundary remain here.
-        for event in fallback {
-            self.handles.reduce_shutdown_event(self.app, event);
-        }
-    }
-
-    async fn flush_persistence(&mut self) -> Result<()> {
-        // Publish all authoritative quit snapshots, then drain the actor. A timeout retries every
-        // still-owned journal frontier and reports any operation whose durability is unconfirmed.
-        flush_owner_persistence(self.app, self.persist).await
-    }
-
-    async fn shutdown_scrobble(&mut self) -> Result<()> {
-        // The deadline is diagnostic only. Accepted local durability is joined before the
-        // terminal returns, while the actor's network flush remains internally bounded.
-        self.handles
-            .scrobble_shutdown(Duration::from_millis(1500))
-            .await
-            .map_err(|error| anyhow::anyhow!("scrobble shutdown durability failed: {error}"))
-    }
-}
-
 async fn finish_interrupted_startup(
     app: &App,
     persist: &persist::PersistHandle,
@@ -582,6 +368,8 @@ pub async fn run(
     app.art.picker = art_picker;
     log_art_picker(app.art.picker.as_ref());
     let PersistentStartupState {
+        personal_state,
+        personal_state_device_id,
         library,
         session_cache,
         signals,
@@ -591,6 +379,8 @@ pub async fn run(
         station,
         romanization,
     } = persistent;
+    app.personal_state.replace_ledger(personal_state);
+    app.personal_state.device_id = personal_state_device_id;
     app.library = Arc::new(library);
     app.signals = Arc::new(signals);
     app.download_store = download_store;
@@ -616,7 +406,6 @@ pub async fn run(
     // Load local playlists (the DJ Gem playlist tools read/write these). Hand-edited or old
     // files are count-repaired on load; persist the repaired snapshot so startup does not keep
     // redoing the same repair every run.
-    let playlists_repaired_at_startup = playlist_repair.changed();
     app.playlists = Arc::new(loaded_playlists);
     if playlist_repair.changed() {
         tracing::warn!(?playlist_repair, "playlists file was repaired on load");
@@ -662,11 +451,6 @@ pub async fn run(
     // No actor or direct writer can run with a stale read-only fallback snapshot.
     let persist = persist::spawn();
     persist::install_panic_flush(persist.pending());
-    if playlists_repaired_at_startup
-        && let Err(error) = persist.save(persist::Snapshot::Playlists(app.playlists.clone()))
-    {
-        tracing::warn!(%error, "startup playlist repair remains read-only");
-    }
     // Push persisted playback/EQ settings (preset, bands, normalize, speed, autoplay).
     app.apply_config(&cfg);
     app.restore_last_session_from_cache(&session_cache);
@@ -858,13 +642,13 @@ pub async fn run(
     // found a live descriptor but nothing was accepting/answering yet. The socket itself is
     // already bound (in `bind_or_detect`), so the single-instance guard is in force from launch.
 
-    // Spawn mpv off the startup path. Until the IPC actor is ready, reducer-emitted
-    // PlayerCmds are buffered by RuntimeHandles and replayed in order.
+    let open_subsonic_routes = crate::playback_target::PlaybackRouteProviderSlot::default();
     let mut player_startup = spawn_audio_player(
         worker_tx.clone(),
         player_registry_dir.clone(),
         &player_runtime,
         shutdown.clone(),
+        open_subsonic_routes.handle(),
     );
     let mut player_ready_pending = true;
     startup.mark("mpv_spawned");
@@ -924,7 +708,27 @@ pub async fn run(
         ai_handle,
         scrobble_handle,
         persist.clone(),
+        open_subsonic_routes.clone(),
     );
+    if let Some(data_root) = data_dir.clone() {
+        let _ = handles.spawn_open_subsonic_reload(
+            0,
+            crate::open_subsonic::OpenSubsonicPaths::for_data_root(data_root),
+        );
+    }
+    let network_changes = crate::sync::NetworkChangeWatch::start();
+
+    let automatic_sync_active = !persistence_read_only
+        && app.personal_state.device_id.is_some()
+        && crate::sync::SyncPaths::current()
+            .ok()
+            .and_then(|paths| crate::sync::service::read_status(&paths).ok())
+            .is_some_and(|status| status.configured);
+    if automatic_sync_active {
+        for command in app.enable_automatic_sync() {
+            handles.dispatch(&mut app, command);
+        }
+    }
 
     if let Some(cmd) = app.take_beginner_startup_persist() {
         handles.dispatch(&mut app, cmd);
@@ -1091,6 +895,7 @@ pub async fn run(
 
     enum OwnerTurnInput {
         Local(Msg),
+        NetworkReconnect,
         BufferedWorker(RuntimeEvent),
         Worker(RuntimeEvent),
     }
@@ -1124,6 +929,10 @@ pub async fn run(
         // Mostly blocks until input or a worker message arrives. Outside text-entry fields,
         // a low-rate redraw scrubs IME preedit text that some terminals paint without
         // sending an input event to the app.
+        let waiting_for_connectivity = app.automatic_sync_waiting_for_connectivity();
+        if !waiting_for_connectivity && let Some(network_changes) = network_changes.as_ref() {
+            network_changes.park();
+        }
         let input = if let Some(pending) =
             pending_worker_events.pop_current(|event| handles.player_event_is_current(event))
         {
@@ -1138,6 +947,9 @@ pub async fn run(
                     handles.begin_player_shutdown(&mut app);
                     break 'owner;
                 },
+                _ = crate::sync::NetworkChangeWatch::changed_or_pending(
+                    network_changes.as_ref()
+                ), if waiting_for_connectivity => OwnerTurnInput::NetworkReconnect,
                 _ = tokio::time::sleep_until(tokio::time::Instant::from_std(
                     media.retry_deadline().unwrap_or_else(Instant::now)
                 )), if media.retry_deadline().is_some() => {
@@ -1275,6 +1087,9 @@ pub async fn run(
                     perf.maybe_log(&app);
                     continue;
                 },
+                _ = tokio::time::sleep_until(tokio::time::Instant::from_std(
+                    app.automatic_sync_deadline().unwrap_or_else(Instant::now)
+                )), if app.automatic_sync_deadline().is_some() => OwnerTurnInput::Local(Msg::AutomaticSyncTick),
                 _ = status_tick.tick(), if app.status_visible() || app.lyrics.delay_osd_until.is_some() => OwnerTurnInput::Local(Msg::StatusTick),
                 _ = lyrics_tick.tick(), if app.lyrics_clock_active() => OwnerTurnInput::Local(Msg::LyricsTick),
                 _ = anim_tick.tick(), if app.animation_active() => OwnerTurnInput::Local(Msg::AnimTick),
@@ -1299,7 +1114,7 @@ pub async fn run(
             match input {
                 OwnerTurnInput::BufferedWorker(event) => pending_worker_events.push_front(event),
                 OwnerTurnInput::Worker(event) => pending_shutdown_events.push_back(event),
-                OwnerTurnInput::Local(_) => {}
+                OwnerTurnInput::Local(_) | OwnerTurnInput::NetworkReconnect => {}
             }
             handles.begin_player_shutdown(&mut app);
             break;
@@ -1307,6 +1122,12 @@ pub async fn run(
 
         let msg = match input {
             OwnerTurnInput::Local(msg) => msg,
+            OwnerTurnInput::NetworkReconnect => {
+                for command in app.note_webdav_connectivity() {
+                    handles.dispatch(&mut app, command);
+                }
+                continue;
+            }
             // Owner lane (docs/gui/02 §8/§14): session subscribe ops run here, between reducer
             // turns, and never become a Msg. Keeping it as RuntimeEvent through the shutdown
             // latch check preserves the correlated request if shutdown wins this turn.
@@ -1331,9 +1152,49 @@ pub async fn run(
                 }
                 continue;
             }
+            OwnerTurnInput::BufferedWorker(RuntimeEvent::OpenSubsonicReloaded {
+                generation,
+                result,
+            })
+            | OwnerTurnInput::Worker(RuntimeEvent::OpenSubsonicReloaded { generation, result }) => {
+                handles.install_open_subsonic_runtime(generation, result);
+                handles.maintain_open_subsonic_bridge(&app);
+                continue;
+            }
+            OwnerTurnInput::BufferedWorker(RuntimeEvent::OpenSubsonicBridge(import))
+            | OwnerTurnInput::Worker(RuntimeEvent::OpenSubsonicBridge(import)) => {
+                handles.apply_open_subsonic_bridge_import(&mut app, import);
+                handles.maintain_open_subsonic_bridge(&app);
+                continue;
+            }
+            OwnerTurnInput::BufferedWorker(RuntimeEvent::Scrobble(
+                crate::scrobble::ScrobbleEvent::OpenSubsonic {
+                    event_id,
+                    kind,
+                    track,
+                    confirmation,
+                },
+            ))
+            | OwnerTurnInput::Worker(RuntimeEvent::Scrobble(
+                crate::scrobble::ScrobbleEvent::OpenSubsonic {
+                    event_id,
+                    kind,
+                    track,
+                    confirmation,
+                },
+            )) => {
+                handles.queue_open_subsonic_scrobble(event_id, kind, track, confirmation);
+                continue;
+            }
             OwnerTurnInput::BufferedWorker(mut event) | OwnerTurnInput::Worker(mut event) => {
                 if let RuntimeEvent::Player(player_event) = &mut event {
                     handles.reconcile_cache_safety_event(player_event);
+                }
+                if let RuntimeEvent::Persist(
+                    crate::persist::PersistEvent::PersonalStateCommitted { state_identity, .. },
+                ) = &event
+                {
+                    handles.note_open_subsonic_personal_state_commit(&app, state_identity);
                 }
                 event.into()
             }
@@ -1406,9 +1267,11 @@ pub async fn run(
                 player_registry_dir.clone(),
                 &player_runtime,
                 shutdown.clone(),
+                open_subsonic_routes.handle(),
             );
             player_ready_pending = true;
         }
+        handles.maintain_open_subsonic_bridge(&app);
         if resized_artwork {
             perf.record_art_resize();
         }
