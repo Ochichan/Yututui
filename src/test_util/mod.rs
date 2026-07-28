@@ -1,29 +1,51 @@
 pub mod env;
 
-/// Runs `f` with `YTM_DATA_DIR` pointed at a directory no other test uses.
+/// Runs `f` with `YTM_DATA_DIR` and `YTM_CACHE_DIR` pointed at directories no other test uses.
 ///
 /// Under `#[cfg(test)]` every store resolves inside one process-wide sandbox, so each test that
-/// writes through a real store shares the same files — `<data dir>/playlists.json` in particular.
-/// Two tests interleaving a load-modify-save there lose one of the writes, which surfaces as an
-/// assertion that a playlist the test had just created is missing. It only reproduces under load,
-/// which is why it looked like a platform flake on CI rather than a shared-state bug.
+/// writes through a real store shares the same files — `<data dir>/playlists.json` and
+/// `<cache dir>/session.json` in particular. Two tests interleaving a load-modify-save there lose
+/// one of the writes, which surfaces as an assertion that a playlist the test had just created is
+/// missing. It only reproduces under load, which is why it looked like a platform flake on CI
+/// rather than a shared-state bug.
 ///
-/// The override is thread-scoped by `paths::env_dir`, so it isolates the calling test without
+/// The cache half matters for a second reason. On Windows a concurrent atomic replace of the same
+/// file can fail outright, and a daemon command whose save fails does not merely lose a write: the
+/// engine replaces its success-shaped response with `durability_unconfirmed`, while the App owner
+/// has no such gate and still reports success. In the App/daemon parity tests that reads as the
+/// two owners disagreeing about a queue edit — a projection divergence that never happened.
+///
+/// The overrides are thread-scoped by `paths::env_dir`, so they isolate the calling test without
 /// changing what parallel readers on other threads see.
 #[cfg(test)]
 pub fn with_isolated_data_dir<T>(label: &str, f: impl FnOnce() -> T) -> T {
+    let (data, cache) = isolated_dir_pair(label);
+    env::with_vars(
+        &[
+            ("YTM_DATA_DIR", Some(&*data.to_string_lossy())),
+            ("YTM_CACHE_DIR", Some(&*cache.to_string_lossy())),
+        ],
+        f,
+    )
+}
+
+#[cfg(test)]
+fn isolated_dir_pair(label: &str) -> (std::path::PathBuf, std::path::PathBuf) {
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static NEXT: AtomicU64 = AtomicU64::new(0);
     let sequence = NEXT.fetch_add(1, Ordering::Relaxed);
-    let dir = crate::paths::test_base().join(format!("isolated-data-{label}-{sequence}"));
-    std::fs::create_dir_all(&dir).expect("create the isolated test data directory");
-    env::with_var("YTM_DATA_DIR", Some(&dir.to_string_lossy()), f)
+    let base = crate::paths::test_base();
+    let data = base.join(format!("isolated-data-{label}-{sequence}"));
+    let cache = base.join(format!("isolated-cache-{label}-{sequence}"));
+    std::fs::create_dir_all(&data).expect("create the isolated test data directory");
+    std::fs::create_dir_all(&cache).expect("create the isolated test cache directory");
+    (data, cache)
 }
 
-/// Drives `future` to completion with an isolated data directory installed.
+/// Drives `future` to completion with isolated data and cache directories installed.
 ///
-/// The env override and the thread-scoped flag that exposes it both live on one thread, so the
+/// The env overrides and the thread-scoped flag that exposes them both live on one thread, so the
 /// future has to run there too: a current-thread runtime built inside the scope. Tests needing
 /// this cannot stay `#[tokio::test]`, whose runtime is created outside any scope we control.
 #[cfg(test)]
@@ -64,6 +86,36 @@ mod tests {
         assert_ne!(first, second, "two calls must not share a directory");
         assert_eq!(
             crate::paths::data_dir(),
+            Some(shared),
+            "the override must not outlive its scope"
+        );
+    }
+
+    /// `session.json` lives under the cache dir, not the data dir. Isolating only the data half
+    /// left every parity test writing one shared file, and on Windows a failed write there turns
+    /// an engine command into `durability_unconfirmed` while the App still reports success.
+    #[test]
+    fn isolated_scope_moves_the_session_cache_too() {
+        let shared = crate::session::session_cache_path().expect("sandboxed session path");
+
+        let first = with_isolated_data_dir("selftest-cache", || {
+            let cache = crate::paths::cache_dir().expect("isolated cache dir");
+            let path = crate::session::session_cache_path().expect("isolated session path");
+            assert_ne!(path, shared, "session.json did not follow the override");
+            assert_eq!(
+                path,
+                cache.join("session.json"),
+                "session.json must resolve inside the isolated cache dir"
+            );
+            path
+        });
+
+        let second = with_isolated_data_dir("selftest-cache", || {
+            crate::session::session_cache_path().expect("isolated session path")
+        });
+        assert_ne!(first, second, "two calls must not share a session file");
+        assert_eq!(
+            crate::session::session_cache_path(),
             Some(shared),
             "the override must not outlive its scope"
         );

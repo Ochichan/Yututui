@@ -163,6 +163,23 @@ pub(super) fn seed_snapshot() -> QueueSnapshot {
     queue.snapshot()
 }
 
+/// Stop the parity engine writing through real stores.
+///
+/// Under `#[cfg(test)]` every store resolves inside one process-wide sandbox, so the engine's
+/// `save_session` — which `queue_remove` ends in — targets one `<cache dir>/session.json` shared by
+/// the whole suite. On Windows a concurrent replace there can fail, and a daemon command whose save
+/// fails does not merely lose a write: `finish_remote_persistence` replaces its success-shaped
+/// response with `durability_unconfirmed`. The App owner has no such gate and still reports
+/// success, so the parity assertion reads it as the two owners disagreeing about a queue edit when
+/// nothing about playback diverged.
+///
+/// These tests compare projections and responses, never durability; the persistence gate has its
+/// own coverage in `engine/persistence_gate_tests.rs`. Same reason and same mechanism as
+/// `engine/accounts.rs`, which sets this flag so "saves become no-ops in tests".
+fn silence_engine_persistence(engine: &mut DaemonEngine) {
+    engine.silence_remote_persistence_for_test();
+}
+
 /// Both owners on identical default config + the same restored queue, with the known baseline
 /// differences aligned.
 pub(super) fn hermetic_pair() -> (App, DaemonEngine) {
@@ -178,6 +195,7 @@ pub(super) fn hermetic_pair() -> (App, DaemonEngine) {
         },
         Arc::new(|_event| {}),
     );
+    silence_engine_persistence(&mut engine);
     engine.restore_queue_snapshot(snap.clone(), RNG_SEED);
 
     let mut app = App::new(Config::default().volume);
@@ -203,6 +221,7 @@ pub(super) fn hermetic_pair_from_config(
         },
         Arc::new(|_event| {}),
     );
+    silence_engine_persistence(&mut engine);
     engine.restore_queue_snapshot(snap.clone(), RNG_SEED);
 
     let mut app = App::new(config.volume);
@@ -345,5 +364,36 @@ pub(super) fn gui_repeat(repeat: Repeat) -> RemoteCommand {
             field: "repeat".to_owned(),
             value: serde_json::to_value(repeat).unwrap(),
         },
+    }
+}
+
+#[cfg(test)]
+mod persistence_isolation_tests {
+    use super::*;
+
+    /// `queue_remove` ends in `save_session`, and under `#[cfg(test)]` that targets the one
+    /// `<cache dir>/session.json` the whole suite shares. On Windows a concurrent replace there can
+    /// fail, and `finish_remote_persistence` then answers `durability_unconfirmed` instead of the
+    /// command's success — which the parity assertion reads as the two owners disagreeing.
+    ///
+    /// Injecting the failure proves the seam rather than inferring it: with saves silenced the
+    /// engine never attempts one, so a failure that would otherwise rewrite the response cannot.
+    /// Asserting on the shared file itself would measure whatever else the suite is writing.
+    #[tokio::test]
+    async fn a_silenced_engine_survives_a_session_save_failure() {
+        let _fail =
+            crate::daemon::engine::fail_store_saves_for_test(crate::persist::StoreKind::Session);
+
+        let (_app, mut engine) = hermetic_pair();
+        let (response, _shutdown, _effects) = engine
+            .handle_remote(RemoteCommand::QueueRemove { position: 0 })
+            .await;
+
+        assert!(response.ok, "{response:?}");
+        assert_ne!(
+            response.reason.as_deref(),
+            Some("durability_unconfirmed"),
+            "the parity engine still persisted, so a failed save rewrote its response"
+        );
     }
 }

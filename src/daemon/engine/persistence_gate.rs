@@ -126,6 +126,10 @@ impl DaemonEngine {
     }
 
     fn should_skip_remote_save(&self) -> bool {
+        #[cfg(test)]
+        if self.persistence_disabled_for_test {
+            return true;
+        }
         self.remote_persistence_command_active
             && (self.remote_persistence_write_failed || self.remote_persistence_read_only)
     }
@@ -313,6 +317,21 @@ impl DaemonEngine {
         }
     }
 
+    /// Test seam: make every durable save a no-op for an engine built outside a real daemon.
+    ///
+    /// Under `#[cfg(test)]` every store resolves inside one process-wide sandbox, so an engine
+    /// constructed for a unit test writes the same files as every other test. A save that fails
+    /// there is not merely a lost write: `finish_remote_persistence` replaces the command's
+    /// success-shaped response with `durability_unconfirmed`, which reads as a behavioural
+    /// difference the test never intended to exercise.
+    ///
+    /// Deliberately not `remote_persistence_read_only`: `preflight_remote_persistence` resets that
+    /// on every command, so it cannot express a standing choice made once at construction.
+    #[cfg(test)]
+    pub(in crate::daemon) fn silence_remote_persistence_for_test(&mut self) {
+        self.persistence_disabled_for_test = true;
+    }
+
     pub(super) fn finish_remote_persistence(
         &mut self,
         response: RemoteResponse,
@@ -366,7 +385,7 @@ pub(super) fn fail_recovery_for_test(error: StartupRecoveryError) -> TestRecover
 }
 
 #[cfg(test)]
-pub(super) struct TestSaveFailureGuard {
+pub(in crate::daemon) struct TestSaveFailureGuard {
     previous: Option<StoreKind>,
 }
 
@@ -378,7 +397,7 @@ impl Drop for TestSaveFailureGuard {
 }
 
 #[cfg(test)]
-pub(super) fn fail_store_saves_for_test(kind: StoreKind) -> TestSaveFailureGuard {
+pub(in crate::daemon) fn fail_store_saves_for_test(kind: StoreKind) -> TestSaveFailureGuard {
     let previous = TEST_SAVE_FAILURE.with(|failure| failure.replace(Some(kind)));
     TestSaveFailureGuard { previous }
 }

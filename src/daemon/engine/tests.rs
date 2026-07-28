@@ -92,6 +92,7 @@ pub(in crate::daemon) fn engine_with_queue(ids: &[&str]) -> DaemonEngine {
         remote_persistence_error: None,
         remote_persistence_command_active: false,
         remote_persistence_read_only: false,
+        persistence_disabled_for_test: false,
         consecutive_play_errors: 0,
         heal_pending: None,
         heal_attempted: HashSet::new(),

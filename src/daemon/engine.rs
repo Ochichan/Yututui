@@ -58,6 +58,8 @@ use engine_session::{DaemonOutcome, DaemonSessionEvent, data_dir};
 pub(super) use gui_search::RequesterKey;
 use gui_search::{GuiSearchAdmission, GuiSearchIndex};
 #[cfg(test)]
+pub(in crate::daemon) use persistence_gate::fail_store_saves_for_test;
+#[cfg(test)]
 use transport::TransportRecovery;
 use transport::TransportRecoveryState;
 
@@ -183,6 +185,9 @@ pub struct DaemonEngine {
     remote_persistence_error: Option<String>,
     remote_persistence_command_active: bool,
     remote_persistence_read_only: bool,
+    /// Test-only standing choice; see `silence_remote_persistence_for_test`.
+    #[cfg(test)]
+    persistence_disabled_for_test: bool,
     consecutive_play_errors: u8,
     /// yt-dlp self-heal bookkeeping (mirrors the TUI's `YtdlpHeal`): the in-flight
     /// healed track, the per-track one-shot guard, and the update-check cooldown.
@@ -376,6 +381,8 @@ impl DaemonEngine {
             remote_persistence_error: None,
             remote_persistence_command_active: false,
             remote_persistence_read_only: false,
+            #[cfg(test)]
+            persistence_disabled_for_test: false,
             consecutive_play_errors: 0,
             heal_pending: None,
             heal_attempted: HashSet::new(),
