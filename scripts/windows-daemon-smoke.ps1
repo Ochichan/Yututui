@@ -21,6 +21,10 @@ $WorkRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("yututui-windows-smoke-
 $BackupRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("yututui-windows-smoke-backup-" + [Guid]::NewGuid().ToString("N"))
 $RunKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
 $RunName = "YuTuTray!"
+# Mirror unix-daemon-smoke.sh's wait budget (YTM_SMOKE_WAIT_SECONDS, default 30s). The old
+# 10s default flaked on hosted runners: the resume wait covers the job's first-ever mpv
+# launch, where Defender scans the freshly extracted, unsigned mpv.exe before it can play.
+$SmokeWaitSeconds = if ($env:YTM_SMOKE_WAIT_SECONDS) { [int]$env:YTM_SMOKE_WAIT_SECONDS } else { 30 }
 
 function Assert-FileExists {
     param([string]$Path)
@@ -73,7 +77,7 @@ function Wait-Until {
     param(
         [scriptblock]$Condition,
         [string]$Label,
-        [int]$TimeoutSeconds = 10
+        [int]$TimeoutSeconds = $script:SmokeWaitSeconds
     )
     $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
     do {
