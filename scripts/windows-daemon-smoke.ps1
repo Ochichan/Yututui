@@ -227,6 +227,7 @@ $profileBackups = @()
 $hadRunValue = $false
 $oldRunValue = $null
 $oldMpvExtra = [Environment]::GetEnvironmentVariable("YTM_MPV_EXTRA", "Process")
+$oldRustLog = [Environment]::GetEnvironmentVariable("RUST_LOG", "Process")
 $mpvBaseline = @(Get-Process -Name "mpv" -ErrorAction SilentlyContinue | ForEach-Object { $_.Id })
 
 try {
@@ -315,6 +316,9 @@ try {
     } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $dataDir "library.json") -Encoding UTF8
 
     [Environment]::SetEnvironmentVariable("YTM_MPV_EXTRA", "--ao=null --volume=0", "Process")
+    # RUST_LOG is on the daemon-child env allowlist (util/process.rs): debug-level daemon.log
+    # is the only Windows-side evidence when a wait below times out.
+    [Environment]::SetEnvironmentVariable("RUST_LOG", "debug", "Process")
 
     Invoke-Checked $Ytt @("daemon", "start") | Out-Null
     Wait-Until -Label "idle daemon status" -Condition {
@@ -330,7 +334,7 @@ try {
         throw "idle daemon spawned mpv unexpectedly: $($idleMpv.Id -join ', ')"
     }
 
-    Invoke-Checked $Ytt @("daemon", "start", "--resume") | Out-Null
+    Write-Host ("daemon start --resume: " + (Invoke-Checked $Ytt @("daemon", "start", "--resume")))
     Wait-Until -Label "resumed daemon playback" -Condition {
         try {
             $status = Get-DaemonStatus
@@ -403,12 +407,24 @@ try {
     }
 
     Write-Host "Windows daemon/tray smoke passed"
+} catch {
+    Write-Host "--- smoke failure diagnostics ---"
+    Write-Host "failure: $_"
+    & $Ytt daemon status --json 2>&1 | ForEach-Object { Write-Host "daemon status: $_" }
+    $global:LASTEXITCODE = 0
+    Get-ChildItem -LiteralPath (Join-Path $cacheDir "logs") -Filter "daemon.log*" -File -ErrorAction SilentlyContinue |
+        ForEach-Object {
+            Write-Host "--- daemon log tail: $($_.FullName) ---"
+            Get-Content -LiteralPath $_.FullName -Tail 250 | ForEach-Object { Write-Host $_ }
+        }
+    throw
 } finally {
     try {
         Invoke-Checked $Ytt @("daemon", "stop") | Out-Null
     } catch {
     }
     [Environment]::SetEnvironmentVariable("YTM_MPV_EXTRA", $oldMpvExtra, "Process")
+    [Environment]::SetEnvironmentVariable("RUST_LOG", $oldRustLog, "Process")
     if ($hadRunValue) {
         New-Item -Path $RunKey -Force | Out-Null
         New-ItemProperty -Path $RunKey -Name $RunName -Value $oldRunValue -PropertyType String -Force | Out-Null
