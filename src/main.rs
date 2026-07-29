@@ -269,9 +269,17 @@ fn run() -> Result<()> {
     // Custom runtime: 2 workers + 512 KB stacks keeps stack RSS ~1.5 MB (vs ~4.5 MB
     // at the 2 MB default). The render loop runs on the main task; actors run on the
     // worker threads so a blocked IPC read never stalls rendering.
+    // Debug builds get the tokio default instead: the unoptimized poll frames of the
+    // anonymous yt-dlp search chain overflow 512 KiB and abort the worker (SIGABRT),
+    // while optimized frames fit comfortably.
+    let worker_stack = if cfg!(debug_assertions) {
+        2 * 1024 * 1024
+    } else {
+        512 * 1024
+    };
     let rt = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
-        .thread_stack_size(512 * 1024)
+        .thread_stack_size(worker_stack)
         .enable_all()
         .build()?;
     startup.mark("runtime_built");

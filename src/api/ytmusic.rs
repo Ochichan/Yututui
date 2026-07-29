@@ -565,7 +565,15 @@ impl YtMusicApi {
 /// Shared with the DJ Gem assistant actor, which resolves the model's tool queries the same
 /// way (public YouTube, no auth) — hence `pub(crate)` and a caller-chosen `limit`.
 pub(crate) async fn ytdlp_search(query: &str, limit: usize) -> Result<Vec<Song>> {
-    ytdlp_flat_search(SearchSource::Youtube, "ytsearch", query, limit).await
+    // Boxed: this future's debug-mode state is large enough to matter on the runtime's
+    // deliberately small worker stacks (see the runtime builder in main.rs).
+    Box::pin(ytdlp_flat_search(
+        SearchSource::Youtube,
+        "ytsearch",
+        query,
+        limit,
+    ))
+    .await
 }
 
 async fn ytdlp_flat_search(
@@ -592,8 +600,15 @@ async fn ytdlp_flat_search(
         .arg("--retry-sleep")
         .arg("extractor:1")
         .arg("--no-warnings");
-    let json =
-        crate::tools::run_ytdlp_json(cmd, YTDLP_SEARCH_TIMEOUT, YTDLP_JSON_MAX, "search").await?;
+    // Boxed for the same worker-stack reason as [`ytdlp_search`]: subprocess capture plus
+    // the multi-megabyte JSON parse dominate this chain's frame footprint.
+    let json = Box::pin(crate::tools::run_ytdlp_json(
+        cmd,
+        YTDLP_SEARCH_TIMEOUT,
+        YTDLP_JSON_MAX,
+        "search",
+    ))
+    .await?;
     let entries = json
         .get("entries")
         .and_then(|e| e.as_array())
