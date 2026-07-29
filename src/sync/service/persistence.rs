@@ -414,6 +414,40 @@ impl PersonalSyncPersistence {
         Ok(())
     }
 
+    /// Record the terminal health and audit outcome of a successful attempt.
+    fn record_terminal_success(
+        &self,
+        action: &PersonalSyncApplyKind,
+        summary: &crate::sync::manual::ManualSyncSummary,
+    ) {
+        self.record_terminal_success_at(action, crate::signals::unix_now(), summary);
+    }
+
+    fn record_terminal_success_at(
+        &self,
+        action: &PersonalSyncApplyKind,
+        now: i64,
+        summary: &crate::sync::manual::ManualSyncSummary,
+    ) {
+        match action {
+            PersonalSyncApplyKind::SyncNow => {
+                let _ = record_sync_success(&self.0.sync_paths, now, summary);
+            }
+            PersonalSyncApplyKind::AutomaticSync => {
+                let _ = record_sync_success_as(
+                    &self.0.sync_paths,
+                    now,
+                    summary,
+                    SyncAttemptKind::Automatic,
+                );
+            }
+            PersonalSyncApplyKind::Revoke(device_id) => {
+                let _ = record_revoke_success(&self.0.sync_paths, now, device_id, summary);
+            }
+            PersonalSyncApplyKind::PairApprove(_) => {}
+        }
+    }
+
     fn write_initial(
         &self,
         current_state: &PersonalStateV2,
@@ -449,6 +483,11 @@ impl PersonalSyncPersistence {
                     prepared,
                 )?;
             }
+            // The attempt still talked to the server, and preparing it marked health `Syncing`.
+            // A no-op result must record its terminal outcome too, or the status stays stuck on
+            // "Syncing" — which `status` reports as Needs attention / local changes arrived — and
+            // no audit row ever explains the attempt.
+            self.record_terminal_success(action, &candidate.summary);
             return Ok(self.0.target_state.clone());
         }
 
@@ -474,28 +513,7 @@ impl PersonalSyncPersistence {
             Ok(installed)
         })();
         match &result {
-            Ok(_) => match action {
-                PersonalSyncApplyKind::SyncNow => {
-                    let _ = record_sync_success(&self.0.sync_paths, now, &candidate.summary);
-                }
-                PersonalSyncApplyKind::AutomaticSync => {
-                    let _ = record_sync_success_as(
-                        &self.0.sync_paths,
-                        now,
-                        &candidate.summary,
-                        SyncAttemptKind::Automatic,
-                    );
-                }
-                PersonalSyncApplyKind::Revoke(device_id) => {
-                    let _ = record_revoke_success(
-                        &self.0.sync_paths,
-                        now,
-                        device_id,
-                        &candidate.summary,
-                    );
-                }
-                PersonalSyncApplyKind::PairApprove(_) => {}
-            },
+            Ok(_) => self.record_terminal_success_at(action, now, &candidate.summary),
             Err(error) => match action {
                 PersonalSyncApplyKind::AutomaticSync => {
                     let _ = record_sync_failure_as(
