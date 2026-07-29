@@ -298,13 +298,16 @@ fn render_art_animation_separator(frame: &mut Frame, app: &App, area: Rect) {
     // The trailing space is deliberate: the motif is tiled edge-to-edge, and it keeps
     // each repetition from butting straight into the next one's leading note.
     const MOTIF: &str = "♫♪.ılılıll|̲̅●̲̅|̲̅=̲̅|̲̅●̲̅|llılılı.♫♪ ";
+    // Clustered once — the motif is a compile-time constant and this runs every radio frame.
+    static MOTIF_CLUSTERS: std::sync::LazyLock<Vec<String>> =
+        std::sync::LazyLock::new(|| display_clusters(MOTIF));
     let width = usize::from(area.width);
     let offset = if radio_art_animation_on(app) {
         (app.anim_frame() / 6) as usize
     } else {
         0
     };
-    let line = repeated_motif_line(MOTIF, width, offset);
+    let line = repeated_motif_line(&MOTIF_CLUSTERS, width, offset);
     frame.render_widget(
         Paragraph::new(
             Line::from(line)
@@ -315,8 +318,7 @@ fn render_art_animation_separator(frame: &mut Frame, app: &App, area: Rect) {
     );
 }
 
-fn repeated_motif_line(motif: &str, width: usize, offset: usize) -> String {
-    let clusters = display_clusters(motif);
+fn repeated_motif_line(clusters: &[String], width: usize, offset: usize) -> String {
     if clusters.is_empty() {
         return " ".repeat(width);
     }

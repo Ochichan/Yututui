@@ -73,8 +73,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn search_favorite_lookup(app: &App) -> Option<FavoriteLookup<'_>> {
-    (!app.search.results.is_empty() || app.search_filter.open)
-        .then(|| app.library.favorite_lookup())
+    (!app.search.results.is_empty() || app.search_filter.open).then(|| app.favorite_lookup())
 }
 
 fn render_input(frame: &mut Frame, app: &App, area: Rect) {
@@ -735,7 +734,7 @@ mod tests {
         let other = crate::api::Song::remote("other", "Other", "Artist", "2:00");
         app.library_mut().toggle_favorite(&favorite);
 
-        let lookup = app.library.favorite_lookup();
+        let lookup = app.favorite_lookup();
         for song in [&favorite, &other] {
             assert_eq!(
                 result_row_cells(&app, song, None),

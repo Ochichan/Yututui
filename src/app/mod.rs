@@ -429,6 +429,10 @@ pub struct App {
     /// revisions/lengths + tab + filter; see `library_reducer`. Interior mutability so
     /// `library_rows(&self)` can refresh it.
     library_rows_cache: RefCell<Option<library_reducer::LibraryRowsCache>>,
+    /// Shared favorite-membership index for large Library/Search renders.
+    favorite_index: RefCell<Option<library_reducer::FavoriteIndex>>,
+    /// Filtered source indices for the currently opened playlist.
+    playlist_rows_cache: RefCell<Option<library_reducer::PlaylistRowsCache>>,
     /// Same idea for the All-tab dedup count shown in the tab bar every frame.
     all_count_cache: Cell<Option<(library_reducer::AllCountKey, usize)>>,
     /// Memo for `recover_youtube_id`'s library title scan (per current track + library
