@@ -148,6 +148,12 @@ static SELECTION_ERROR: RwLock<Option<String>> = RwLock::new(None);
 /// [`init`] so the player/probe call sites don't need config threading. `None` → "mpv".
 static MPV_PROGRAM: RwLock<Option<String>> = RwLock::new(None);
 
+/// Whether the currently selected yt-dlp understands `--js-runtimes`. Probed once per selection
+/// because an older yt-dlp rejects the flag *after* option parsing starts: `--version` still
+/// succeeds, so a version probe cannot see it, and every real search or download then dies with
+/// `no such option: --js-runtimes`. `None` until a selection is published.
+static JS_RUNTIMES_SUPPORTED: RwLock<Option<bool>> = RwLock::new(None);
+
 /// Resolve and publish the tool selection. Called once at startup (TUI `async_main`
 /// and `daemon serve`) *before* the player spawns; cheap on steady state because
 /// version probes are cached in the managed-state file keyed by (path, mtime, len).
@@ -180,10 +186,58 @@ pub async fn refresh_selection(cfg: &ToolsConfig) {
         }
         (Some(_), Some(_)) => unreachable!("selection cannot have both value and error"),
     }
+    let supports_js_runtimes = match &sel {
+        Some(selection) => {
+            let supported = probe_js_runtimes_option(&selection.path.to_string_lossy()).await;
+            if !supported {
+                tracing::warn!(
+                    path = %selection.path.display(),
+                    version = selection.version.as_deref().unwrap_or("?"),
+                    "yt-dlp does not support --js-runtimes; YouTube nsig solving falls back to its own defaults"
+                );
+            }
+            Some(supported)
+        }
+        None => None,
+    };
     *SELECTION.write().expect("tools selection lock poisoned") = sel;
     *SELECTION_ERROR
         .write()
         .expect("tools selection-error lock poisoned") = err;
+    *JS_RUNTIMES_SUPPORTED
+        .write()
+        .expect("tools js-runtimes support lock poisoned") = supports_js_runtimes;
+}
+
+/// Whether `--js-runtimes` may be passed to the selected yt-dlp.
+///
+/// Unknown selection (no `init` yet, or no binary anywhere) counts as unsupported: skipping the
+/// hint degrades nsig solving, while passing it to an older binary breaks search and downloads
+/// outright.
+fn selected_supports_js_runtimes() -> bool {
+    JS_RUNTIMES_SUPPORTED
+        .read()
+        .expect("tools js-runtimes support lock poisoned")
+        .unwrap_or(false)
+}
+
+/// Probe `<program> --help` for the `--js-runtimes` option.
+async fn probe_js_runtimes_option(program: &str) -> bool {
+    let mut cmd = process::tokio_command(program, process::ProcessProfile::YtDlp);
+    cmd.arg("--ignore-config")
+        .arg("--help")
+        .stdin(Stdio::null());
+    let Ok(out) = process::tokio_output_limited(
+        cmd,
+        process::ProcessProfile::YtDlp,
+        Duration::from_secs(30),
+        JS_RUNTIMES_HELP_MAX,
+    )
+    .await
+    else {
+        return false;
+    };
+    out.status.success() && String::from_utf8_lossy(&out.stdout).contains("--js-runtimes")
 }
 
 /// The current selection, if any.
@@ -488,6 +542,8 @@ static JS_RUNTIME_SELECTION_CACHE: RwLock<Option<JsRuntimeSelectionCache>> = RwL
 const JS_RUNTIME_CACHE_TTL: Duration = Duration::from_secs(60);
 const JS_RUNTIME_PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 const JS_RUNTIME_PROBE_STDOUT_MAX: usize = 4096;
+/// `yt-dlp --help` is ~40 KB; the probe only needs to find one option name in it.
+const JS_RUNTIMES_HELP_MAX: usize = 256 * 1024;
 
 /// The best *supported* JS runtime for yt-dlp found on `PATH`, in yt-dlp's own preference order
 /// (Deno first — it's the default and needs no flag). `None` when none is installed or only
@@ -691,12 +747,20 @@ fn js_runtimes_flag_for(runtime: Option<JsRuntime>) -> Option<&'static str> {
     runtime.and_then(JsRuntime::flag_value)
 }
 
-fn ytdlp_js_runtime_args_for(runtime: Option<JsRuntime>) -> Option<[&'static str; 2]> {
-    js_runtimes_flag_for(runtime).map(|rt| ["--js-runtimes", rt])
+fn ytdlp_js_runtime_args_for(
+    runtime: Option<JsRuntime>,
+    supported: bool,
+) -> Option<[&'static str; 2]> {
+    supported
+        .then(|| js_runtimes_flag_for(runtime))
+        .flatten()
+        .map(|rt| ["--js-runtimes", rt])
 }
 
 pub(crate) fn append_ytdlp_js_runtime_args(cmd: &mut tokio::process::Command) {
-    if let Some(args) = ytdlp_js_runtime_args_for(detect_js_runtime()) {
+    if let Some(args) =
+        ytdlp_js_runtime_args_for(detect_js_runtime(), selected_supports_js_runtimes())
+    {
         cmd.args(args);
     }
 }
@@ -725,12 +789,15 @@ pub(crate) fn append_ytdlp_youtube_stream_extractor_args(cmd: &mut tokio::proces
         .arg(youtube_stream_extractor_args());
 }
 
-fn mpv_ytdl_js_runtime_arg_for(runtime: Option<JsRuntime>) -> Option<String> {
-    js_runtimes_flag_for(runtime).map(|rt| format!("--ytdl-raw-options-append=js-runtimes={rt}"))
+fn mpv_ytdl_js_runtime_arg_for(runtime: Option<JsRuntime>, supported: bool) -> Option<String> {
+    supported
+        .then(|| js_runtimes_flag_for(runtime))
+        .flatten()
+        .map(|rt| format!("--ytdl-raw-options-append=js-runtimes={rt}"))
 }
 
 pub fn mpv_ytdl_js_runtime_arg() -> Option<String> {
-    mpv_ytdl_js_runtime_arg_for(detect_js_runtime())
+    mpv_ytdl_js_runtime_arg_for(detect_js_runtime(), selected_supports_js_runtimes())
 }
 
 pub fn mpv_ytdl_raw_option_args(cookies: Option<&Path>) -> Vec<String> {
@@ -1122,23 +1189,41 @@ mod tests {
     fn js_runtime_args_are_consistent_for_direct_ytdlp_and_mpv_hook() {
         assert_eq!(js_runtimes_flag_for(Some(JsRuntime::Deno)), None);
         assert_eq!(
-            ytdlp_js_runtime_args_for(Some(JsRuntime::Node)),
+            ytdlp_js_runtime_args_for(Some(JsRuntime::Node), true),
             Some(["--js-runtimes", "node"])
         );
         assert_eq!(
-            ytdlp_js_runtime_args_for(Some(JsRuntime::Bun)),
+            ytdlp_js_runtime_args_for(Some(JsRuntime::Bun), true),
             Some(["--js-runtimes", "bun"])
         );
         assert_eq!(
-            ytdlp_js_runtime_args_for(Some(JsRuntime::QuickJs)),
+            ytdlp_js_runtime_args_for(Some(JsRuntime::QuickJs), true),
             Some(["--js-runtimes", "quickjs"])
         );
-        assert_eq!(ytdlp_js_runtime_args_for(None), None);
+        assert_eq!(ytdlp_js_runtime_args_for(None, true), None);
         assert_eq!(
-            mpv_ytdl_js_runtime_arg_for(Some(JsRuntime::Node)).as_deref(),
+            mpv_ytdl_js_runtime_arg_for(Some(JsRuntime::Node), true).as_deref(),
             Some("--ytdl-raw-options-append=js-runtimes=node")
         );
-        assert_eq!(mpv_ytdl_js_runtime_arg_for(Some(JsRuntime::Deno)), None);
+        assert_eq!(
+            mpv_ytdl_js_runtime_arg_for(Some(JsRuntime::Deno), true),
+            None
+        );
+    }
+
+    #[test]
+    fn a_ytdlp_without_the_option_never_receives_it() {
+        // yt-dlp 2025.04.30 accepts `--ignore-config --js-runtimes node --version` (the early
+        // `--version` path short-circuits) and then fails every real invocation with
+        // `no such option: --js-runtimes`. Search and downloads must degrade instead.
+        for runtime in [JsRuntime::Node, JsRuntime::Bun, JsRuntime::QuickJs] {
+            assert_eq!(
+                ytdlp_js_runtime_args_for(Some(runtime), false),
+                None,
+                "{runtime:?} must not be wired into an unsupporting yt-dlp"
+            );
+            assert_eq!(mpv_ytdl_js_runtime_arg_for(Some(runtime), false), None);
+        }
     }
 
     #[test]
