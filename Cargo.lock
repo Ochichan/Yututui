@@ -7010,7 +7010,7 @@ dependencies = [
 
 [[package]]
 name = "yututui"
-version = "1.7.0"
+version = "1.7.1"
 dependencies = [
  "age",
  "anyhow",
@@ -7071,7 +7071,7 @@ dependencies = [
 
 [[package]]
 name = "yututui-core"
-version = "1.7.0"
+version = "1.7.1"
 dependencies = [
  "serde",
  "ts-rs",
