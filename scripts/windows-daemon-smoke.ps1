@@ -21,9 +21,7 @@ $WorkRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("yututui-windows-smoke-
 $BackupRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("yututui-windows-smoke-backup-" + [Guid]::NewGuid().ToString("N"))
 $RunKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
 $RunName = "YuTuTray!"
-# Mirror unix-daemon-smoke.sh's wait budget (YTM_SMOKE_WAIT_SECONDS, default 30s). The old
-# 10s default flaked on hosted runners: the resume wait covers the job's first-ever mpv
-# launch, where Defender scans the freshly extracted, unsigned mpv.exe before it can play.
+# Match unix-daemon-smoke.sh's configurable 30s wait budget.
 $SmokeWaitSeconds = if ($env:YTM_SMOKE_WAIT_SECONDS) { [int]$env:YTM_SMOKE_WAIT_SECONDS } else { 30 }
 
 function Assert-FileExists {
@@ -227,7 +225,6 @@ $profileBackups = @()
 $hadRunValue = $false
 $oldRunValue = $null
 $oldMpvExtra = [Environment]::GetEnvironmentVariable("YTM_MPV_EXTRA", "Process")
-$oldRustLog = [Environment]::GetEnvironmentVariable("RUST_LOG", "Process")
 $mpvBaseline = @(Get-Process -Name "mpv" -ErrorAction SilentlyContinue | ForEach-Object { $_.Id })
 
 try {
@@ -275,6 +272,22 @@ try {
     $wavTwo = Join-Path $WorkRoot "windows-smoke-two.wav"
     New-SilentWav -Path $wavOne
     New-SilentWav -Path $wavTwo
+    $songs = @(
+        @{
+            video_id = "local:windows-smoke-one"
+            title = "Windows Smoke One"
+            artist = "yututui"
+            duration = "0:20"
+            local_path = $wavOne
+        },
+        @{
+            video_id = "local:windows-smoke-two"
+            title = "Windows Smoke Two"
+            artist = "yututui"
+            duration = "0:20"
+            local_path = $wavTwo
+        }
+    )
 
     @{
         volume = 0
@@ -291,34 +304,28 @@ try {
 
     @{
         last_mode = "normal"
-    } | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $cacheDir "session.json") -Encoding UTF8
+        # Local filesystem paths are device-private and personal-state v2 deliberately projects
+        # library history entries to non-playable `local-placeholder:*` rows. Session queues are
+        # the trusted same-device resume boundary, matching unix-daemon-smoke.sh.
+        normal_queue = @{
+            songs = $songs
+            order = @(0, 1)
+            cursor = 0
+            shuffle = $false
+            repeat = "off"
+        }
+        radio_queue = $null
+        local_queue = $null
+    } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $cacheDir "session.json") -Encoding UTF8
 
     @{
         favorites = @()
-        history = @(
-            @{
-                video_id = "local:windows-smoke-one"
-                title = "Windows Smoke One"
-                artist = "yututui"
-                duration = "0:20"
-                local_path = $wavOne
-            },
-            @{
-                video_id = "local:windows-smoke-two"
-                title = "Windows Smoke Two"
-                artist = "yututui"
-                duration = "0:20"
-                local_path = $wavTwo
-            }
-        )
+        history = @()
         radio_favorites = @()
         radios = @()
     } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $dataDir "library.json") -Encoding UTF8
 
     [Environment]::SetEnvironmentVariable("YTM_MPV_EXTRA", "--ao=null --volume=0", "Process")
-    # RUST_LOG is on the daemon-child env allowlist (util/process.rs): debug-level daemon.log
-    # is the only Windows-side evidence when a wait below times out.
-    [Environment]::SetEnvironmentVariable("RUST_LOG", "debug", "Process")
 
     Invoke-Checked $Ytt @("daemon", "start") | Out-Null
     Wait-Until -Label "idle daemon status" -Condition {
@@ -424,7 +431,6 @@ try {
     } catch {
     }
     [Environment]::SetEnvironmentVariable("YTM_MPV_EXTRA", $oldMpvExtra, "Process")
-    [Environment]::SetEnvironmentVariable("RUST_LOG", $oldRustLog, "Process")
     if ($hadRunValue) {
         New-Item -Path $RunKey -Force | Out-Null
         New-ItemProperty -Path $RunKey -Name $RunName -Value $oldRunValue -PropertyType String -Force | Out-Null
