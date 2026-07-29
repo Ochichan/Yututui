@@ -355,3 +355,68 @@ fn pairing_approval_shutdown_extends_the_second_reconcile_boundary() {
     );
     assert_eq!(private.checkpoint_hash(), Some("b".repeat(64).as_str()));
 }
+
+#[test]
+fn a_no_op_owner_sync_still_records_its_terminal_health_and_audit() {
+    // Preparing an owner attempt marks health `Syncing`. When the candidate turns out to be
+    // already durable the apply path used to return early without recording anything, so status
+    // stayed on a stale `Syncing` — which `status` reports as Needs attention / local changes
+    // arrived — and no audit row ever explained the attempt.
+    let fixture = shutdown_fixture();
+    let paths = || SyncPaths::for_data_root(fixture.root.clone());
+    let sync_paths = paths();
+    let health = crate::sync::SyncHealthStore::new(sync_paths.health()).unwrap();
+    let started = health.load(true).unwrap();
+    let started = health
+        .save(&started, started.syncing(1_700_000_000))
+        .unwrap();
+    assert_eq!(started.state, crate::sync::SyncHealthState::Syncing);
+
+    let persistence = PersonalSyncPersistence::initial(
+        fixture.initial.clone(),
+        7,
+        fixture.candidate.clone(),
+        PersonalSyncApplyKind::SyncNow,
+        fixture.personal_paths.clone(),
+        paths(),
+    )
+    .unwrap();
+    persistence.write().unwrap();
+    let audit_after_first = crate::sync::SyncAuditStore::new(sync_paths.audit())
+        .unwrap()
+        .load(crate::signals::unix_now())
+        .unwrap()
+        .entries()
+        .len();
+
+    // The same candidate is now durable, so this write takes the already-durable path.
+    let repeated = PersonalSyncPersistence::initial(
+        fixture.initial.clone(),
+        7,
+        fixture.candidate.clone(),
+        PersonalSyncApplyKind::SyncNow,
+        fixture.personal_paths.clone(),
+        paths(),
+    )
+    .unwrap();
+    let health_before = health.load(true).unwrap();
+    let _ = health
+        .save(&health_before, health_before.syncing(1_700_000_100))
+        .unwrap();
+    repeated.write().unwrap();
+
+    let final_health = health.load(true).unwrap();
+    assert_eq!(
+        final_health.state,
+        crate::sync::SyncHealthState::UpToDate,
+        "an already-durable target must still leave a terminal health state"
+    );
+    let audit = crate::sync::SyncAuditStore::new(sync_paths.audit())
+        .unwrap()
+        .load(crate::signals::unix_now())
+        .unwrap();
+    assert!(
+        audit.entries().len() > audit_after_first,
+        "the no-op attempt must add its own audit row"
+    );
+}
