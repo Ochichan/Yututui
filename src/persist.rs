@@ -27,6 +27,8 @@ use tokio::sync::{Notify, mpsc, oneshot};
 
 #[path = "persist/durable.rs"]
 mod durable;
+#[path = "persist/export_view.rs"]
+mod export_view;
 #[path = "persist/handle.rs"]
 mod handle;
 #[path = "persist/locking.rs"]
@@ -52,6 +54,7 @@ mod writer_lease;
 #[cfg(test)]
 use durable::allocate_process_epoch_at;
 use durable::{AcceptedJournalOrder, JournalGeneration, JournalOrder, JournalOrderSource};
+pub(crate) use export_view::{PendingStoreIntent, pending_store_intent};
 #[cfg(test)]
 pub(crate) use locking::with_intent_lock_contention_observer;
 pub(crate) use locking::with_store_intent_lock;

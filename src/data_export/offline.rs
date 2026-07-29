@@ -7,7 +7,6 @@
 use std::io;
 use std::path::{Path, PathBuf};
 
-use serde::Deserialize;
 use serde::de::Error as _;
 use serde::de::{self, DeserializeOwned, DeserializeSeed, MapAccess, SeqAccess, Visitor};
 use sha2::{Digest, Sha256};
@@ -19,6 +18,8 @@ use crate::playlists::Playlists;
 use crate::signals::Signals;
 use crate::station::StationStore;
 
+use crate::persist::{PendingStoreIntent, StoreKind, pending_store_intent};
+
 // Keep these aligned with the owning stores. They are repeated here rather than widening the
 // production persistence API solely for an export-only reader.
 const CONFIG_MAX_BYTES: u64 = 1024 * 1024;
@@ -26,7 +27,6 @@ const LIBRARY_MAX_BYTES: u64 = 50 * 1024 * 1024;
 const PLAYLISTS_MAX_BYTES: u64 = 50 * 1024 * 1024;
 const SIGNALS_MAX_BYTES: u64 = 32 * 1024 * 1024;
 const STATION_MAX_BYTES: u64 = 16 * 1024 * 1024;
-const INTENT_JOURNAL_MAX_BYTES: u64 = 1024 * 1024;
 const INTENT_SNAPSHOT_MAX_BYTES: u64 = 64 * 1024 * 1024;
 
 // Raw byte limits do not bound serde allocation: a small JSON token such as `""` can become a
@@ -529,7 +529,7 @@ pub(crate) fn load_playlists_read_only(
 
 #[cfg(test)]
 fn load_playlists_at(path: &Path) -> Result<Playlists, ExportError> {
-    load_store("playlists", path, PLAYLISTS_MAX_BYTES, "playlists")
+    load_store("playlists", path, PLAYLISTS_MAX_BYTES, StoreKind::Playlists)
 }
 
 fn load_playlists_at_with_prior_budget(
@@ -540,7 +540,7 @@ fn load_playlists_at_with_prior_budget(
         "playlists",
         path,
         PLAYLISTS_MAX_BYTES,
-        "playlists",
+        StoreKind::Playlists,
         prior_estimate,
     )
     .map(|loaded| loaded.value)
@@ -553,35 +553,35 @@ fn load_sources_at(paths: SourcePaths) -> Result<OfflineSources, ExportError> {
             "config",
             required_path("config", paths.config.as_deref())?,
             CONFIG_MAX_BYTES,
-            "config",
+            StoreKind::Config,
             &mut budget,
         )?,
         library: load_store_budgeted(
             "library",
             required_path("library", paths.library.as_deref())?,
             LIBRARY_MAX_BYTES,
-            "library",
+            StoreKind::Library,
             &mut budget,
         )?,
         playlists: load_store_budgeted(
             "playlists",
             required_path("playlists", paths.playlists.as_deref())?,
             PLAYLISTS_MAX_BYTES,
-            "playlists",
+            StoreKind::Playlists,
             &mut budget,
         )?,
         signals: load_store_budgeted(
             "signals",
             required_path("signals", paths.signals.as_deref())?,
             SIGNALS_MAX_BYTES,
-            "signals",
+            StoreKind::Signals,
             &mut budget,
         )?,
         station: load_store_budgeted(
             "station profile",
             required_path("station profile", paths.station.as_deref())?,
             STATION_MAX_BYTES,
-            "station profile",
+            StoreKind::Station,
             &mut budget,
         )?,
     })
@@ -603,25 +603,25 @@ fn load_store<T>(
     store: &'static str,
     path: &Path,
     max_bytes: u64,
-    journal_kind: &'static str,
+    kind: StoreKind,
 ) -> Result<T, ExportError>
 where
     T: DeserializeOwned + Default,
 {
-    load_store_parsed(store, path, max_bytes, journal_kind, 0).map(|loaded| loaded.value)
+    load_store_parsed(store, path, max_bytes, kind, 0).map(|loaded| loaded.value)
 }
 
 fn load_store_budgeted<T>(
     store: &'static str,
     path: &Path,
     max_bytes: u64,
-    journal_kind: &'static str,
+    kind: StoreKind,
     budget: &mut AggregateBudget,
 ) -> Result<T, ExportError>
 where
     T: DeserializeOwned + Default,
 {
-    let loaded = load_store_parsed(store, path, max_bytes, journal_kind, budget.estimated_heap)?;
+    let loaded = load_store_parsed(store, path, max_bytes, kind, budget.estimated_heap)?;
     budget.add(store, loaded.estimate)?;
     Ok(loaded.value)
 }
@@ -630,13 +630,13 @@ fn load_store_parsed<T>(
     store: &'static str,
     path: &Path,
     max_bytes: u64,
-    journal_kind: &'static str,
+    kind: StoreKind,
     prior_estimate: usize,
 ) -> Result<ParsedStore<T>, ExportError>
 where
     T: DeserializeOwned + Default,
 {
-    let profile = StoreProfile::for_kind(journal_kind);
+    let profile = StoreProfile::for_kind(kind.label());
     let base_bytes = read_optional(store, "snapshot", path, max_bytes)?;
     let base = match base_bytes {
         Some(bytes) => {
@@ -659,50 +659,55 @@ where
         }
     };
 
-    let journal_path = sibling_with_suffix(path, ".intent.jsonl", store)?;
-    let sidecar_path = sibling_with_suffix(path, ".intent.latest.json", store)?;
-    let journal = read_optional(
-        store,
-        "persistence journal",
-        &journal_path,
-        INTENT_JOURNAL_MAX_BYTES,
-    )?;
-    let sidecar = read_optional(
-        store,
-        "persistence journal sidecar",
-        &sidecar_path,
-        max_bytes.min(INTENT_SNAPSHOT_MAX_BYTES),
-    )?;
+    // The journal is the persist actor's own record of a write that may not have reached the
+    // snapshot yet. Resolving it through `crate::persist` keeps one reader for one format.
+    let intent = resolve_intent(store, kind, path)?;
+    let legacy_sidecar_path = sibling_with_suffix(path, ".intent.latest.json", store)?;
 
-    let Some(journal) = journal else {
-        return match sidecar {
-            None => Ok(ParsedStore {
-                value: base.value,
-                estimate: base.estimate,
-            }),
-            Some(sidecar) if base.bytes.as_deref() == Some(sidecar.as_slice()) => {
-                // A crash while clearing a fully persisted intent can leave only the sidecar.
-                // Byte equality proves it contains no state newer than the already validated main
-                // snapshot, so parsing a second full T would only increase peak memory.
-                Ok(ParsedStore {
-                    value: base.value,
-                    estimate: base.estimate,
-                })
-            }
-            Some(_) => Err(source_error(
+    match intent {
+        PendingStoreIntent::Unreadable => Err(source_error(
+            store,
+            "persistence journal contains no record this store can interpret",
+        )),
+        PendingStoreIntent::Delete => {
+            let estimate = std::mem::size_of::<T>();
+            ensure_combined_budget(store, prior_estimate, estimate)?;
+            drop(base);
+            Ok(ParsedStore {
+                value: T::default(),
+                estimate,
+            })
+        }
+        PendingStoreIntent::Replace { sidecar, sha256 } => {
+            let Some(bytes) = read_optional(
                 store,
-                "an orphan persistence sidecar may contain newer data",
-            )),
-        };
-    };
-
-    let record = parse_latest_intent(store, journal_kind, path, &journal)?;
-    match sidecar {
-        Some(sidecar) => {
-            if sha256_hex(&sidecar) != record.sha256 {
+                "persistence journal sidecar",
+                &sidecar,
+                max_bytes.min(INTENT_SNAPSHOT_MAX_BYTES),
+            )?
+            else {
+                return Err(source_error(
+                    store,
+                    "the store changed while exporting; run the export again",
+                ));
+            };
+            if sha256_hex(&bytes) != sha256 {
                 return Err(source_error(
                     store,
                     "persistence journal sidecar checksum does not match its latest intent",
+                ));
+            }
+            // The snapshot and the sidecar were read one after another. Re-resolving proves the
+            // actor did not land a newer write in between, so the export is never a torn view.
+            if resolve_intent(store, kind, path)?
+                != (PendingStoreIntent::Replace {
+                    sidecar,
+                    sha256: sha256.clone(),
+                })
+            {
+                return Err(source_error(
+                    store,
+                    "the store changed while exporting; run the export again",
                 ));
             }
             // The present base was validated above to retain fail-closed corruption semantics, but
@@ -712,97 +717,46 @@ where
             parse_store(
                 store,
                 "persistence journal sidecar",
-                &sidecar,
+                &bytes,
                 profile,
                 prior_estimate,
             )
         }
-        None => {
-            let Some(base_bytes) = base.bytes.as_deref() else {
-                return Err(source_error(
-                    store,
-                    "persistence journal exists but its snapshot and sidecar are missing",
-                ));
-            };
-            if sha256_hex(base_bytes) != record.sha256 {
-                return Err(source_error(
-                    store,
-                    "persistence journal sidecar is missing before its data reached the main snapshot",
-                ));
+        // Nothing is pending. A journal-less profile written by an older build can still hold a
+        // legacy sidecar; refusing a newer one keeps the original fail-closed guarantee.
+        PendingStoreIntent::Committed => {
+            match read_optional(
+                store,
+                "persistence journal sidecar",
+                &legacy_sidecar_path,
+                max_bytes.min(INTENT_SNAPSHOT_MAX_BYTES),
+            )? {
+                Some(sidecar) if base.bytes.as_deref() != Some(sidecar.as_slice()) => {
+                    Err(source_error(
+                        store,
+                        "an orphan persistence sidecar may contain newer data",
+                    ))
+                }
+                _ => Ok(ParsedStore {
+                    value: base.value,
+                    estimate: base.estimate,
+                }),
             }
-            // Main data already matches the intent; the process likely stopped while clearing
-            // journal files after a successful atomic store write.
-            Ok(ParsedStore {
-                value: base.value,
-                estimate: base.estimate,
-            })
         }
     }
+}
+
+fn resolve_intent(
+    store: &'static str,
+    kind: StoreKind,
+    path: &Path,
+) -> Result<PendingStoreIntent, ExportError> {
+    pending_store_intent(kind, path)
+        .map_err(|error| source_error(store, format!("persistence journal is unusable: {error}")))
 }
 
 fn required_path<'a>(store: &'static str, path: Option<&'a Path>) -> Result<&'a Path, ExportError> {
     path.ok_or_else(|| source_error(store, "storage location cannot be resolved"))
-}
-
-#[derive(Deserialize)]
-struct IntentRecord {
-    v: u64,
-    op: String,
-    kind: String,
-    sidecar: String,
-    sha256: String,
-}
-
-fn parse_latest_intent(
-    store: &'static str,
-    expected_kind: &str,
-    snapshot_path: &Path,
-    bytes: &[u8],
-) -> Result<IntentRecord, ExportError> {
-    let text = std::str::from_utf8(bytes)
-        .map_err(|_| source_error(store, "persistence journal is not valid UTF-8 JSON Lines"))?;
-    let expected_sidecar = sibling_file_name(snapshot_path, ".intent.latest.json", store)?;
-    let mut latest = None;
-    for (index, line) in text.lines().enumerate() {
-        if line.trim().is_empty() {
-            return Err(source_error(
-                store,
-                format!(
-                    "persistence journal contains an empty record at line {}",
-                    index + 1
-                ),
-            ));
-        }
-        let record: IntentRecord = serde_json::from_str(line).map_err(|error| {
-            source_error(
-                store,
-                format!(
-                    "persistence journal contains invalid JSON at line {}: {error}",
-                    index + 1
-                ),
-            )
-        })?;
-        if record.v != 1
-            || record.op != "replace"
-            || record.kind != expected_kind
-            || record.sidecar != expected_sidecar
-            || record.sha256.len() != 64
-            || !record
-                .sha256
-                .bytes()
-                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
-        {
-            return Err(source_error(
-                store,
-                format!(
-                    "persistence journal record {} has an unsafe or unsupported shape",
-                    index + 1
-                ),
-            ));
-        }
-        latest = Some(record);
-    }
-    latest.ok_or_else(|| source_error(store, "persistence journal is empty"))
 }
 
 fn read_optional(
@@ -1071,10 +1025,11 @@ mod tests {
         fs::write(&path, base).expect("write base");
         let sidecar_path = path.with_file_name("counted.json.intent.latest.json");
         fs::write(&sidecar_path, sidecar).expect("write sidecar");
+        // Any store whose label has no dedicated preflight profile keeps this fixture generic.
         let journal = serde_json::json!({
             "v": 1,
             "op": "replace",
-            "kind": "counted",
+            "kind": StoreKind::Session.label(),
             "sidecar": "counted.json.intent.latest.json",
             "sha256": sha256_hex(sidecar),
         });
@@ -1090,7 +1045,7 @@ mod tests {
                 "counted",
                 &path,
                 PLAYLISTS_MAX_BYTES,
-                "counted",
+                StoreKind::Session,
                 prior_estimate,
             ),
             "oversized replacement must fail before its typed decode",
@@ -1268,7 +1223,7 @@ mod tests {
         let journal_path = path.with_file_name("library.json.intent.jsonl");
         fs::write(&journal_path, format!("{journal}\n")).expect("write journal");
 
-        let loaded: Library = load_store("library", &path, LIBRARY_MAX_BYTES, "library")
+        let loaded: Library = load_store("library", &path, LIBRARY_MAX_BYTES, StoreKind::Library)
             .expect("replay valid journal");
         assert_eq!(loaded.favorites[0].title, "Newest");
         assert_eq!(fs::read(&path).expect("base unchanged"), base_bytes);
@@ -1276,6 +1231,109 @@ mod tests {
             fs::read(&sidecar_path).expect("sidecar unchanged"),
             sidecar_bytes
         );
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn a_committed_generation_journal_exports_the_snapshot() {
+        // The steady state of every profile the app has actually written: an ordered replace whose
+        // commit record proves the bytes already reached the snapshot. Requiring `sidecar` on every
+        // record used to fail this with `missing field 'sidecar'`.
+        let root = test_directory("journal-committed");
+        let path = root.join("library.json");
+        let mut stored = Library::default();
+        stored
+            .favorites
+            .push(Song::remote("dQw4w9WgXcQ", "Stored", "Artist", "3:32"));
+        let base_bytes = serde_json::to_vec_pretty(&stored).expect("base JSON");
+        fs::write(&path, &base_bytes).expect("write base");
+        let journal_path = path.with_file_name("library.json.intent.jsonl");
+        let journal = format!(
+            "{}\n{}\n",
+            serde_json::json!({
+                "v": 1,
+                "op": "replace",
+                "kind": StoreKind::Library.label(),
+                "generation": "6ab4fa846d94e0d88c3c259d1aa5c91d",
+                "process_epoch": "18",
+                "sequence": "8",
+                "sidecar": "library.json.intent.18-8.json",
+                "sha256": sha256_hex(&base_bytes),
+            }),
+            serde_json::json!({
+                "v": 1,
+                "op": "commit",
+                "kind": StoreKind::Library.label(),
+                "generation": "6ab4fa846d94e0d88c3c259d1aa5c91d",
+                "process_epoch": "18",
+                "sequence": "8",
+            })
+        );
+        fs::write(&journal_path, &journal).expect("write journal");
+
+        let loaded: Library = load_store("library", &path, LIBRARY_MAX_BYTES, StoreKind::Library)
+            .expect("a committed journal must not block the export");
+
+        assert_eq!(loaded.favorites[0].title, "Stored");
+        assert_eq!(fs::read(&path).expect("base unchanged"), base_bytes);
+        assert_eq!(
+            fs::read_to_string(&journal_path).expect("journal unchanged"),
+            journal
+        );
+        assert_eq!(
+            fs::read_dir(&root).expect("list root").count(),
+            2,
+            "an export must not create lock or repair files"
+        );
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn an_uncommitted_generation_journal_replays_its_unique_sidecar() {
+        let root = test_directory("journal-uncommitted");
+        let path = root.join("library.json");
+        let base_bytes = serde_json::to_vec_pretty(&Library::default()).expect("base JSON");
+        fs::write(&path, &base_bytes).expect("write base");
+
+        let mut pending = Library::default();
+        pending
+            .favorites
+            .push(Song::remote("dQw4w9WgXcQ", "Pending", "Artist", "3:32"));
+        let sidecar_bytes = serde_json::to_vec_pretty(&pending).expect("sidecar JSON");
+        let sidecar_name = "library.json.intent.19-3.json";
+        fs::write(path.with_file_name(sidecar_name), &sidecar_bytes).expect("write sidecar");
+        let journal = format!(
+            "{}\n{}\n",
+            serde_json::json!({
+                "v": 1,
+                "op": "commit",
+                "kind": StoreKind::Library.label(),
+                "generation": "6ab4fa846d94e0d88c3c259d1aa5c91d",
+                "process_epoch": "19",
+                "sequence": "2",
+            }),
+            serde_json::json!({
+                "v": 1,
+                "op": "replace",
+                "kind": StoreKind::Library.label(),
+                "generation": "6ab4fa846d94e0d88c3c259d1aa5c91d",
+                "process_epoch": "19",
+                "sequence": "3",
+                "sidecar": sidecar_name,
+                "sha256": sha256_hex(&sidecar_bytes),
+            })
+        );
+        fs::write(path.with_file_name("library.json.intent.jsonl"), journal)
+            .expect("write journal");
+
+        let loaded: Library = load_store("library", &path, LIBRARY_MAX_BYTES, StoreKind::Library)
+            .expect("an uncommitted replace must be replayed");
+
+        assert_eq!(
+            loaded.favorites[0].title, "Pending",
+            "the newest uncommitted sidecar is authoritative, whatever it is named"
+        );
+        assert_eq!(fs::read(&path).expect("base unchanged"), base_bytes);
         fs::remove_dir_all(root).expect("cleanup");
     }
 
@@ -1299,7 +1357,7 @@ mod tests {
         let journal_path = path.with_file_name("library.json.intent.jsonl");
         fs::write(&journal_path, format!("{journal}\n")).expect("write journal");
 
-        let error = load_store::<Library>("library", &path, LIBRARY_MAX_BYTES, "library")
+        let error = load_store::<Library>("library", &path, LIBRARY_MAX_BYTES, StoreKind::Library)
             .expect_err("a valid journal must not hide a corrupt base");
 
         assert!(error.to_string().contains("snapshot"));
@@ -1319,8 +1377,13 @@ mod tests {
         fs::write(&corrupt_path, &base).expect("write base");
         let journal_path = corrupt_path.with_file_name("library.json.intent.jsonl");
         fs::write(&journal_path, b"not-json\n").expect("write bad journal");
-        let error = load_store::<Library>("library", &corrupt_path, LIBRARY_MAX_BYTES, "library")
-            .expect_err("corrupt journal must fail");
+        let error = load_store::<Library>(
+            "library",
+            &corrupt_path,
+            LIBRARY_MAX_BYTES,
+            StoreKind::Library,
+        )
+        .expect_err("corrupt journal must fail");
         assert!(error.to_string().contains("persistence journal"));
         assert_eq!(
             fs::read(&journal_path).expect("journal unchanged"),
@@ -1340,8 +1403,13 @@ mod tests {
             serde_json::to_vec_pretty(&newer).expect("sidecar JSON"),
         )
         .expect("write orphan sidecar");
-        let error = load_store::<Library>("library", &orphan_path, LIBRARY_MAX_BYTES, "library")
-            .expect_err("orphan newer sidecar must fail");
+        let error = load_store::<Library>(
+            "library",
+            &orphan_path,
+            LIBRARY_MAX_BYTES,
+            StoreKind::Library,
+        )
+        .expect_err("orphan newer sidecar must fail");
         assert!(error.to_string().contains("orphan persistence sidecar"));
         fs::remove_dir_all(orphan_root).expect("cleanup");
     }
