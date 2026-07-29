@@ -21,6 +21,8 @@ $WorkRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("yututui-windows-smoke-
 $BackupRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("yututui-windows-smoke-backup-" + [Guid]::NewGuid().ToString("N"))
 $RunKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
 $RunName = "YuTuTray!"
+# Match unix-daemon-smoke.sh's configurable 30s wait budget.
+$SmokeWaitSeconds = if ($env:YTM_SMOKE_WAIT_SECONDS) { [int]$env:YTM_SMOKE_WAIT_SECONDS } else { 30 }
 
 function Assert-FileExists {
     param([string]$Path)
@@ -73,7 +75,7 @@ function Wait-Until {
     param(
         [scriptblock]$Condition,
         [string]$Label,
-        [int]$TimeoutSeconds = 10
+        [int]$TimeoutSeconds = $script:SmokeWaitSeconds
     )
     $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
     do {
@@ -270,6 +272,22 @@ try {
     $wavTwo = Join-Path $WorkRoot "windows-smoke-two.wav"
     New-SilentWav -Path $wavOne
     New-SilentWav -Path $wavTwo
+    $songs = @(
+        @{
+            video_id = "local:windows-smoke-one"
+            title = "Windows Smoke One"
+            artist = "yututui"
+            duration = "0:20"
+            local_path = $wavOne
+        },
+        @{
+            video_id = "local:windows-smoke-two"
+            title = "Windows Smoke Two"
+            artist = "yututui"
+            duration = "0:20"
+            local_path = $wavTwo
+        }
+    )
 
     @{
         volume = 0
@@ -286,26 +304,23 @@ try {
 
     @{
         last_mode = "normal"
-    } | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $cacheDir "session.json") -Encoding UTF8
+        # Local filesystem paths are device-private and personal-state v2 deliberately projects
+        # library history entries to non-playable `local-placeholder:*` rows. Session queues are
+        # the trusted same-device resume boundary, matching unix-daemon-smoke.sh.
+        normal_queue = @{
+            songs = $songs
+            order = @(0, 1)
+            cursor = 0
+            shuffle = $false
+            repeat = "off"
+        }
+        radio_queue = $null
+        local_queue = $null
+    } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $cacheDir "session.json") -Encoding UTF8
 
     @{
         favorites = @()
-        history = @(
-            @{
-                video_id = "local:windows-smoke-one"
-                title = "Windows Smoke One"
-                artist = "yututui"
-                duration = "0:20"
-                local_path = $wavOne
-            },
-            @{
-                video_id = "local:windows-smoke-two"
-                title = "Windows Smoke Two"
-                artist = "yututui"
-                duration = "0:20"
-                local_path = $wavTwo
-            }
-        )
+        history = @()
         radio_favorites = @()
         radios = @()
     } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $dataDir "library.json") -Encoding UTF8
@@ -326,7 +341,7 @@ try {
         throw "idle daemon spawned mpv unexpectedly: $($idleMpv.Id -join ', ')"
     }
 
-    Invoke-Checked $Ytt @("daemon", "start", "--resume") | Out-Null
+    Write-Host ("daemon start --resume: " + (Invoke-Checked $Ytt @("daemon", "start", "--resume")))
     Wait-Until -Label "resumed daemon playback" -Condition {
         try {
             $status = Get-DaemonStatus
@@ -399,6 +414,17 @@ try {
     }
 
     Write-Host "Windows daemon/tray smoke passed"
+} catch {
+    Write-Host "--- smoke failure diagnostics ---"
+    Write-Host "failure: $_"
+    & $Ytt daemon status --json 2>&1 | ForEach-Object { Write-Host "daemon status: $_" }
+    $global:LASTEXITCODE = 0
+    Get-ChildItem -LiteralPath (Join-Path $cacheDir "logs") -Filter "daemon.log*" -File -ErrorAction SilentlyContinue |
+        ForEach-Object {
+            Write-Host "--- daemon log tail: $($_.FullName) ---"
+            Get-Content -LiteralPath $_.FullName -Tail 250 | ForEach-Object { Write-Host $_ }
+        }
+    throw
 } finally {
     try {
         Invoke-Checked $Ytt @("daemon", "stop") | Out-Null

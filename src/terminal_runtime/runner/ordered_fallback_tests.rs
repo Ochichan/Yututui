@@ -83,8 +83,12 @@ async fn quit_timeout_retries_every_newest_store_when_each_store_is_contended_in
             .seal_with_snapshots(snapshots)
             .expect("all-store quit seal is admitted atomically");
         let actor_handle = persist.clone();
+        // INVARIANT(test budget): this deadline starts before the orchestrated contention
+        // window and must dominate every budget inside it (the 5s writer release, the two
+        // 25ms bounded waits, and nine ACL-heavy Windows writes on a loaded CI runner).
+        // Bounded-flush truthfulness is asserted by the 25ms flush below, not here.
         let actor_flush =
-            tokio::spawn(async move { actor_handle.flush(Duration::from_secs(3)).await });
+            tokio::spawn(async move { actor_handle.flush(Duration::from_secs(30)).await });
         tokio::task::spawn_blocking(move || {
             started_rx
                 .recv_timeout(Duration::from_secs(5))
