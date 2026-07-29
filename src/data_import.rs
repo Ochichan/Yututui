@@ -72,8 +72,8 @@ fn plan_from_file_with_recovery(
     }
     let imported = crate::data_export::decode_personal_state_export(&bytes)?;
     let paths = PersonalStatePaths::current()?;
-    let current = load_current_state(&paths, recover_pending)?;
-    let plan = plan_import(&current, &imported)?;
+    let (current, local_device) = load_current_state(&paths, recover_pending)?;
+    let plan = plan_import(&current, &imported, local_device.as_ref())?;
     Ok((paths, plan))
 }
 
@@ -88,10 +88,11 @@ pub fn apply_plan(
     commit.commit(paths).map_err(ImportError::from)
 }
 
+/// The installed frontier plus the device this installation syncs as, when sync is configured.
 fn load_current_state(
     paths: &PersonalStatePaths,
     recover_pending: bool,
-) -> Result<PersonalStateV2, ImportError> {
+) -> Result<(PersonalStateV2, Option<crate::personal_state::DeviceId>), ImportError> {
     let loaded = if recover_pending {
         crate::personal_state::load_ledger(paths)
     } else {
@@ -112,21 +113,24 @@ fn load_current_state(
         Some(state) => {
             let local_device = crate::persist::load_personal_state_device_id(&state)
                 .map_err(|error| ImportError::LegacySource(error.to_string()))?;
-            crate::data_export::reconcile_v2_sources(
+            let reconciled = crate::data_export::reconcile_v2_sources(
                 &state,
                 local_device.as_ref(),
                 &sources.library,
                 &sources.playlists,
                 &sources.signals,
                 &sources.station,
-            )
+            )?;
+            Ok((reconciled, local_device))
         }
-        None => legacy_state(
-            &sources.library,
-            &sources.playlists,
-            &sources.signals,
-            &sources.station,
-        ),
+        None => Ok((
+            legacy_state(
+                &sources.library,
+                &sources.playlists,
+                &sources.signals,
+                &sources.station,
+            )?,
+            None,
+        )),
     }
-    .map_err(ImportError::from)
 }

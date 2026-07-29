@@ -36,9 +36,14 @@ pub struct ImportPlan {
 /// export becomes one deterministic, deletion-free legacy baseline operation in the current
 /// dataset. The imported baseline observes prior baselines, but not later local edits; this keeps
 /// explicit local changes authoritative while retaining every positive item from both baselines.
+/// `local_device_id` is the device this installation syncs as, when personal sync is configured.
+/// A foreign baseline is owned by that device, so the vault's membership covers it; without a
+/// binding the single active device owns it, and an ambiguous registry is refused rather than
+/// authored by a synthetic device no membership can ever accept.
 pub fn plan_import(
     current: &PersonalStateV2,
     imported: &PersonalStateV2,
+    local_device_id: Option<&DeviceId>,
 ) -> Result<ImportPlan, PersonalStateError> {
     current.validate()?;
     imported.validate()?;
@@ -54,7 +59,7 @@ pub fn plan_import(
             )
         } else {
             let imported_projection = project(imported)?.legacy;
-            rewrite_foreign_projection(current, imported_projection)?
+            rewrite_foreign_projection(current, imported_projection, local_device_id)?
         };
     let changed = candidate.operations != current.operations
         || candidate.device_registry != current.device_registry
@@ -382,10 +387,15 @@ fn tracks_are_retained(before: &[PortableTrack], after: &[PortableTrack]) -> boo
 fn rewrite_foreign_projection(
     current: &PersonalStateV2,
     imported: LegacyProjection,
+    local_device_id: Option<&DeviceId>,
 ) -> Result<(PersonalStateV2, usize, usize), PersonalStateError> {
     imported.validate()?;
-    let imported_hash = stable_hash(&serde_json::to_string(&imported)?);
-    let operation_id = format!("imported-baseline-{imported_hash}");
+    let import_device = import_author(current, local_device_id)?;
+    // The owning device belongs in the identity, exactly as the join path already does it. Two
+    // devices importing the same bundle then produce two content-equal baselines instead of one id
+    // carrying two different stamps, which the reducer rejects as a conflicting operation id.
+    let material = serde_json::to_string(&(import_device.as_str(), &imported))?;
+    let operation_id = format!("imported-baseline-{}", stable_hash(&material));
     if current
         .operations
         .iter()
@@ -419,7 +429,6 @@ fn rewrite_foreign_projection(
     let combined = merge_baselines(current_baseline, imported);
     combined.validate()?;
     let mut candidate = current.clone();
-    let import_device = DeviceId::new("000-import")?;
     let sequence = candidate
         .version_vector
         .observed(&import_device)
@@ -447,6 +456,25 @@ fn rewrite_foreign_projection(
     candidate.projection_fingerprint = None;
     candidate.normalize()?;
     Ok((candidate, 1, 0))
+}
+
+/// Which device owns an imported foreign baseline.
+///
+/// Every dot in a synced ledger must belong to a device the vault's membership knows: a version
+/// vector entry for anything else makes `ytt sync` reject the whole dataset. So the caller's
+/// binding wins, a single-device registry needs no binding, and anything else is an error the
+/// caller can act on.
+fn import_author(
+    current: &PersonalStateV2,
+    local_device_id: Option<&DeviceId>,
+) -> Result<DeviceId, PersonalStateError> {
+    match local_device_id {
+        Some(device_id) => {
+            super::coordinator::validate_local_device_binding(current, device_id, false)?;
+            Ok(device_id.clone())
+        }
+        None => super::coordinator::local_device(current),
+    }
 }
 
 fn merge_baselines(mut local: LegacyProjection, imported: LegacyProjection) -> LegacyProjection {

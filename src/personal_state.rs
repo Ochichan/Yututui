@@ -47,4 +47,6 @@ pub use transaction::{PersonalStateCommit, PersonalStatePaths, recover_pending_t
 pub(crate) use transaction::{load_ledger, load_ledger_read_only};
 
 #[cfg(test)]
+mod import_tests;
+#[cfg(test)]
 mod tests;
