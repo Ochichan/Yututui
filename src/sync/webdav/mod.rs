@@ -4,6 +4,7 @@
 //! follows at most three exact-origin redirects, and never includes endpoint or credential text in
 //! its errors. Merge policy, retries, scheduling, and primary-writer ownership live above it.
 
+mod capability;
 mod delete;
 mod retry_after;
 mod xml;
@@ -238,12 +239,6 @@ pub struct WebDavCapabilities {
     pub mkcol: bool,
     pub get: bool,
     pub put: bool,
-}
-
-impl WebDavCapabilities {
-    pub fn supports_encrypted_sync(self) -> bool {
-        self.dav_class_1 && self.options && self.propfind && self.mkcol && self.get && self.put
-    }
 }
 
 /// HTTP client rooted at one WebDAV collection.
@@ -578,8 +573,10 @@ impl WebDavClient {
         object: &EncryptedObject,
         credential: &VaultCredential,
     ) -> Result<(), WebDavError> {
+        // Both probe reads follow a write closely enough to observe a server that marks a fresh
+        // entity tag weak for one second (Apache mod_dav), so they use the tolerant readback.
         let existing = self
-            .get(key, credential, CONDITIONAL_PROBE_PLAINTEXT_LIMIT)
+            .get_readback(key, credential, CONDITIONAL_PROBE_PLAINTEXT_LIMIT, None)
             .await?;
         if existing.is_none() {
             let response = self
@@ -621,7 +618,7 @@ impl WebDavClient {
         // does not prove that the server implements the compare-and-swap primitive used by heads
         // and manifests.
         let (_, metadata) = self
-            .get(key, credential, CONDITIONAL_PROBE_PLAINTEXT_LIMIT)
+            .get_readback(key, credential, CONDITIONAL_PROBE_PLAINTEXT_LIMIT, None)
             .await?
             .ok_or(WebDavError::MethodUnsupported)?;
         let matched_update = self
@@ -809,7 +806,7 @@ impl WebDavClient {
         deadline: Option<VaultDeadline>,
     ) -> Result<ObjectMetadata, WebDavError> {
         let Some((actual, metadata)) = self
-            .get_inner(key, credential, MAX_PROTECTED_PAYLOAD_BYTES, deadline)
+            .get_readback(key, credential, MAX_PROTECTED_PAYLOAD_BYTES, deadline)
             .await?
         else {
             return Err(WebDavError::AmbiguousWrite);
@@ -891,12 +888,13 @@ impl BlockingWebDavTransport {
     /// must not call this method because the valid If-Match proof intentionally rewrites that
     /// marker.
     pub fn probe_capabilities(&self) -> Result<WebDavCapabilities, WebDavError> {
-        let capabilities = self.block_on(self.client.options(&self.credential))?;
+        let mut capabilities = self.block_on(self.client.options(&self.credential))?;
         if capabilities.supports_encrypted_sync() {
             let key =
                 ObjectKey::new(CONDITIONAL_PROBE_KEY).map_err(|_| WebDavError::InvalidResponse)?;
             let object = conditional_probe_object()?;
             self.block_on(async {
+                self.client.mkcol_root(&self.credential).await?;
                 self.ensure_ancestor_collections(&key, None).await?;
                 self.client
                     .probe_conditional_writes(&key, &object, &self.credential)
@@ -914,6 +912,12 @@ impl BlockingWebDavTransport {
                     .await?;
                 Ok(())
             })?;
+            // Every method the sync protocol needs was just exercised end to end. Report what the
+            // server did rather than what its `Allow` header claimed.
+            capabilities.mkcol = true;
+            capabilities.propfind = true;
+            capabilities.get = true;
+            capabilities.put = true;
         }
         Ok(capabilities)
     }
@@ -1499,6 +1503,8 @@ fn longer_retry_after(left: Option<Duration>, right: Option<Duration>) -> Option
     }
 }
 
+#[cfg(test)]
+mod capability_tests;
 #[cfg(test)]
 mod delete_tests;
 #[cfg(test)]

@@ -493,6 +493,7 @@ async fn setup_and_fresh_pair_join_probe_conditional_writes_before_enabling_sync
         .await;
 
         for expected in [
+            "/vault/",
             "/vault/yututui",
             "/vault/yututui/v2",
             "/vault/yututui/v2/capability",
@@ -640,7 +641,8 @@ async fn preexisting_capability_marker_still_requires_a_valid_matched_write() {
         )
         .await;
 
-        for _ in 0..3 {
+        // The vault root itself plus its three protocol collections.
+        for _ in 0..4 {
             let (mut collection, _) = listener.accept().await.unwrap();
             read_request(&mut collection).await;
             respond(
@@ -770,7 +772,8 @@ async fn capability_probe_rejects_a_server_that_rejects_valid_matched_writes() {
             &[],
         )
         .await;
-        for _ in 0..3 {
+        // The vault root itself plus its three protocol collections.
+        for _ in 0..4 {
             let (mut collection, _) = listener.accept().await.unwrap();
             read_request(&mut collection).await;
             respond(
@@ -874,7 +877,8 @@ async fn capability_probe_rejects_a_server_that_ignores_if_match() {
             &[],
         )
         .await;
-        for _ in 0..3 {
+        // The vault root itself plus its three protocol collections.
+        for _ in 0..4 {
             let (mut collection, _) = listener.accept().await.unwrap();
             read_request(&mut collection).await;
             respond(

@@ -82,7 +82,7 @@ fn membership_operation(
     }
 }
 
-fn state_with_keyed_devices(device_ids: &[&str]) -> PersonalStateV2 {
+pub(super) fn state_with_keyed_devices(device_ids: &[&str]) -> PersonalStateV2 {
     let mut state = PersonalStateV2::empty("device-test".to_owned()).unwrap();
     for (index, device_id) in device_ids.iter().enumerate() {
         let device_id = DeviceId::new(*device_id).unwrap();
@@ -943,7 +943,7 @@ fn foreign_import_is_deletion_free_and_repeated_import_is_a_noop() {
     .unwrap();
     imported.dataset_id = "foreign-dataset".to_owned();
 
-    let first = plan_import(&local, &imported).unwrap();
+    let first = plan_import(&local, &imported, None).unwrap();
     assert!(first.summary.changed);
     let ids = project(&first.candidate)
         .unwrap()
@@ -962,7 +962,7 @@ fn foreign_import_is_deletion_free_and_repeated_import_is_a_noop() {
         HashSet::from(["local".to_owned(), "remote".to_owned()])
     );
 
-    let second = plan_import(&first.candidate, &imported).unwrap();
+    let second = plan_import(&first.candidate, &imported, None).unwrap();
     assert!(!second.summary.changed);
     assert_eq!(second.candidate.operations, first.candidate.operations);
 }
@@ -1101,7 +1101,7 @@ fn foreign_baseline_does_not_override_an_explicit_local_rating() {
 
     let mut imported = baseline.clone();
     imported.dataset_id = "foreign".to_owned();
-    let plan = plan_import(&explicit_neutral, &imported).unwrap();
+    let plan = plan_import(&explicit_neutral, &imported, None).unwrap();
     assert!(
         project(&plan.candidate)
             .unwrap()
@@ -1155,7 +1155,7 @@ fn same_dataset_import_persists_causal_changes_even_when_projection_is_unchanged
     remote.projection_fingerprint = None;
     remote.normalize().unwrap();
 
-    let plan = plan_import(&local, &remote).unwrap();
+    let plan = plan_import(&local, &remote, None).unwrap();
     assert!(plan.summary.changed);
     assert_eq!(
         project(&plan.candidate).unwrap().fingerprint,
@@ -1434,7 +1434,7 @@ fn terminal_revision_rejects_mutation_import_and_commit_preparation() {
     ));
 
     assert!(matches!(
-        plan_import(&exhausted, &changed),
+        plan_import(&exhausted, &changed, None),
         Err(PersonalStateError::InvalidOperation(
             "personal-state revision exhausted"
         ))

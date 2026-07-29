@@ -467,7 +467,7 @@ impl<'a> OperationAppender<'a> {
     }
 }
 
-fn local_device(state: &PersonalStateV2) -> Result<DeviceId, PersonalStateError> {
+pub(super) fn local_device(state: &PersonalStateV2) -> Result<DeviceId, PersonalStateError> {
     state.validate()?;
     let mut active = state
         .device_registry
@@ -485,7 +485,7 @@ fn local_device(state: &PersonalStateV2) -> Result<DeviceId, PersonalStateError>
     Ok(device)
 }
 
-fn validate_local_device_binding(
+pub(super) fn validate_local_device_binding(
     state: &PersonalStateV2,
     local_device_id: &DeviceId,
     require_keyed: bool,

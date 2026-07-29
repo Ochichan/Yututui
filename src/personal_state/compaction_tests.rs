@@ -474,8 +474,8 @@ fn non_adjacent_compaction_generations_merge_and_import_in_both_directions() {
     assert_eq!(first_then_third, third);
     assert_eq!(third_then_first, third);
 
-    let import_old = crate::personal_state::plan_import(&third, &first).unwrap();
-    let import_new = crate::personal_state::plan_import(&first, &third).unwrap();
+    let import_old = crate::personal_state::plan_import(&third, &first, None).unwrap();
+    let import_new = crate::personal_state::plan_import(&first, &third, None).unwrap();
     assert_eq!(import_old.candidate, third);
     assert_eq!(import_new.candidate.operations, third.operations);
     assert_eq!(import_new.candidate.version_vector, third.version_vector);
