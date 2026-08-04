@@ -568,6 +568,12 @@ WebDAV credentials are prompted with echo disabled and are never accepted as arg
 endpoint must be HTTPS unless it is loopback. Status and audit output deliberately omit
 endpoints, paths and secrets.
 
+Self-signed or private-PKI endpoints can pin a custom CA (PEM) per connection; the PEM never
+leaves the device and is never logged. Custom-CA trust is covered by an automated test that is
+green on Linux, Windows, and hosted macOS 15. One local macOS machine recorded a Secure
+Transport rejection (`errSSLClosedAbort -9806`, 2026-07-26) that CI has never reproduced — if
+custom-CA trust fails for you, please report it with your macOS version.
+
 **Keep the recovery kit off this machine.** Nobody can regenerate it for you. Note that no
 command rebuilds a vault from the kit alone yet, so keep at least one approved device rather
 than treating the kit as a restore. Revoking a device re-locks everything uploaded afterwards,
