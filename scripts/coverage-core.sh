@@ -14,8 +14,9 @@ cd "$(dirname "$0")/.."
 # dilute the signal on the unit-testable core (reducers, policy, persistence,
 # utils), which this gate holds at 80%.
 #
-# Measured on main 2026-07-16: 81.99% lines. Runs in ci-pr's linux job as an
-# advisory step (continue-on-error) until the number proves stable; local runs
+# Measured on main 2026-07-16: 81.99% lines; 2026-08-05: 79.61% lines (below the 80 threshold,
+# so the CI step stays advisory). Runs in ci-pr's linux job as an advisory step
+# (continue-on-error) until the number holds above 80 with margin; local runs
 # need cargo-llvm-cov plus llvm-tools-preview (or LLVM_COV/LLVM_PROFDATA).
 IGNORE_RE='(/src/(main\.rs|auth_cli\.rs|logging\.rs|notify\.rs|doctor\.rs|tui\.rs|daemon/(mod|engine)\.rs|tools/(cli|ytdlp)\.rs|transfer/(cli|actor|engine|mod)\.rs|scrobble/(actor|auth_cli|service|mod|lastfm|listenbrainz)\.rs|media/(macos|artwork)\.rs|spotify/(client|auth)\.rs|player/(lifetime|mod|mpv)\.rs|recorder/job\.rs|update/cli\.rs|api/ytmusic\.rs|lyrics\.rs|romanize\.rs|app/romanize\.rs|ui/views/now_playing\.rs|app/scrobble_reducer\.rs|app/clipboard\.rs|media/identity\.rs|util/http\.rs|remote/(client|endpoint)\.rs)$)'
 
