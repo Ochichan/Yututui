@@ -187,7 +187,7 @@ version = "^0.38.4"
 features = ["pty"]
 
 [target."cfg(windows)".dependencies.windows]
-version = "0.58.0"
+version = "0.62.0"
 features = [
     "std",
     "Win32_Foundation",

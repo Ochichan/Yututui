@@ -101,11 +101,29 @@ fn an_inherited_audience_requests_no_mode_at_all() {
 }
 
 #[test]
+#[cfg(unix)]
+fn an_other_only_readable_root_publishes_a_conventional_world_readable_file() {
+    let root = temp_root("shared-from-other-only-root");
+    set_mode(&root, 0o705);
+
+    let modes = publish_modes(PublishAudience::SharedLibrary, &root).unwrap();
+
+    // The root grants the world what it denies the group. The file normalizes to 0o644 because
+    // the mirrored 0o604 is not an accepted publication mode; the directory mirror still denies
+    // group traversal, so effective access is unchanged.
+    assert_eq!(modes.file, Some(0o644));
+    assert_eq!(modes.directory, Some(0o705));
+    assert_eq!(modes.sidecar, Some(0o600));
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn only_owner_readable_publication_modes_are_accepted() {
     validate_publish_mode(None).unwrap();
     validate_publish_mode(Some(0o600)).unwrap();
     validate_publish_mode(Some(0o640)).unwrap();
     validate_publish_mode(Some(0o644)).unwrap();
+    validate_publish_mode(Some(0o604)).unwrap_err();
     validate_publish_mode(Some(0o666)).unwrap_err();
     validate_publish_mode(Some(0o777)).unwrap_err();
 }
