@@ -276,13 +276,16 @@ impl App {
         let Some(current) = self.settings.as_deref() else {
             self.mode = Mode::Player;
             self.dirty = true;
-            return match exit {
-                SettingsSaveExit::Close => Vec::new(),
-                SettingsSaveExit::Home => self.go_home(),
-                SettingsSaveExit::Navigate(mode) => self.navigate_to(mode),
-                SettingsSaveExit::Quit => self.quit_app(),
-            };
+            return self.settings_save_exit(exit);
         };
+        // The player batch exists so committed audio settings never diverge from live
+        // playback. With no usable mpv there is no live player to diverge from and the
+        // admission would never resolve, trapping every exit on the Settings screen.
+        if self.playback_tool_missing() {
+            let mut follow_ups = self.apply_settings_save(current.clone());
+            follow_ups.extend(self.settings_save_exit(exit));
+            return follow_ups;
+        }
         let draft = SettingsAudioSnapshot::from_draft(&current.draft);
         let plan = SettingsSavePlan {
             expected_draft: draft,
@@ -305,6 +308,21 @@ impl App {
                 PlayerCommit::SettingsSave(Box::new(plan)),
             ),
         )))]
+    }
+
+    fn settings_save_exit(&mut self, exit: SettingsSaveExit) -> Vec<Cmd> {
+        match exit {
+            SettingsSaveExit::Close => Vec::new(),
+            SettingsSaveExit::Home => self.go_home(),
+            SettingsSaveExit::Navigate(mode) => self.navigate_to(mode),
+            SettingsSaveExit::Quit => self.quit_app(),
+        }
+    }
+
+    /// The admission gate's premise (a live player) only holds when mpv can spawn at all.
+    /// `runtime_tool_checks` keeps unit tests independent of the developer machine's PATH.
+    fn playback_tool_missing(&self) -> bool {
+        self.runtime_tool_checks && crate::deps::missing().contains(&"mpv")
     }
 
     pub(in crate::app) fn commit_settings_audio_preview(
@@ -345,12 +363,7 @@ impl App {
             return Vec::new();
         }
         let mut follow_ups = self.apply_settings_save(*plan.settings);
-        follow_ups.extend(match plan.exit {
-            SettingsSaveExit::Close => Vec::new(),
-            SettingsSaveExit::Home => self.go_home(),
-            SettingsSaveExit::Navigate(mode) => self.navigate_to(mode),
-            SettingsSaveExit::Quit => self.quit_app(),
-        });
+        follow_ups.extend(self.settings_save_exit(plan.exit));
         follow_ups
     }
 
@@ -834,5 +847,38 @@ mod tests {
                 .count(),
             1
         );
+    }
+
+    #[test]
+    fn settings_exits_commit_inline_when_playback_tool_is_missing() {
+        crate::test_util::env::with_vars(&[("PATH", Some("/nonexistent-ytm-test"))], || {
+            let mut app = app_with_settings();
+            app.enable_runtime_tool_checks();
+            app.settings.as_deref_mut().unwrap().draft.normalize = true;
+
+            let cmds = app.close_settings();
+            assert!(
+                cmds.iter().all(|cmd| !matches!(cmd, Cmd::PlayerControl(_))),
+                "a missing player must not gate the save on admission"
+            );
+            assert!(app.settings.is_none());
+            assert_eq!(app.mode, Mode::Player);
+            assert!(app.audio.normalize);
+            assert_eq!(
+                cmds.iter()
+                    .filter(|cmd| matches!(cmd, Cmd::Persist(PersistCmd::Config(_))))
+                    .count(),
+                1
+            );
+
+            let mut app = app_with_settings();
+            app.enable_runtime_tool_checks();
+            let cmds = app.close_settings_for_quit();
+            assert!(
+                cmds.iter().all(|cmd| !matches!(cmd, Cmd::PlayerControl(_))),
+                "Ctrl+Q must not gate on player admission when mpv is missing"
+            );
+            assert!(app.should_quit);
+        });
     }
 }

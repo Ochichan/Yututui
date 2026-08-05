@@ -266,20 +266,22 @@ fn unix_now() -> i64 {
 mod tests {
     use super::*;
 
-    fn temp_dir() -> PathBuf {
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
+    /// Same label+sequence scheme as `test_util::isolated_dir_pair`: the pid+nanos key this
+    /// replaced could hand two tests the same directory when the clock resolved coarsely.
+    fn temp_dir(label: &str) -> PathBuf {
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let sequence = NEXT.fetch_add(1, Ordering::Relaxed);
         std::env::temp_dir().join(format!(
-            "ytm-tui-local-index-test-{}-{nanos}",
+            "ytm-tui-local-index-test-{label}-{}-{sequence}",
             std::process::id()
         ))
     }
 
     #[test]
     fn index_round_trips_tracks() {
-        let dir = temp_dir();
+        let dir = temp_dir("round-trip");
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("local-index.json");
         let mut index = LocalIndex::default();
@@ -306,7 +308,7 @@ mod tests {
 
     #[test]
     fn corrupt_index_loads_empty() {
-        let dir = temp_dir();
+        let dir = temp_dir("corrupt");
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("local-index.json");
         std::fs::write(&path, b"{not json").unwrap();
@@ -320,7 +322,7 @@ mod tests {
 
     #[test]
     fn corrupt_index_load_preserves_bad_copy() {
-        let dir = temp_dir();
+        let dir = temp_dir("corrupt-preserve");
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("local-index.json");
         std::fs::write(&path, b"{not json").unwrap();
@@ -341,7 +343,7 @@ mod tests {
 
     #[test]
     fn unsupported_schema_version_loads_empty_and_preserves_bad_copy() {
-        let dir = temp_dir();
+        let dir = temp_dir("unsupported-schema");
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("local-index.json");
         let contents = br#"{"schema_version":999,"tracks":[],"updated_at":1}"#;
@@ -363,7 +365,7 @@ mod tests {
 
     #[test]
     fn oversized_index_loads_empty_and_moves_original_aside() {
-        let dir = temp_dir();
+        let dir = temp_dir("oversized");
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("local-index.json");
         let contents = br#"{"schema_version":1,"tracks":[],"updated_at":1}"#;
@@ -386,7 +388,7 @@ mod tests {
 
     #[test]
     fn missing_schema_version_loads_as_current_version() {
-        let dir = temp_dir();
+        let dir = temp_dir("missing-schema");
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("local-index.json");
         std::fs::write(&path, br#"{"tracks":[],"updated_at":1}"#).unwrap();
