@@ -192,8 +192,9 @@ jobs:
           cargo test --manifest-path crates/ratatui-image/Cargo.toml
           --no-default-features --features crossterm,tokio
 
-      # Advisory while the number proves stable (81.99% on 2026-07-16, threshold 80);
-      # flip to enforcing by dropping continue-on-error after a release cycle.
+      # Advisory while the number proves stable (79.61% on 2026-08-05 — below the 80
+      # threshold, so still advisory; 81.99% on 2026-07-16). Flip to enforcing by dropping
+      # continue-on-error once the number is back above 80 with margin.
       - name: Core coverage (advisory)
         continue-on-error: true
         run: |

@@ -56,9 +56,14 @@ pub(crate) fn publish_modes(
                 let directory = 0o700
                     | if group_visible { 0o050 } else { 0 }
                     | if other_visible { 0o005 } else { 0 };
-                let file = 0o600
-                    | if group_visible { 0o040 } else { 0 }
-                    | if other_visible { 0o004 } else { 0 };
+                // World visibility normalizes to the conventional 0o644 artifact: the mirrored
+                // 0o604 an other-only root (0o705) would produce is not an accepted publication
+                // mode, and the group bit it adds stays unreachable behind the 0o705 directory.
+                let file = match (group_visible, other_visible) {
+                    (_, true) => 0o644,
+                    (true, false) => 0o640,
+                    (false, false) => 0o600,
+                };
                 Ok(PublishModes {
                     file: Some(file),
                     sidecar: Some(0o600),

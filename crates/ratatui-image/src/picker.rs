@@ -726,7 +726,7 @@ fn enable_raw_mode() -> Result<impl FnOnce() -> Result<()>> {
 fn enable_raw_mode() -> Result<impl FnOnce() -> Result<()>> {
     use windows::{
         Win32::{
-            Foundation::{GENERIC_READ, GENERIC_WRITE, HANDLE},
+            Foundation::{GENERIC_READ, GENERIC_WRITE},
             Storage::FileSystem::{
                 self, FILE_FLAGS_AND_ATTRIBUTES, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
             },
@@ -750,7 +750,7 @@ fn enable_raw_mode() -> Result<impl FnOnce() -> Result<()>> {
             None,
             OPEN_EXISTING,
             FILE_FLAGS_AND_ATTRIBUTES(0),
-            HANDLE::default(),
+            None,
         )
     }?;
 
