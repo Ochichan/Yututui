@@ -4,9 +4,6 @@
 impl MacTrayApp {
     fn reconcile_window_placements(&mut self) {
         let mut persist = false;
-        if let Some(main) = &self.main_window {
-            persist |= main.reconcile_live_placement();
-        }
         if let Some(panel) = &self.panel {
             let changed = panel.reconcile_live_placement();
             persist |= changed && panel.is_pinned();
@@ -17,13 +14,6 @@ impl MacTrayApp {
     }
 
     fn handle_scale_factor_changed(&mut self, window_id: tao::window::WindowId) {
-        if let Some(main) = &self.main_window
-            && main.window_id() == window_id
-        {
-            main.reconcile_live_placement();
-            main.record_geometry();
-            self.geometry_dirty_at = Some(Instant::now());
-        }
         if let Some(panel) = &self.panel
             && panel.window_id() == window_id
         {
@@ -151,7 +141,7 @@ impl MacTrayApp {
     }
 
     fn shutdown(&mut self) {
-        self.persist_main_geometry();
+        self.persist_geometry();
         self.stop_polling();
         self.gateway.take();
         self.command_executor.take();
@@ -168,17 +158,6 @@ fn submission_error(error: SubmitError) -> DesktopCommandError {
         error.to_string(),
         matches!(error, SubmitError::Full),
     )
-}
-
-fn set_main_activation<T>(target: &EventLoopWindowTarget<T>, visible: bool) {
-    if visible {
-        target.set_activation_policy_at_runtime(ActivationPolicy::Regular);
-        target.set_dock_visibility(true);
-        target.show_application();
-    } else {
-        target.set_activation_policy_at_runtime(ActivationPolicy::Accessory);
-        target.set_dock_visibility(false);
-    }
 }
 
 fn init_file_logging() -> Option<tracing_appender::non_blocking::WorkerGuard> {
@@ -224,27 +203,6 @@ fn install_tray_panic_hook() {
         }
         previous(info);
     }));
-}
-
-/// Build the `window.__YTM_BOOT__` object literal injected at page load (docs/gui/04 §3.3).
-/// The frontend falls back to its app.css role defaults when no theme is injected.
-fn boot_json(conn: &gateway::ConnState) -> String {
-    let owner = match conn {
-        gateway::ConnState::Online { owner_mode, .. } => serde_json::to_value(owner_mode).ok(),
-        _ => None,
-    };
-    serde_json::json!({
-        "platform": "macos",
-        "version": env!("CARGO_PKG_VERSION"),
-        "coreVersion": serde_json::Value::Null,
-        "protocolVersion": crate::remote::proto::PROTOCOL_VERSION,
-        "ownerMode": owner,
-        "locale": "en",
-        "theme": serde_json::Value::Null,
-        "uiState": serde_json::Value::Null,
-        "devFlags": { "devFrontend": false },
-    })
-    .to_string()
 }
 
 fn report_error(message: impl std::fmt::Display) {

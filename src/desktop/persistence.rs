@@ -64,7 +64,7 @@ pub(crate) fn legacy_config_dir() -> Option<PathBuf> {
 mod tests {
     use std::path::{Path, PathBuf};
 
-    use crate::desktop::window_state::{DesktopState, Point, WindowRect};
+    use crate::desktop::window_state::{DesktopState, Point};
 
     fn test_root() -> PathBuf {
         let mut random = [0_u8; 8];
@@ -127,17 +127,9 @@ mod tests {
         std::fs::write(core_data.join("WebView2.sentinel"), b"core-data-sentinel").unwrap();
 
         let state = DesktopState {
-            main: Some(WindowRect {
-                x: 10,
-                y: 20,
-                w: 800,
-                h: 600,
-                maximized: false,
-            }),
             mini: Some(Point { x: 30, y: 40 }),
             mini_pinned: false,
             placement_v2: Default::default(),
-            close_to_tray: false,
             keep_webview_alive: true,
             mini_theme: Some("glass".to_owned()),
         };

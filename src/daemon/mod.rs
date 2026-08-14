@@ -19,15 +19,11 @@ use crate::remote::{
     PERSONAL_STATE_V2_CAPABILITY, WEB_DAV_SYNC_CAPABILITY,
 };
 use crate::util::process::{self, ProcessProfile};
-mod accounts_host;
-mod ai_host;
 mod capabilities;
 mod cli;
-mod downloads_host;
 mod effects;
 mod engine;
 mod events;
-mod gui_search_pending;
 mod lyrics_host;
 mod observer_plan;
 #[cfg(test)]
@@ -36,17 +32,15 @@ mod personal_export;
 mod personal_sync;
 mod serve_setup;
 mod shutdown_drain;
-mod transfer_host;
 
 use capabilities::daemon_capabilities;
 use cli::{ParseOutcome, parse};
-use effects::{DaemonEffectTasks, dispatch_engine_effects, dispatch_session_engine_effects};
+use effects::{DaemonEffectTasks, dispatch_engine_effects};
 #[cfg(any(windows, test))]
 use events::emit_daemon_callback_result_until;
 use events::{DaemonEvent, DaemonEventSender, emit_daemon_event, record_daemon_event};
 #[cfg(test)]
 use events::{DaemonTelemetrySlot, emit_daemon_callback_result};
-use gui_search_pending::{GuiSearchPending, PendingGuiSearch};
 use serve_setup::transport_or_return;
 use shutdown_drain::{drain_playback_report_frontier, playback_report_frontier_succeeded};
 
@@ -253,19 +247,7 @@ async fn serve(_from_tray: bool, resume: bool) -> i32 {
     let (remote_guard, session_hub) = server.start(move |event| {
         emit_daemon_event(&remote_event_tx, DaemonEvent::Remote(event)).is_ok()
     });
-    let mut publisher = crate::remote::publish::Publisher::new(session_hub);
-    let download_runtime = engine.download_runtime();
-    let downloads_host = downloads_host::DownloadsHost::spawn(
-        event_tx.clone(),
-        download_runtime.dir,
-        download_runtime.cookies_file,
-        download_runtime.max_concurrent,
-    );
-    publisher.publish_downloads(downloads_host.models());
-    let transfer_host = transfer_host::TransferHost::spawn(event_tx.clone());
-    transfer_host.publish(&mut publisher);
-    let ai_host = ai_host::AiHost::new(event_tx.clone());
-    ai_host.publish(&engine, &mut publisher);
+    let publisher = crate::remote::publish::Publisher::new(session_hub);
 
     // OS media session: the headless daemon publishes Now Playing / SMTC / MPRIS too,
     // so media keys and OS widgets control background playback without a terminal.
@@ -319,9 +301,6 @@ async fn serve(_from_tray: bool, resume: bool) -> i32 {
         api,
         remote_guard,
         publisher,
-        downloads_host,
-        transfer_host,
-        ai_host,
         media_session_allowed,
         media,
         scrobble,
@@ -343,21 +322,11 @@ async fn run_owner_loop(
     api: crate::api::ApiHandle,
     mut remote_guard: crate::remote::server::InstanceGuard,
     mut publisher: crate::remote::publish::Publisher,
-    mut downloads_host: downloads_host::DownloadsHost,
-    mut transfer_host: transfer_host::TransferHost,
-    mut ai_host: ai_host::AiHost,
     media_session_allowed: bool,
     mut media: crate::media::MediaSession,
     mut scrobble: crate::scrobble::ScrobbleHandle,
 ) -> i32 {
     let mut lyrics_host = lyrics_host::LyricsHost::spawn(event_tx.clone());
-    let mut published_playlists_rev = None;
-    let mut published_library_invalidations = engine.library_invalidations();
-    let mut published_why_gem_rev = None;
-    let mut published_accounts_rev = None;
-    // Advances only on an accepted reconfigure, so a Busy drop retries next turn — a
-    // user who turned scrobbling OFF must never be left with a live actor still on.
-    let mut configured_accounts_rev = engine.accounts_rev();
 
     if !shutdown.is_triggered() {
         let startup_snapshot = engine.media_snapshot();
@@ -376,7 +345,6 @@ async fn run_owner_loop(
     scrobble_retry_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     let mut effect_tasks = DaemonEffectTasks::new();
-    let mut gui_search_pending = GuiSearchPending::default();
     let mut personal_export = personal_export::PersonalExport::default();
     let mut personal_sync = personal_sync::PersonalSync::default();
     let mut pending_events: VecDeque<DaemonEvent> = VecDeque::new();
@@ -387,14 +355,12 @@ async fn run_owner_loop(
             &event_tx,
             &shutdown,
             &mut effect_tasks,
-            &mut gui_search_pending,
             initial_effects,
         ));
     }
     personal_sync.enable_automatic(&mut engine, &event_tx, &shutdown);
     'owner: loop {
         effect_tasks.reap_finished();
-        gui_search_pending.prune_closed();
         if shutdown.is_triggered() {
             engine.suppress_transport_recovery_for_shutdown();
             break;
@@ -449,38 +415,7 @@ async fn run_owner_loop(
             pending_events.extend(event_tx.drain_coalesced());
             continue;
         }
-        let Some(event) = downloads_host.intercept(event, &engine, &mut publisher) else {
-            continue;
-        };
-        let Some(event) = accounts_host::intercept(event, &scrobble) else {
-            continue;
-        };
-        let Some(event) = transfer_host.intercept(event, &mut engine, &mut publisher) else {
-            continue;
-        };
         let (observer_plan, media_position_turn, media_before) = event.observer_context(&engine);
-        // AI-triggered track loads (PlayTracks/PlayPlaylist) await network + mpv spawn;
-        // shutdown must be able to preempt them like any other owner handler.
-        let Some(intercepted) = await_owner_handler(
-            &shutdown,
-            ai_host.intercept(event, &mut engine, &mut publisher),
-        )
-        .await
-        else {
-            engine.suppress_transport_recovery_for_shutdown();
-            break;
-        };
-        pending_events.extend(dispatch_engine_effects(
-            &api,
-            &event_tx,
-            &shutdown,
-            &mut effect_tasks,
-            &mut gui_search_pending,
-            intercepted.effects,
-        ));
-        let event = intercepted
-            .event
-            .unwrap_or(DaemonEvent::Ai(crate::ai::AiEvent::Thinking(false)));
         match event {
             DaemonEvent::Remote(RemoteEvent::Command(command, reply)) => match command {
                 RemoteCommand::ExportPersonalData { directory, schema } => {
@@ -517,14 +452,13 @@ async fn run_owner_loop(
                         &event_tx,
                         &shutdown,
                         &mut effect_tasks,
-                        &mut gui_search_pending,
                         effects,
                     ));
                 }
             },
             DaemonEvent::Remote(RemoteEvent::SessionCommand {
                 command,
-                origin,
+                origin: _,
                 reply,
             }) => match command {
                 RemoteCommand::ExportPersonalData { directory, schema } => {
@@ -541,15 +475,8 @@ async fn run_owner_loop(
                     personal_sync.start_command(command, reply, &mut engine, &event_tx, &shutdown);
                 }
                 command => {
-                    let requester_key = engine::RequesterKey::new(
-                        origin.session_id(),
-                        origin.page_id().map(str::to_owned),
-                    );
-                    let Some((response, wants_shutdown, effects)) = await_owner_handler(
-                        &shutdown,
-                        engine.handle_session_remote(command, requester_key),
-                    )
-                    .await
+                    let Some((response, wants_shutdown, effects)) =
+                        await_owner_handler(&shutdown, engine.handle_remote(command)).await
                     else {
                         engine.suppress_transport_recovery_for_shutdown();
                         break;
@@ -563,18 +490,16 @@ async fn run_owner_loop(
                         shutdown.trigger();
                         break;
                     }
-                    pending_events.extend(dispatch_session_engine_effects(
+                    pending_events.extend(dispatch_engine_effects(
                         &api,
                         &event_tx,
                         &shutdown,
                         &mut effect_tasks,
-                        &mut gui_search_pending,
-                        &origin,
                         effects,
                     ));
                 }
             },
-            // Owner lane (docs/gui/02 §8/§14): initial snapshots + reply from current
+            // Owner lane: initial snapshots + reply from current
             // engine state, in order, into this session's queue.
             DaemonEvent::Remote(RemoteEvent::SessionSubscribe {
                 session,
@@ -609,26 +534,8 @@ async fn run_owner_loop(
                     &event_tx,
                     &shutdown,
                     &mut effect_tasks,
-                    &mut gui_search_pending,
                     effects,
                 ));
-            }
-            // GUI-search answers are owner-lane fan-out. A completion is admitted only while
-            // its requester page is current and subscribed; only then expose those exact rows
-            // to follow-up play_tracks/enqueue_tracks commands from that requester.
-            DaemonEvent::Api(crate::api::ApiEvent::GuiSearchCompleted { request_id, groups }) => {
-                if shutdown.is_triggered() {
-                    engine.suppress_transport_recovery_for_shutdown();
-                    break;
-                }
-                if let Some(pending) = gui_search_pending.take(request_id) {
-                    route_gui_search_completion(&mut engine, &publisher, &pending, &groups);
-                } else {
-                    tracing::debug!(
-                        ?request_id,
-                        "ignored unknown or stale GUI search completion"
-                    );
-                }
             }
             DaemonEvent::Api(event) => {
                 let Some(effects) =
@@ -642,7 +549,6 @@ async fn run_owner_loop(
                     &event_tx,
                     &shutdown,
                     &mut effect_tasks,
-                    &mut gui_search_pending,
                     effects,
                 ));
             }
@@ -663,7 +569,6 @@ async fn run_owner_loop(
                     &event_tx,
                     &shutdown,
                     &mut effect_tasks,
-                    &mut gui_search_pending,
                     effects,
                 ));
             }
@@ -687,7 +592,6 @@ async fn run_owner_loop(
                     &event_tx,
                     &shutdown,
                     &mut effect_tasks,
-                    &mut gui_search_pending,
                     effects,
                 ));
             }
@@ -704,7 +608,6 @@ async fn run_owner_loop(
                     &event_tx,
                     &shutdown,
                     &mut effect_tasks,
-                    &mut gui_search_pending,
                     effects,
                 ));
             }
@@ -725,16 +628,11 @@ async fn run_owner_loop(
                 engine.queue_open_subsonic_scrobble(event_id, kind, track, confirmation);
             }
             DaemonEvent::Scrobble(event) => {
-                accounts_host::on_scrobble_event(event, &mut engine, &mut publisher);
+                log_scrobble_event(event);
             }
             DaemonEvent::Lyrics(crate::lyrics::LyricsEvent::Result { video_id, lines }) => {
                 lyrics_host.on_result(&mut publisher, video_id, &lines);
             }
-            DaemonEvent::Download(_) => unreachable!("downloads are intercepted above"),
-            DaemonEvent::Transfer(event) => {
-                transfer_host.on_event(event, &mut engine, &mut publisher);
-            }
-            DaemonEvent::Ai(_) => {}
             DaemonEvent::Signal => {
                 shutdown.trigger();
                 engine.suppress_transport_recovery_for_shutdown();
@@ -810,41 +708,6 @@ async fn run_owner_loop(
         let view = engine.core_view();
         publisher.observe(&view);
         lyrics_host.observe(&mut publisher, view.queue.current());
-        let playlists_rev = engine.playlists_rev();
-        if published_playlists_rev != Some(playlists_rev) {
-            publisher.publish_playlists(engine.playlists_models());
-            published_playlists_rev = Some(playlists_rev);
-        }
-        let library_invalidations = engine.library_invalidations();
-        if published_library_invalidations != library_invalidations {
-            publisher.publish_library_invalidated();
-            published_library_invalidations = library_invalidations;
-        }
-        engine.reconcile_why_gem();
-        let why_gem_rev = engine.why_gem_rev();
-        if published_why_gem_rev != Some(why_gem_rev) {
-            publisher.publish_why_gem(engine.why_gem_ids());
-            published_why_gem_rev = Some(why_gem_rev);
-        }
-        let accounts_rev = engine.accounts_rev();
-        if published_accounts_rev != Some(accounts_rev) {
-            let models = engine.accounts_models();
-            publisher.publish_accounts(
-                models.lastfm,
-                models.listenbrainz,
-                models.spotify,
-                models.scrobble_local,
-            );
-            published_accounts_rev = Some(accounts_rev);
-        }
-        // Retarget the live scrobble actor after any account mutation, from one place,
-        // with retry: a Busy reconfigure leaves configured_accounts_rev behind so the
-        // next turn tries again.
-        if configured_accounts_rev != accounts_rev
-            && scrobble.reconfigure(engine.scrobble_settings()).is_ok()
-        {
-            configured_accounts_rev = accounts_rev;
-        }
     }
     shutdown.trigger();
     engine.suppress_transport_recovery_for_shutdown();
@@ -884,7 +747,6 @@ async fn run_owner_loop(
     // this process-local dedupe frontier. Release while the old listener still owns the path;
     // every later cleanup is then inert toward the successor socket.
     remote_guard.release_endpoint();
-    gui_search_pending.clear();
     publisher.shutting_down();
     remote_guard.shutdown().await;
     signal_handlers.shutdown().await;
@@ -899,35 +761,6 @@ async fn run_owner_loop(
 
 fn daemon_media_enabled(engine: &engine::DaemonEngine, media_session_allowed: bool) -> bool {
     media_session_allowed && engine.media_controls_enabled()
-}
-
-/// Route an async search answer only while both generations still match: the engine's latest
-/// requester ticket and the socket hub's live session/page subscription. Indexing happens only
-/// after the targeted push is admitted, so a closed or replaced page cannot leave actionable rows.
-fn route_gui_search_completion(
-    engine: &mut engine::DaemonEngine,
-    publisher: &crate::remote::publish::Publisher,
-    pending: &PendingGuiSearch,
-    groups: &[crate::api::GuiSearchGroup],
-) -> bool {
-    if !engine.gui_search_is_current(&pending.requester_key, pending.ticket)
-        || !publisher.search_completed(
-            &pending.requester,
-            pending.ticket,
-            &pending.query,
-            pending.source,
-            groups,
-            crate::remote::publish::RatingStores {
-                library: engine.library(),
-                signals: engine.signals(),
-            },
-        )
-    {
-        return false;
-    }
-    let completed = engine.complete_gui_search(&pending.requester_key, pending.ticket, groups);
-    debug_assert!(completed);
-    completed
 }
 
 /// The daemon's stand-in for the TUI's status toasts: scrobble notices go to the log.

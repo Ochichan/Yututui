@@ -416,14 +416,6 @@ fn api_handle_enqueues_all_command_kinds_with_payloads() {
     let (handle, mut interactive_rx, mut bulk_rx) = test_api_handle(8, 8);
 
     handle
-        .gui_search(
-            GuiSearchRequestId::new(3, 7),
-            "gui",
-            SearchSource::All,
-            SearchConfig::default(),
-        )
-        .unwrap();
-    handle
         .streaming(
             66,
             "seed",
@@ -452,14 +444,6 @@ fn api_handle_enqueues_all_command_kinds_with_payloads() {
         .playlist_tracks("PL123", "Roadtrip", PlaylistIntent::Import)
         .unwrap();
 
-    let ApiCmd::GuiSearch {
-        request_id, source, ..
-    } = interactive_rx.try_recv().unwrap()
-    else {
-        panic!("GUI search should use the interactive lane");
-    };
-    assert_eq!(request_id.parts(), (3, 7));
-    assert_eq!(source, SearchSource::All);
     assert!(matches!(
         interactive_rx.try_recv().unwrap(),
         ApiCmd::ResolveTrack { seq: 9, .. }
@@ -497,7 +481,6 @@ fn api_handle_enqueues_all_command_kinds_with_payloads() {
 #[test]
 fn api_command_kinds_route_to_expected_lanes() {
     assert_eq!(ApiCommandKind::Search.lane(), ApiLane::Interactive);
-    assert_eq!(ApiCommandKind::GuiSearch.lane(), ApiLane::Interactive);
     assert_eq!(ApiCommandKind::ResolveTrack.lane(), ApiLane::Interactive);
     assert_eq!(ApiCommandKind::SearchPlaylists.lane(), ApiLane::Interactive);
     assert_eq!(ApiCommandKind::Streaming.lane(), ApiLane::Bulk);

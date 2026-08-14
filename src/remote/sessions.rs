@@ -5,7 +5,7 @@
 //! Naming: `RemoteSession*` (not `Session*`) — `crate::session` is the unrelated
 //! last-session resume cache.
 //!
-//! Backpressure (docs/gui/02 §8): each session owns a bounded outbound queue capped at
+//! Backpressure: each session owns a bounded outbound queue capped at
 //! **256 items or 8 MB of buffered bytes, whichever trips first**. Enqueue never blocks;
 //! an overflowing session is evicted with `Goodbye { reason: "slow_consumer" }`. A
 //! wedged client can never block the owner loop and can never pin unbounded memory.
@@ -14,7 +14,7 @@
 //! Subscribe frames are forwarded to the owner loop, where the
 //! [`crate::remote::publish::Publisher`] records the subscription set, emits one initial
 //! snapshot per newly subscribed topic, and then the `Reply` — all into this session's
-//! outbound queue, making the snapshot-before-Reply order structural (docs/gui/02 §6).
+//! outbound queue, making the snapshot-before-Reply order structural.
 
 use std::collections::HashMap;
 use std::io;
@@ -104,9 +104,7 @@ impl SessionTuning {
             | RemoteCommand::QueueRemove { .. }
             | RemoteCommand::QueuePlayIfRevision { .. }
             | RemoteCommand::QueueRemoveIfRevision { .. }
-            | RemoteCommand::ResumeSession
-            | RemoteCommand::PlayTracks { .. }
-            | RemoteCommand::EnqueueTracks { .. } => self.playback_reply_timeout,
+            | RemoteCommand::ResumeSession => self.playback_reply_timeout,
             _ => self.reply_timeout,
         }
     }
@@ -176,7 +174,7 @@ pub(crate) struct RemoteSessionHandle {
     subscriptions: Mutex<std::collections::HashSet<Topic>>,
     current_page: Mutex<Option<String>>,
     subscribe_admission: Mutex<SubscribeAdmission>,
-    /// Per-session monotonic event sequence (docs/gui/02 §6).
+    /// Per-session monotonic event sequence.
     seq: AtomicU64,
     /// Wakes both socket halves immediately on eviction/shutdown.
     close: Arc<SessionClose>,
@@ -217,11 +215,10 @@ pub struct RemoteSessionRef {
     pub(crate) handle: Arc<RemoteSessionHandle>,
 }
 
-/// Identity and live routing handle for one session-originated command. `page_id` is optional
-/// only for compatibility with shipped protocol-v8 clients that predate page generations.
+/// Identity of one session-originated command. `page_id` is optional only for
+/// compatibility with shipped protocol-v8 clients that predate page generations.
 #[derive(Clone, Debug)]
 pub struct RemoteSessionScope {
-    session: Option<RemoteSessionRef>,
     session_id: u64,
     page_id: Option<String>,
 }
@@ -230,7 +227,6 @@ impl RemoteSessionScope {
     pub(crate) fn new(session: RemoteSessionRef, page_id: Option<String>) -> Self {
         Self {
             session_id: session.session_id,
-            session: Some(session),
             page_id,
         }
     }
@@ -243,20 +239,9 @@ impl RemoteSessionScope {
         self.page_id.as_deref()
     }
 
-    pub(crate) fn session(&self) -> Option<&RemoteSessionRef> {
-        self.session.as_ref()
-    }
-
-    pub(crate) fn is_live(&self) -> bool {
-        self.session
-            .as_ref()
-            .is_none_or(|session| !session.handle.close.is_closed())
-    }
-
     #[cfg(test)]
     pub(crate) fn for_test(session_id: u64, page_id: Option<&str>) -> Self {
         Self {
-            session: None,
             session_id,
             page_id: page_id.map(str::to_owned),
         }
@@ -295,11 +280,6 @@ impl RemoteSessionRef {
 
     pub(crate) fn unsubscribe_if_current(&self, page_id: Option<&str>, topics: &[Topic]) -> bool {
         self.handle.unsubscribe_if_current(page_id, topics)
-    }
-
-    #[cfg(test)]
-    pub(crate) fn close_for_test(&self) {
-        self.handle.request_close(CloseReason::ClientGone);
     }
 }
 
@@ -403,14 +383,6 @@ pub(crate) fn test_command_reply(
 ) -> RemoteReply {
     let direct_reply = DirectSessionReply::new(hub, session, frame_id, None);
     RemoteReply::direct(move |response| direct_reply.complete(response))
-}
-
-#[cfg(test)]
-pub(crate) fn test_register_next(
-    hub: &Arc<RemoteSessionHub>,
-) -> (RemoteSessionRef, mpsc::Receiver<SessionLine>) {
-    let (session_id, handle, rx) = hub.register().expect("test hub has room");
-    (RemoteSessionRef { session_id, handle }, rx)
 }
 
 /// The per-owner session registry. The server's accept path registers sessions here;
@@ -658,38 +630,6 @@ impl RemoteSessionHub {
         }
     }
 
-    /// Target a live session only while it still owns the topic subscription. A stale
-    /// `RemoteSessionRef` retained by asynchronous work cannot publish into a replacement.
-    pub(crate) fn send_event_to_subscriber(
-        &self,
-        session: &RemoteSessionRef,
-        page_id: Option<&str>,
-        topic: Topic,
-        payload: &Arc<Vec<u8>>,
-    ) -> bool {
-        let live = self
-            .registry
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .sessions
-            .get(&session.session_id)
-            .is_some_and(|handle| Arc::ptr_eq(handle, &session.handle));
-        if !live {
-            return false;
-        }
-        match session
-            .handle
-            .push_event_to_subscriber(page_id, topic, payload)
-        {
-            None => false,
-            Some(true) => true,
-            Some(false) => {
-                self.evict(session.session_id, &session.handle);
-                false
-            }
-        }
-    }
-
     /// Send one raw frame to a single session (replies). Returns `false` after evicting.
     pub(crate) fn send_raw_to(&self, session: &RemoteSessionRef, frame: &ServerFrame) -> bool {
         if session
@@ -792,33 +732,6 @@ impl RemoteSessionHandle {
             prefix,
             payload: Arc::clone(payload),
         })
-    }
-
-    /// Check the topic/page generations and enqueue while holding both generation locks. This
-    /// prevents a reader-thread page replacement or unsubscribe from racing between validation
-    /// and the targeted push. `None` is a generation mismatch; `Some(false)` is overflow/close.
-    fn push_event_to_subscriber(
-        &self,
-        page_id: Option<&str>,
-        topic: Topic,
-        payload: &Arc<Vec<u8>>,
-    ) -> Option<bool> {
-        let subscriptions = self.subscriptions.lock().unwrap_or_else(|e| e.into_inner());
-        if !subscriptions.contains(&topic) {
-            return None;
-        }
-        let current_page = self.current_page.lock().unwrap_or_else(|e| e.into_inner());
-        if current_page.as_deref() != page_id {
-            return None;
-        }
-        let admission = self
-            .subscribe_admission
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        if admission.page_id.as_deref() != page_id {
-            return None;
-        }
-        Some(self.push_event(topic, payload))
     }
 
     fn request_close(&self, reason: CloseReason) {
@@ -959,7 +872,7 @@ pub(crate) async fn run_session(
         reason: Some(reason.to_string()),
     };
     // Hello is accepted for clients that can speak our version: they offer
-    // [min_version, version] and we speak PROTOCOL_VERSION (docs/gui/02 §9).
+    // [min_version, version] and we speak PROTOCOL_VERSION.
     let version_ok =
         hello.hello.min_version <= PROTOCOL_VERSION && hello.version >= PROTOCOL_VERSION;
     let ack = if hello.token != token {
@@ -1074,7 +987,7 @@ pub(crate) async fn run_session(
         let reply = match op {
             // Pings never touch the owner loop: answered right here.
             ClientOp::Ping => Some(ServerFrame::Pong { id: frame_id }),
-            // Subscribe runs on the owner loop (docs/gui/02 §8): the Publisher records
+            // Subscribe runs on the owner loop: the Publisher records
             // the subscriptions, emits one initial snapshot per newly subscribed topic,
             // and only then enqueues the Reply — all into this session's queue, so the
             // snapshot-before-Reply order is structural, not raced.

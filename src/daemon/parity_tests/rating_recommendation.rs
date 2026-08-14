@@ -51,19 +51,18 @@ fn assert_recommendation_parity(
 }
 
 #[tokio::test]
-async fn gui_and_os_rating_feedback_keep_session_reranking_in_parity() {
+async fn os_rating_feedback_keeps_session_reranking_in_parity() {
     let (mut app, mut engine) = hermetic_pair();
 
-    for (step, expected_bias) in [("liked", 0.15), ("disliked", -0.25), ("neutral", -0.25)] {
-        let command = RemoteCommand::Rate {
-            video_id: "b".to_owned(),
-            rating: RateChange::Cycle,
-        };
-        let app_response = app_apply(&mut app, command.clone());
-        let (engine_response, shutdown, effects) = engine.handle_remote(command).await;
+    for (step, command, expected_bias) in [
+        ("liked", MediaCommand::Like, 0.15),
+        ("disliked", MediaCommand::Dislike, -0.25),
+        ("neutral", MediaCommand::Dislike, -0.25),
+    ] {
+        app.update(Msg::Media(command.clone()));
+        let (shutdown, effects) = engine.handle_media(command).await;
         assert!(!shutdown);
         assert!(effects.is_empty());
-        assert_eq!(app_response.reason, engine_response.reason);
         assert_recommendation_parity(step, &app, &engine, expected_bias);
     }
 
@@ -95,15 +94,10 @@ async fn radio_favorites_never_enter_track_session_reranking() {
     engine.restore_queue_snapshot(snapshot.clone(), RNG_SEED);
     app.queue.restore_snapshot(snapshot);
 
-    let command = RemoteCommand::Rate {
-        video_id: "station".to_owned(),
-        rating: RateChange::Cycle,
-    };
-    let app_response = app_apply(&mut app, command.clone());
-    let (engine_response, shutdown, effects) = engine.handle_remote(command).await;
+    app.update(Msg::Media(MediaCommand::Like));
+    let (shutdown, effects) = engine.handle_media(MediaCommand::Like).await;
     assert!(!shutdown);
     assert!(effects.is_empty());
-    assert_eq!(app_response.reason, engine_response.reason);
     let app_effects = app.update(Msg::Media(MediaCommand::Like));
     let (shutdown, engine_effects) = engine.handle_media(MediaCommand::Like).await;
     assert!(!shutdown);

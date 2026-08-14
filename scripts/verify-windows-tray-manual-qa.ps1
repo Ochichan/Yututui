@@ -65,8 +65,6 @@ Assert-File "activate-bare-intent.txt" | Out-Null
 Assert-File "activate-background-intent.txt" | Out-Null
 Assert-File "activate-mini-intent.txt" | Out-Null
 Assert-File "mini-player-disconnected.png" | Out-Null
-Assert-File "activate-main-window-intent.txt" | Out-Null
-Assert-File "main-window.png" | Out-Null
 Assert-File "tray-process-idle.txt" | Out-Null
 Assert-File "tray-visual-check.png" | Out-Null
 Assert-File "tray-scale-100.png" | Out-Null
@@ -105,11 +103,6 @@ Assert-ResultTrue -Results $results -Name "mini_player_disconnected_state"
 Assert-ResultTrue -Results $results -Name "mini_player_absent_from_taskbar"
 Assert-ResultTrue -Results $results -Name "mini_player_absent_from_alt_tab"
 Assert-ResultTrue -Results $results -Name "mini_player_toolwindow_style"
-Assert-ResultTrue -Results $results -Name "main_window_opens_from_intent"
-Assert-ResultTrue -Results $results -Name "main_window_present_in_taskbar"
-Assert-ResultTrue -Results $results -Name "main_window_present_in_alt_tab"
-Assert-ResultTrue -Results $results -Name "main_window_appwindow_style"
-Assert-ResultTrue -Results $results -Name "hidden_main_leaves_task_switchers"
 Assert-ResultTrue -Results $results -Name "open_tui_launches_terminal"
 Assert-ResultTrue -Results $results -Name "ytt_taskbar_clicks_do_not_crash"
 Assert-ResultTrue -Results $results -Name "shortcut_icon_correct"
@@ -135,9 +128,10 @@ $openPlan = Get-Content -LiteralPath (Join-Path $EvidenceDir "open-tui-plan.txt"
 Assert-True ($openPlan.Contains("ytt.exe")) "open TUI plan did not include ytt.exe"
 
 $trayHelp = Read-TextEvidence "yututray-help.txt"
-foreach ($option in @("--background", "--mini", "--main-window")) {
+foreach ($option in @("--background", "--mini")) {
     Assert-True ($trayHelp.Contains($option)) "yututray --help did not include $option"
 }
+Assert-True (-not $trayHelp.Contains("--main-window")) "yututray --help still mentions the removed --main-window option"
 
 $trayBefore = Read-TextEvidence "tray-process-before.txt"
 Assert-True (-not $trayBefore.Contains("Id")) "yututray.exe was already running before manual QA"

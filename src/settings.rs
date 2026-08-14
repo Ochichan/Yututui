@@ -29,7 +29,6 @@ mod actions;
 mod color_picker;
 mod display;
 mod field_meta;
-pub(crate) mod gui_mutation;
 pub mod sync;
 pub use actions::{FieldKind, PersonalDataExportStatus};
 pub use color_picker::{

@@ -177,6 +177,12 @@ impl super::DaemonEngine {
         RemoteResponse::err(error.reason())
     }
 
+    /// Re-send the current audio filter chain (EQ + normalize) to the live player.
+    pub(super) fn apply_audio_filter(&self) -> Result<(), EngineError> {
+        let af = self.current_audio_filter();
+        self.send_player_command_if_active("set_audio_filter", PlayerCmd::SetAudioFilter(af))
+    }
+
     pub(super) async fn load_current_or_restore_queue(
         &mut self,
         previous: QueueSnapshot,

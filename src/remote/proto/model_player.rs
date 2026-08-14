@@ -1,4 +1,4 @@
-//! Player and queue read models (docs/gui/02 §11.3).
+//! Player and queue read models.
 
 use serde::{Deserialize, Serialize};
 
@@ -10,28 +10,19 @@ use super::model::TrackModel;
 /// Full player state, pushed on the `player` topic on discontinuity only — never on the
 /// 1 Hz time tick. Clients interpolate position from `elapsed_ms` + a wall-clock anchor
 /// and rebase whenever `position_epoch` changes or a new event arrives.
-#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
-#[cfg_attr(
-    feature = "ts-export",
-    ts(export, export_to = "gui/src/generated/protocol/")
-)]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PlayerModel {
     pub track: Option<TrackModel>,
     pub paused: bool,
     /// `0..=100`.
-    #[cfg_attr(feature = "ts-export", ts(type = "number"))]
     pub volume: i64,
     /// Playback speed in tenths, the established v7 unit (`10` = 1.0×).
     pub speed_tenths: u16,
     /// Sampled at emit; interpolate while playing.
-    #[cfg_attr(feature = "ts-export", ts(type = "number | null"))]
     pub elapsed_ms: Option<u64>,
     /// `None` means live or not yet measured; use `track.is_live` for "ON AIR".
-    #[cfg_attr(feature = "ts-export", ts(type = "number | null"))]
     pub duration_ms: Option<u64>,
     /// Discontinuity counter — rebase interpolation when it changes.
-    #[cfg_attr(feature = "ts-export", ts(type = "number"))]
     pub position_epoch: u64,
     pub shuffle: bool,
     pub repeat: Repeat,
@@ -44,7 +35,7 @@ pub struct PlayerModel {
     pub owner_mode: InstanceMode,
     pub eq: EqModel,
     /// Queue cursor (order position). The cursor rides the player topic — a track
-    /// advance is a small player push, never a queue-snapshot push (docs/gui/02 §7).
+    /// advance is a small player push, never a queue-snapshot push.
     pub queue_pos: usize,
     pub queue_len: usize,
 }
@@ -54,25 +45,14 @@ pub struct PlayerModel {
 /// including restore-snapshot and the radio-mode queue swaps) so whole-queue swaps are
 /// always observable; it is never persisted. The current row is derived client-side from
 /// [`PlayerModel::queue_pos`] — rows carry no current flag.
-#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
-#[cfg_attr(
-    feature = "ts-export",
-    ts(export, export_to = "gui/src/generated/protocol/")
-)]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct QueueModel {
-    #[cfg_attr(feature = "ts-export", ts(type = "number"))]
     pub rev: u64,
     /// In effective play order.
     pub items: Vec<TrackModel>,
 }
 
 /// Equalizer state as the player topic exposes it.
-#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
-#[cfg_attr(
-    feature = "ts-export",
-    ts(export, export_to = "gui/src/generated/protocol/")
-)]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EqModel {
     pub preset: String,

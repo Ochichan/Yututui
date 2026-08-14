@@ -1,4 +1,4 @@
-//! The persistent protocol-v8 session driver (docs/gui/03 §3.2).
+//! The persistent protocol-v8 session driver.
 //!
 //! One long-lived thread runs a current-thread tokio runtime holding the socket: Hello →
 //! subscribe → read frames, with a periodic ping keep-alive and exponential-backoff
@@ -39,8 +39,6 @@ use page_lifetime::{
     reconcile_subscriptions, reject_offline_command, reject_pending, reply_envelope,
     request_identity, validate_page_id,
 };
-
-pub use super::gateway_frontend::{MAIN_FRONTEND_TOPICS, refresh_ready_main_frontend};
 
 const CONNECT_TIMEOUT: Duration = Duration::from_millis(500);
 const HELLO_TIMEOUT: Duration = Duration::from_secs(2);
@@ -92,36 +90,11 @@ pub enum ConnState {
     },
 }
 
-impl ConnState {
-    /// The `conn` envelope payload (camelCase, matching the TS `ConnPayload`) that drives the
-    /// frontend's connection store (docs/gui/05 §4.1).
-    pub fn to_conn_payload(&self) -> serde_json::Value {
-        match self {
-            ConnState::Connecting => serde_json::json!({ "state": "connecting" }),
-            ConnState::Online {
-                protocol_version,
-                capabilities,
-                owner_mode,
-            } => serde_json::json!({
-                "state": "online",
-                "protocolVersion": protocol_version,
-                "capabilities": capabilities,
-                "ownerMode": owner_mode,
-            }),
-            ConnState::Offline { reason } => serde_json::json!({
-                "state": "offline",
-                "reason": reason,
-            }),
-        }
-    }
-}
-
 /// What the gateway thread reports to the event loop.
 #[derive(Debug, Clone)]
 pub enum GatewayEvent {
     Connection(ConnState),
-    /// An inbound server frame (topic push or correlated reply) already rendered as the
-    /// webview envelope the loop feeds to `bridge::receive_script`.
+    /// An inbound server frame (topic push or correlated reply) as a session envelope.
     Frame(InEnvelope),
     /// A correlated frame annotated with the native WebView generation that originated it.
     /// The PR40 page namespace remains inside the envelope; this host-side generation closes the
@@ -243,6 +216,7 @@ impl GatewayHandle {
     }
 
     /// Admit a page request while retaining the native surface generation that owns it.
+    #[cfg(test)]
     fn send_from_generation(
         &self,
         env: OutEnvelope,
@@ -390,6 +364,7 @@ pub(crate) fn send_or_reject(
     send_or_reject_from_generation(handle, env, None)
 }
 
+#[cfg(test)]
 pub(crate) fn send_or_reject_from_generation(
     handle: Option<&GatewayHandle>,
     env: OutEnvelope,
@@ -781,8 +756,7 @@ async fn run_session<F: Fn(GatewayEvent)>(
                 }
             }
             // A page-scoped command cannot overtake the subscription transition that makes
-            // that page current in the core. This also keeps an initial RunSearch behind its
-            // Search subscription acknowledgement, so an accepted completion has a live sink.
+            // that page current in the core, so an accepted completion has a live sink.
             maybe = cmd_rx.recv(), if pending_subscription.is_none()
                 && applied_subscriptions == desired_subscriptions => {
                 match maybe {
@@ -983,8 +957,6 @@ async fn forward_command<F: Fn(GatewayEvent)>(
         // Subscription declarations are consumed synchronously by `GatewayHandle` and can
         // never enter this bounded command lane.
         OutKind::Sub | OutKind::Unsub => return None,
-        // `win` never reaches the gateway (bridge routes it natively); ignore defensively.
-        OutKind::Win => return None,
     };
 
     let sid = *next_id;

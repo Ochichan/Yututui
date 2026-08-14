@@ -1128,7 +1128,7 @@ pub async fn run(
                 }
                 continue;
             }
-            // Owner lane (docs/gui/02 §8/§14): session subscribe ops run here, between reducer
+            // Owner lane: session subscribe ops run here, between reducer
             // turns, and never become a Msg. Keeping it as RuntimeEvent through the shutdown
             // latch check preserves the correlated request if shutdown wins this turn.
             OwnerTurnInput::Worker(RuntimeEvent::Remote(
@@ -1355,7 +1355,7 @@ pub async fn run(
 
     // Every loop exit, including a fatal draw error, reaches the same ownership barrier before
     // any result is returned. The remote publisher is notified before slower actor/persistence
-    // work so clients can begin reconnect/daemon handling promptly (docs/gui/02 §7).
+    // work so clients can begin reconnect/daemon handling promptly.
     let mut teardown = LiveOwnerTeardown {
         app: &mut app,
         handles: &mut handles,

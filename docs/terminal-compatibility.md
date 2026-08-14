@@ -235,7 +235,7 @@ No `Yes` entries are recorded yet. Keep entries in `Expected`, `Versioned`,
 |---|---|
 | Local playback, search, library, downloads, scrobbling | Intended for daily use; bugs are treated as product bugs. |
 | v7 remote one-shot protocol | Frozen and backward-compatible. |
-| v8 sessions / GUI protocol | Additive where possible; breaking changes need explicit release notes until declared stable. |
+| v8 sessions (watch / tray mini player) | Additive where possible; breaking changes need explicit release notes until declared stable. |
 | Config files | Additive migrations; avoid destructive changes. |
 | Terminal graphics / zoom | Best-effort by terminal capability; this matrix owns support expectations. |
 | AI / DJ Gem | Optional; may change faster due model and provider behavior. |

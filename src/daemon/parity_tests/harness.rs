@@ -10,8 +10,8 @@ use crate::config::Config;
 use crate::library::Library;
 use crate::queue::{Queue, QueueSnapshot, Repeat};
 use crate::remote::proto::{
-    GuiSettingChange, InstanceMode, PlayerModel, QueueModel, RemoteCommand, RemoteResponse,
-    RemoteSettingChange, ToggleState,
+    InstanceMode, PlayerModel, QueueModel, RemoteCommand, RemoteResponse, RemoteSettingChange,
+    ToggleState,
 };
 use crate::remote::publish;
 use crate::signals::Signals;
@@ -67,7 +67,6 @@ pub(super) fn command_parity_class(command: &RemoteCommand) -> CommandParityClas
         | RemoteCommand::CycleRepeat
         | RemoteCommand::Streaming { .. }
         | RemoteCommand::Status
-        | RemoteCommand::Rate { .. }
         | RemoteCommand::QueueMove { .. }
         | RemoteCommand::QueueClearUpcoming { .. } => SharedStableEpoch,
         RemoteCommand::SetSetting { change } => match change {
@@ -85,43 +84,7 @@ pub(super) fn command_parity_class(command: &RemoteCommand) -> CommandParityClas
         | RemoteCommand::SyncNow
         | RemoteCommand::SyncRevokeDevice { .. } => BothOwnerLoopIntercepted,
         RemoteCommand::Quit => OwnerSpecific,
-        RemoteCommand::Play { .. }
-        | RemoteCommand::Enqueue { .. }
-        | RemoteCommand::RunSearch { .. }
-        | RemoteCommand::PlayTracks { .. }
-        | RemoteCommand::EnqueueTracks { .. }
-        | RemoteCommand::Apply { .. }
-        | RemoteCommand::SetGeminiKey { .. }
-        | RemoteCommand::ResetAllSettings
-        | RemoteCommand::QueueRemoveMany { .. }
-        | RemoteCommand::PlayVideo { .. }
-        | RemoteCommand::AskAi { .. }
-        | RemoteCommand::LibraryPlay { .. }
-        | RemoteCommand::LibraryEnqueue { .. }
-        | RemoteCommand::LibraryRemove { .. }
-        | RemoteCommand::FetchLibraryPage { .. }
-        | RemoteCommand::Download { .. }
-        | RemoteCommand::DeleteDownload { .. }
-        | RemoteCommand::KeymapBind { .. }
-        | RemoteCommand::KeymapUnbind { .. }
-        | RemoteCommand::KeymapResetAll
-        | RemoteCommand::ThemeSetOverride { .. }
-        | RemoteCommand::ThemeClearOverride { .. }
-        | RemoteCommand::ClearRomanizationCache
-        | RemoteCommand::PlaylistCreate { .. }
-        | RemoteCommand::PlaylistDelete { .. }
-        | RemoteCommand::PlaylistAddTracks { .. }
-        | RemoteCommand::PlaylistRemoveTrack { .. }
-        | RemoteCommand::PlaylistPlay { .. }
-        | RemoteCommand::FetchPlaylistDetail { .. }
-        | RemoteCommand::FetchWhyGem { .. }
-        | RemoteCommand::TransferListSpotify
-        | RemoteCommand::TransferStart { .. }
-        | RemoteCommand::TransferCancel
-        | RemoteCommand::LastfmConnect
-        | RemoteCommand::SpotifyConnect
-        | RemoteCommand::ListenBrainzConfigure { .. }
-        | RemoteCommand::AccountSet { .. } => StandaloneRejected,
+        RemoteCommand::Play { .. } | RemoteCommand::Enqueue { .. } => StandaloneRejected,
     }
 }
 
@@ -355,16 +318,6 @@ pub(super) async fn engine_with_modes(repeat: Repeat, streaming: bool) -> Daemon
     snapshot.repeat = repeat;
     engine.restore_queue_snapshot(snapshot, RNG_SEED);
     engine
-}
-
-pub(super) fn gui_repeat(repeat: Repeat) -> RemoteCommand {
-    RemoteCommand::Apply {
-        change: GuiSettingChange {
-            group: "playback".to_owned(),
-            field: "repeat".to_owned(),
-            value: serde_json::to_value(repeat).unwrap(),
-        },
-    }
 }
 
 #[cfg(test)]

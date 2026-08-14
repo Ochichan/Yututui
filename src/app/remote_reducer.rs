@@ -8,7 +8,7 @@
 
 use super::*;
 use crate::remote::proto::{
-    ArtworkRef, InstanceMode, QueueItemSnapshot, RateChange, RemoteCommand, RemoteResponse,
+    ArtworkRef, InstanceMode, QueueItemSnapshot, RemoteCommand, RemoteResponse,
     RemoteSettingChange, SettingsSnapshot, StatusSnapshot, ToggleState,
 };
 
@@ -71,53 +71,6 @@ impl App {
                 (RemoteResponse::ok(self.pause_line()), cmds)
             }
             RemoteCommand::Play { .. } | RemoteCommand::Enqueue { .. } => {
-                (RemoteResponse::err("daemon_required"), Vec::new())
-            }
-            // GUI-session verbs (docs/gui/02): like Play/Enqueue, searches need the api
-            // actor lane the standalone TUI reserves for its own Search screen — the GUI
-            // is expected to talk to a daemon owner. Settings WRITES are also daemon-only
-            // for now: the TUI's Settings screen state derives from config at draw time,
-            // so a remote mutation would need the same reducer plumbing its keypresses
-            // use (follow-up); settings READS already work (the snapshot projects
-            // `self.config` via core_view).
-            RemoteCommand::RunSearch { .. }
-            | RemoteCommand::PlayTracks { .. }
-            | RemoteCommand::EnqueueTracks { .. }
-            | RemoteCommand::Apply { .. }
-            | RemoteCommand::SetGeminiKey { .. }
-            | RemoteCommand::ResetAllSettings
-            // The deferred v8 GUI surface (gui/WIRING.md §1.5) is daemon-only by design:
-            // the GUI attaches to a daemon owner; the standalone TUI keeps its own paths.
-            // One exhaustive arm so the parity harness can never see divergent reasons.
-            | RemoteCommand::QueueRemoveMany { .. }
-            | RemoteCommand::PlayVideo { .. }
-            | RemoteCommand::AskAi { .. }
-            | RemoteCommand::LibraryPlay { .. }
-            | RemoteCommand::LibraryEnqueue { .. }
-            | RemoteCommand::LibraryRemove { .. }
-            | RemoteCommand::FetchLibraryPage { .. }
-            | RemoteCommand::Download { .. }
-            | RemoteCommand::DeleteDownload { .. }
-            | RemoteCommand::KeymapBind { .. }
-            | RemoteCommand::KeymapUnbind { .. }
-            | RemoteCommand::KeymapResetAll
-            | RemoteCommand::ThemeSetOverride { .. }
-            | RemoteCommand::ThemeClearOverride { .. }
-            | RemoteCommand::ClearRomanizationCache
-            | RemoteCommand::PlaylistCreate { .. }
-            | RemoteCommand::PlaylistDelete { .. }
-            | RemoteCommand::PlaylistAddTracks { .. }
-            | RemoteCommand::PlaylistRemoveTrack { .. }
-            | RemoteCommand::PlaylistPlay { .. }
-            | RemoteCommand::FetchPlaylistDetail { .. }
-            | RemoteCommand::FetchWhyGem { .. }
-            | RemoteCommand::TransferListSpotify
-            | RemoteCommand::TransferStart { .. }
-            | RemoteCommand::TransferCancel
-            | RemoteCommand::LastfmConnect
-            | RemoteCommand::SpotifyConnect
-            | RemoteCommand::ListenBrainzConfigure { .. }
-            | RemoteCommand::AccountSet { .. } => {
                 (RemoteResponse::err("daemon_required"), Vec::new())
             }
             // Intercepted by the top-level reducer before this playback/settings dispatcher so
@@ -185,11 +138,8 @@ impl App {
                 )
             }
             RemoteCommand::CycleRepeat => {
-                let transition = PlaybackModeState::new(
-                    self.queue.repeat,
-                    self.autoplay_streaming,
-                )
-                .transition(PlaybackModeAction::CycleRepeat);
+                let transition = PlaybackModeState::new(self.queue.repeat, self.autoplay_streaming)
+                    .transition(PlaybackModeAction::CycleRepeat);
                 let Ok(transition) = transition else {
                     self.status.text = t!(
                         "Can't use repeat while autoplay is on",
@@ -236,22 +186,6 @@ impl App {
                     self.dirty = true;
                 }
                 (RemoteResponse::status(self.status_snapshot()), Vec::new())
-            }
-            // The GUI's rating chip binds the player model's CURRENT track (its only
-            // sender uses the current id), so both owners accept exactly that; the
-            // cycle rides the same reducer path as the `f` key. The daemon mirrors
-            // these guards and the cycle transitions lockstep (parity-tested).
-            RemoteCommand::Rate { video_id, rating } => {
-                if rating != RateChange::Cycle {
-                    return (RemoteResponse::err("not_supported"), Vec::new());
-                }
-                if self.queue.current().map(|song| song.video_id.as_str())
-                    != Some(video_id.as_str())
-                {
-                    return (RemoteResponse::err("unknown_track"), Vec::new());
-                }
-                let cmds = self.on_player_action(Action::CycleRating);
-                (RemoteResponse::ok("rating cycled".to_string()), cmds)
             }
             RemoteCommand::Streaming { state } => self.remote_set_streaming(state),
             RemoteCommand::SetSetting { change } => self.remote_set_setting(change),
@@ -581,7 +515,7 @@ impl App {
         }
     }
 
-    /// The v8 publisher's read view of this owner (docs/gui/02 §14). Same interpolation
+    /// The v8 publisher's read view of this owner. Same interpolation
     /// math as [`status_snapshot`](Self::status_snapshot) / the OS media session, so a
     /// pushed snapshot's position is fresh at emit time.
     pub fn core_view(&self) -> crate::remote::publish::CoreView<'_> {

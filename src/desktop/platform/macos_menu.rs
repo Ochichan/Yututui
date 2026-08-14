@@ -11,7 +11,6 @@ use super::{UserEvent, report_error};
 use crate::desktop::menu_model::{
     self, MenuAction, MenuEntry, MenuItem as ModelItem, MenuSubmenuId, TrayState,
 };
-use crate::desktop::single_instance::ActivationIntent;
 use crate::desktop::startup::{self, StartupStatus};
 use crate::remote::proto::InstanceMode;
 
@@ -234,7 +233,6 @@ pub(super) fn user_event_from_menu_id(id: &MenuId) -> Option<UserEvent> {
     let action = action_from_menu_id(id)?;
     Some(match action {
         MenuAction::ShowMiniPlayer => UserEvent::ShowMiniPlayer,
-        MenuAction::OpenMainWindow => UserEvent::Activation(ActivationIntent::ShowMain),
         MenuAction::Refresh => UserEvent::Refresh,
         MenuAction::QuitTray => UserEvent::Quit,
         other => UserEvent::Menu(other),
@@ -260,7 +258,6 @@ fn action_from_menu_id(id: &MenuId) -> Option<MenuAction> {
         "resume_daemon" => Some(MenuAction::ResumeDaemon),
         "stop_daemon" => Some(MenuAction::StopDaemon),
         "show_mini_player" => Some(MenuAction::ShowMiniPlayer),
-        "open_main_window" => Some(MenuAction::OpenMainWindow),
         "open_tui" => Some(MenuAction::OpenTui),
         "refresh" => Some(MenuAction::Refresh),
         "toggle_startup" => Some(MenuAction::ToggleStartup),
@@ -284,7 +281,6 @@ fn action_slug(action: MenuAction) -> &'static str {
         MenuAction::ResumeDaemon => "resume_daemon",
         MenuAction::StopDaemon => "stop_daemon",
         MenuAction::ShowMiniPlayer => "show_mini_player",
-        MenuAction::OpenMainWindow => "open_main_window",
         MenuAction::OpenTui => "open_tui",
         MenuAction::Refresh => "refresh",
         MenuAction::ToggleStartup => "toggle_startup",
@@ -355,7 +351,6 @@ mod tests {
             MenuAction::ResumeDaemon,
             MenuAction::StopDaemon,
             MenuAction::ShowMiniPlayer,
-            MenuAction::OpenMainWindow,
             MenuAction::OpenTui,
             MenuAction::Refresh,
             MenuAction::ToggleStartup,

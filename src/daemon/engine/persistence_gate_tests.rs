@@ -86,23 +86,6 @@ fn mutating_commands() -> Vec<RemoteCommand> {
             change: RemoteSettingChange::SeekSeconds { seconds: 9 },
         },
         RemoteCommand::ResumeSession,
-        RemoteCommand::PlayTracks {
-            video_ids: vec!["video-id".to_owned()],
-        },
-        RemoteCommand::EnqueueTracks {
-            video_ids: vec!["video-id".to_owned()],
-        },
-        RemoteCommand::Apply {
-            change: crate::remote::proto::GuiSettingChange {
-                group: "playback".to_owned(),
-                field: "enqueue_next".to_owned(),
-                value: serde_json::Value::Bool(true),
-            },
-        },
-        RemoteCommand::SetGeminiKey {
-            key: "secret".to_owned(),
-        },
-        RemoteCommand::ResetAllSettings,
     ]
 }
 
@@ -206,18 +189,14 @@ async fn late_recovery_failure_rejects_every_mutating_remote_command_before_muta
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn long_form_seek_apply_reaches_no_player_before_persistence_admission() {
+async fn normalize_apply_reaches_no_player_before_persistence_admission() {
     let _guard = fail_recovery_for_test(recovery_error());
     let mut engine = engine_with_queue(&["seed"]);
     let mut player_rx = install_accepting_player(&mut engine);
 
     let (response, shutdown, effects) = engine
-        .handle_remote(RemoteCommand::Apply {
-            change: crate::remote::proto::GuiSettingChange {
-                group: "audio".to_owned(),
-                field: "long_form_seek_optimization".to_owned(),
-                value: serde_json::json!("on"),
-            },
+        .handle_remote(RemoteCommand::SetSetting {
+            change: RemoteSettingChange::Normalize { value: true },
         })
         .await;
 
@@ -225,40 +204,28 @@ async fn long_form_seek_apply_reaches_no_player_before_persistence_admission() {
     assert!(!shutdown);
     assert!(effects.is_empty());
     assert!(player_rx.try_recv().is_err());
-    assert_eq!(
-        engine.config.audio.mpv.long_form_seek_optimization,
-        crate::config::LongFormSeekOptimization::Off
-    );
+    assert_eq!(engine.config.normalize, None);
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn long_form_seek_apply_reports_unconfirmed_durability_after_live_admission() {
+async fn normalize_apply_reports_unconfirmed_durability_after_live_admission() {
     let _guard = fail_store_saves_for_test(StoreKind::Config);
     let mut engine = engine_with_queue(&["seed"]);
     let mut player_rx = install_accepting_player(&mut engine);
 
     let (response, shutdown, effects) = engine
-        .handle_remote(RemoteCommand::Apply {
-            change: crate::remote::proto::GuiSettingChange {
-                group: "audio".to_owned(),
-                field: "long_form_seek_optimization".to_owned(),
-                value: serde_json::json!("on"),
-            },
+        .handle_remote(RemoteCommand::SetSetting {
+            change: RemoteSettingChange::Normalize { value: true },
         })
         .await;
 
     assert_eq!(response.reason.as_deref(), Some("durability_unconfirmed"));
     assert!(!shutdown);
     assert!(effects.is_empty());
-    assert_eq!(
-        engine.config.audio.mpv.long_form_seek_optimization,
-        crate::config::LongFormSeekOptimization::On
-    );
+    assert_eq!(engine.config.normalize, Some(true));
     assert!(matches!(
         player_rx.try_recv(),
-        Ok(PlayerCmd::SetLongFormSeekOptimization(
-            crate::config::LongFormSeekOptimization::On
-        ))
+        Ok(PlayerCmd::SetAudioFilter(_))
     ));
 }
 
@@ -275,23 +242,6 @@ async fn read_only_whitelist_continues_while_recovery_is_unavailable() {
     assert!(effects.is_empty());
     assert_eq!(engine.last_error.as_deref(), Some("mpv transport closed"));
     assert!(engine.remote_persistence_error.is_some());
-
-    let (search, shutdown, effects) = engine
-        .handle_session_remote(
-            RemoteCommand::RunSearch {
-                ticket: 1,
-                query: "city pop".to_owned(),
-                source: crate::search_source::SearchSource::All,
-            },
-            RequesterKey::new(7, Some("page".to_owned())),
-        )
-        .await;
-    assert!(search.ok);
-    assert!(!shutdown);
-    assert!(matches!(
-        effects.as_slice(),
-        [EngineEffect::GuiSearch { .. }]
-    ));
 
     let (quit, shutdown, effects) = engine.handle_remote(RemoteCommand::Quit).await;
     assert!(quit.ok);
@@ -336,8 +286,8 @@ async fn direct_config_save_failure_reports_unconfirmed_durability_after_applyin
     let before_config = serde_json::to_vec(&engine.config).unwrap();
 
     let (response, shutdown, effects) = engine
-        .handle_remote(RemoteCommand::SetGeminiKey {
-            key: "secret".to_owned(),
+        .handle_remote(RemoteCommand::SetSetting {
+            change: RemoteSettingChange::Normalize { value: true },
         })
         .await;
 
@@ -346,13 +296,13 @@ async fn direct_config_save_failure_reports_unconfirmed_durability_after_applyin
     assert!(!shutdown);
     assert!(effects.is_empty());
     assert_ne!(serde_json::to_vec(&engine.config).unwrap(), before_config);
-    assert_eq!(engine.config.gemini_api_key.as_deref(), Some("secret"));
+    assert_eq!(engine.config.normalize, Some(true));
     assert_eq!(engine.last_error.as_deref(), Some("mpv transport closed"));
     assert!(
         engine
             .remote_persistence_error
             .as_deref()
-            .is_some_and(|error| error.contains("failed to save daemon gemini key"))
+            .is_some_and(|error| error.contains("failed to save daemon normalize setting"))
     );
 }
 
@@ -405,65 +355,4 @@ async fn next_library_save_failure_preserves_applied_player_and_owner_state() {
             .as_deref()
             .is_some_and(|error| error.contains("failed to save daemon library history"))
     );
-}
-
-#[test]
-fn transfer_playlist_save_failure_keeps_live_store_and_revision_unchanged() {
-    let mut engine = engine_with_queue(&[]);
-    let before = serde_json::to_vec(&engine.playlists).expect("serialize live playlists");
-    let before_rev = engine.playlists_rev();
-    let mut candidate = engine.transfer_playlists_snapshot();
-    candidate
-        .create("Transfer Candidate")
-        .expect("valid candidate playlist");
-
-    let _guard = fail_store_saves_for_test(StoreKind::Playlists);
-    let error = engine
-        .commit_transfer_playlists_candidate(candidate)
-        .expect_err("injected candidate save failure");
-
-    assert!(error.is_resumable());
-    assert_eq!(
-        serde_json::to_vec(&engine.playlists).expect("serialize unchanged playlists"),
-        before
-    );
-    assert_eq!(engine.playlists_rev(), before_rev);
-    assert!(engine.playlists.find("Transfer Candidate").is_none());
-}
-
-#[test]
-fn transfer_playlist_success_swaps_only_after_save_and_bumps_revision() {
-    let mut engine = engine_with_queue(&[]);
-    let before_rev = engine.playlists_rev();
-    let mut candidate = engine.transfer_playlists_snapshot();
-    candidate
-        .create("Transfer Candidate")
-        .expect("valid candidate playlist");
-
-    engine
-        .commit_transfer_playlists_candidate(candidate)
-        .expect("candidate save succeeds");
-
-    assert!(engine.playlists.find("Transfer Candidate").is_some());
-    assert_eq!(engine.playlists_rev(), before_rev.wrapping_add(1));
-}
-
-#[test]
-fn transfer_playlist_recovery_preflight_failure_keeps_live_state_unchanged() {
-    let mut engine = engine_with_queue(&[]);
-    let before = serde_json::to_vec(&engine.playlists).expect("serialize live playlists");
-    let before_rev = engine.playlists_rev();
-    let mut candidate = engine.transfer_playlists_snapshot();
-    candidate
-        .create("Recovery Candidate")
-        .expect("valid candidate playlist");
-    let _guard = fail_recovery_for_test(recovery_error());
-
-    let error = engine
-        .commit_transfer_playlists_candidate(candidate)
-        .expect_err("recovery preflight rejects save");
-
-    assert!(error.is_resumable());
-    assert_eq!(serde_json::to_vec(&engine.playlists).unwrap(), before);
-    assert_eq!(engine.playlists_rev(), before_rev);
 }

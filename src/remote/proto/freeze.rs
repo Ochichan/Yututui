@@ -1,4 +1,4 @@
-//! Golden corpus for the frozen v7 one-shot wire (docs/gui/02 §2, §20).
+//! Golden corpus for the frozen v7 one-shot wire.
 //!
 //! These literals are the byte shapes the shipped v1.5.9 binaries emit and parse
 //! (`src/remote/proto.rs` was unchanged between the v1.5.9 tag and the v8 split, so

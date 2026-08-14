@@ -50,7 +50,7 @@ pub fn install() -> Result<String, StartupError> {
 }
 
 /// Re-register the login-startup entry when it points at a stale exe path — a rename
-/// (`yututray` → `yututray`) or a moved install (docs/gui/03 §1.3). No-op unless startup
+/// (`yututray` → `yututray`) or a moved install. No-op unless startup
 /// is currently enabled. The registry value-name / LaunchAgent label are stable (the
 /// `io.github.ochi.yututui.tray` family), so re-installing overwrites rather than duplicates.
 /// Best-effort: called on every desktop start so upgrades heal themselves silently.

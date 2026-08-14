@@ -1,8 +1,6 @@
 use super::*;
 use std::time::Duration;
 
-use serde_json::json;
-
 mod perf;
 
 fn song(id: &str) -> Song {
@@ -28,6 +26,23 @@ pub(in crate::daemon) fn radio_station(id: &str) -> Song {
         url: format!("https://radio.example/{id}.mp3"),
     });
     song
+}
+
+/// Test-only manual queue replacement with player admission, mirroring what a CLI
+/// `play` command does end-to-end (no provenance bookkeeping anymore).
+pub(in crate::daemon) async fn replace_queue_with_songs(
+    engine: &mut DaemonEngine,
+    songs: Vec<Song>,
+) -> RemoteResponse {
+    if songs.is_empty() {
+        return RemoteResponse::err("queue_empty");
+    }
+    let previous = engine.queue.snapshot();
+    engine.queue.set(songs, 0);
+    match engine.load_current_or_restore_queue(previous).await {
+        Ok(()) => RemoteResponse::status(engine.status()),
+        Err(error) => RemoteResponse::err(error.reason()),
+    }
 }
 
 pub(in crate::daemon) fn engine_with_queue(ids: &[&str]) -> DaemonEngine {
@@ -103,11 +118,6 @@ pub(in crate::daemon) fn engine_with_queue(ids: &[&str]) -> DaemonEngine {
         inactive_local_queue: None,
         session_events: VecDeque::new(),
         media_art: None,
-        gui_search_index: GuiSearchIndex::default(),
-        why_gem: crate::why_gem::WhyGemLedger::default(),
-        accounts_rev: 0,
-        spotify_user: None,
-        video_overlay: None,
     }
 }
 
@@ -149,18 +159,6 @@ pub(super) fn install_accepting_player(
         _guard: None,
     });
     rx
-}
-
-fn gui_change(
-    group: &str,
-    field: &str,
-    value: serde_json::Value,
-) -> crate::remote::proto::GuiSettingChange {
-    crate::remote::proto::GuiSettingChange {
-        group: group.to_owned(),
-        field: field.to_owned(),
-        value,
-    }
 }
 
 #[test]
@@ -208,17 +206,6 @@ async fn stale_revision_checked_queue_commands_preserve_the_existing_error() {
     }
 }
 
-fn apply_gui_ok(
-    engine: &mut DaemonEngine,
-    group: &str,
-    field: &str,
-    value: serde_json::Value,
-) -> Vec<EngineEffect> {
-    let (response, effects) = engine.apply_gui_setting(gui_change(group, field, value));
-    assert!(response.ok, "{group}.{field} should be accepted");
-    effects
-}
-
 #[test]
 fn status_artwork_only_matches_current_track() {
     let mut engine = engine_with_queue(&["seed"]);
@@ -236,274 +223,6 @@ fn status_artwork_only_matches_current_track() {
     let art = engine.status().artwork.expect("artwork");
     assert_eq!(art.key, "seed");
     assert_eq!(art.path.as_deref(), Some("/tmp/seed.jpg"));
-}
-
-#[test]
-fn gui_apply_routes_settings_to_live_daemon_state() {
-    let mut engine = engine_with_queue(&["seed"]);
-
-    apply_gui_ok(&mut engine, "playback", "speed_tenths", json!(25));
-    apply_gui_ok(&mut engine, "playback", "seek_seconds", json!(99));
-    apply_gui_ok(&mut engine, "playback", "gapless", json!(true));
-    apply_gui_ok(&mut engine, "playback", "enqueue_next", json!(true));
-    apply_gui_ok(&mut engine, "playback", "autoplay_on_start", json!(true));
-    apply_gui_ok(&mut engine, "playback", "mouse_wheel_volume", json!(true));
-    apply_gui_ok(&mut engine, "playback", "media_controls", json!(false));
-    apply_gui_ok(&mut engine, "playback", "volume", json!(123));
-    apply_gui_ok(&mut engine, "playback", "shuffle", json!(true));
-    apply_gui_ok(
-        &mut engine,
-        "playback",
-        "repeat",
-        serde_json::to_value(crate::queue::Repeat::Off).unwrap(),
-    );
-
-    assert_eq!(engine.playback.speed, crate::config::SPEED_MAX);
-    assert_eq!(
-        engine.config.seek_seconds,
-        Some(crate::config::SEEK_SECONDS_MAX)
-    );
-    assert_eq!(engine.config.gapless, Some(true));
-    assert_eq!(engine.config.enqueue_next, Some(true));
-    assert_eq!(engine.config.autoplay_on_start, Some(true));
-    assert_eq!(engine.config.mouse_wheel_volume, Some(true));
-    assert_eq!(engine.config.media_controls, Some(false));
-    assert!(!super::super::daemon_media_enabled(&engine, true));
-    apply_gui_ok(&mut engine, "playback", "media_controls", json!(true));
-    assert!(super::super::daemon_media_enabled(&engine, true));
-    assert!(!super::super::daemon_media_enabled(&engine, false));
-    assert_eq!(engine.playback.volume, VOLUME_MAX);
-    assert!(engine.queue.shuffle);
-
-    engine.config.audio.mpv.cache_defaults_revision = 0;
-    apply_gui_ok(
-        &mut engine,
-        "audio",
-        "long_form_seek_optimization",
-        json!("auto"),
-    );
-    assert_eq!(
-        engine.config.audio.mpv.long_form_seek_optimization,
-        crate::config::LongFormSeekOptimization::Auto
-    );
-    for value in [json!("future"), json!(false)] {
-        let before = engine.config.audio.mpv.long_form_seek_optimization;
-        let (response, effects) =
-            engine.apply_gui_setting(gui_change("audio", "long_form_seek_optimization", value));
-        assert_eq!(response.reason.as_deref(), Some("bad_setting_value"));
-        assert!(effects.is_empty());
-        assert_eq!(engine.config.audio.mpv.long_form_seek_optimization, before);
-    }
-    apply_gui_ok(&mut engine, "audio", "mpv_cache_forward", json!("64MiB"));
-    apply_gui_ok(&mut engine, "audio", "mpv_cache_back", json!("16MiB"));
-    assert_eq!(engine.config.audio.mpv.cache_forward, "64MiB");
-    assert_eq!(engine.config.audio.mpv.cache_back, "16MiB");
-    assert_eq!(
-        engine.config.audio.mpv.cache_defaults_revision,
-        crate::config::MPV_CACHE_DEFAULTS_REVISION
-    );
-    engine.config.audio.mpv.cache_defaults_revision = u64::MAX;
-    apply_gui_ok(&mut engine, "audio", "mpv_cache_forward", json!("80MiB"));
-    assert_eq!(engine.config.audio.mpv.cache_forward, "80MiB");
-    assert_eq!(engine.config.audio.mpv.cache_defaults_revision, u64::MAX);
-
-    apply_gui_ok(&mut engine, "eq", "preset", json!("rock"));
-    apply_gui_ok(
-        &mut engine,
-        "eq",
-        "bands",
-        json!([0.0, 1.0, 2.0, 3.0, 4.0, 5.0, -1.0, -2.0, -3.0, -4.0]),
-    );
-    apply_gui_ok(&mut engine, "eq", "normalize", json!(true));
-    assert_eq!(engine.config.eq_preset, crate::eq::EqPreset::Custom);
-    assert_eq!(engine.config.eq_bands.unwrap()[5], 5.0);
-    assert!(engine.current_audio_filter().contains("dynaudnorm"));
-
-    let effects = apply_gui_ok(&mut engine, "streaming", "autoplay", json!(true));
-    assert!(engine.streaming);
-    assert!(matches!(
-        effects.as_slice(),
-        [EngineEffect::StreamingFallback { seed_video_id, .. }] if seed_video_id == "seed"
-    ));
-    apply_gui_ok(
-        &mut engine,
-        "streaming",
-        "mode",
-        serde_json::to_value(crate::streaming::StreamingMode::Discovery).unwrap(),
-    );
-    apply_gui_ok(
-        &mut engine,
-        "streaming",
-        "gemini_model",
-        json!("gemini-2.5-flash"),
-    );
-    apply_gui_ok(&mut engine, "streaming", "ai_enabled", json!(false));
-    assert_eq!(
-        engine.config.streaming.mode,
-        crate::streaming::StreamingMode::Discovery
-    );
-    assert_eq!(engine.config.ai_enabled, Some(false));
-
-    apply_gui_ok(
-        &mut engine,
-        "search",
-        "default_source",
-        serde_json::to_value(crate::search_source::SearchSource::All).unwrap(),
-    );
-    apply_gui_ok(&mut engine, "search", "soundcloud_enabled", json!(false));
-    apply_gui_ok(&mut engine, "search", "audius_enabled", json!(false));
-    apply_gui_ok(&mut engine, "search", "jamendo_enabled", json!(false));
-    apply_gui_ok(
-        &mut engine,
-        "search",
-        "internet_archive_enabled",
-        json!(false),
-    );
-    apply_gui_ok(&mut engine, "search", "radio_browser_enabled", json!(false));
-    apply_gui_ok(
-        &mut engine,
-        "search",
-        "audius_app_name",
-        json!("  daemon app  "),
-    );
-    apply_gui_ok(
-        &mut engine,
-        "search",
-        "jamendo_client_id",
-        serde_json::Value::Null,
-    );
-    assert_eq!(
-        engine.config.search.audius_app_name.as_deref(),
-        Some("daemon app")
-    );
-    assert_eq!(engine.config.search.jamendo_client_id, None);
-
-    apply_gui_ok(&mut engine, "ui", "language", json!("ko"));
-    apply_gui_ok(&mut engine, "ui", "mouse", json!(true));
-    apply_gui_ok(&mut engine, "ui", "album_art", json!(true));
-    apply_gui_ok(&mut engine, "ui", "romanized_titles", json!(true));
-    assert_eq!(engine.config.language, crate::i18n::Language::Korean);
-    assert_eq!(engine.config.mouse, Some(true));
-    assert_eq!(engine.config.album_art, Some(true));
-    assert_eq!(engine.config.romanized_titles, Some(true));
-
-    apply_gui_ok(
-        &mut engine,
-        "storage",
-        "download_dir",
-        json!("/tmp/ytm-downloads"),
-    );
-    apply_gui_ok(
-        &mut engine,
-        "storage",
-        "cookies_file",
-        serde_json::Value::Null,
-    );
-    apply_gui_ok(&mut engine, "storage", "download_concurrency", json!(16));
-    assert_eq!(
-        engine.config.download_dir.as_deref(),
-        Some(std::path::Path::new("/tmp/ytm-downloads"))
-    );
-    assert_eq!(engine.config.cookies_file, None);
-    assert_eq!(engine.config.download_concurrency, Some(16));
-
-    apply_gui_ok(&mut engine, "animations", "fps", json!(999));
-    apply_gui_ok(&mut engine, "animations", "master", json!(true));
-    apply_gui_ok(&mut engine, "animations", "bounce", json!(true));
-    apply_gui_ok(&mut engine, "animations", "plasma", json!(true));
-    apply_gui_ok(&mut engine, "animations", "error_shake", json!(true));
-    assert_eq!(engine.config.animations.fps, crate::config::FPS_MAX);
-    assert!(engine.config.animations.master);
-    assert!(engine.config.animations.bounce);
-    assert!(engine.config.animations.plasma);
-    assert!(engine.config.animations.error_shake);
-
-    apply_gui_ok(&mut engine, "theme", "preset", json!("light"));
-    apply_gui_ok(&mut engine, "theme", "retro", json!(true));
-    apply_gui_ok(&mut engine, "theme", "accent", json!("#112233"));
-    assert_eq!(engine.config.theme.preset, "light");
-    assert!(engine.config.retro_mode);
-    assert_eq!(
-        engine
-            .config
-            .theme
-            .effective_hex(crate::theme::ThemeRole::Accent),
-        "#112233"
-    );
-}
-
-#[test]
-fn gui_theme_preset_switching_discards_built_in_overrides_but_retains_custom() {
-    use crate::theme::{ThemePreset, ThemeRole};
-
-    let mut engine = engine_with_queue(&["seed"]);
-
-    apply_gui_ok(&mut engine, "theme", "accent", json!("#123456"));
-    apply_gui_ok(&mut engine, "theme", "preset", json!("default"));
-    assert_eq!(
-        engine.config.theme.effective_hex(ThemeRole::Accent),
-        "#123456",
-        "reselecting the active preset must preserve its restart-persistent edit"
-    );
-
-    apply_gui_ok(&mut engine, "theme", "preset", json!("midnight"));
-    assert!(engine.config.theme.active_overrides().is_empty());
-    assert_eq!(
-        engine.config.theme.effective_hex(ThemeRole::Accent),
-        ThemeRole::Accent.default_hex(ThemePreset::Midnight)
-    );
-    apply_gui_ok(&mut engine, "theme", "preset", json!("default"));
-    assert_eq!(
-        engine.config.theme.effective_hex(ThemeRole::Accent),
-        ThemeRole::Accent.default_hex(ThemePreset::Default),
-        "returning to a built-in preset must restore its original palette"
-    );
-
-    apply_gui_ok(&mut engine, "theme", "preset", json!("custom"));
-    assert_eq!(
-        engine.config.theme.effective_hex(ThemeRole::Accent),
-        ThemeRole::Accent.default_hex(ThemePreset::Default),
-        "Custom starts from Default"
-    );
-    apply_gui_ok(&mut engine, "theme", "accent", json!("#abcdef"));
-    apply_gui_ok(&mut engine, "theme", "preset", json!("nord"));
-    assert!(engine.config.theme.active_overrides().is_empty());
-    apply_gui_ok(&mut engine, "theme", "preset", json!("custom"));
-    assert_eq!(
-        engine.config.theme.effective_hex(ThemeRole::Accent),
-        "#ABCDEF",
-        "Custom edits must survive a preset round trip"
-    );
-
-    // This lane historically accepted unknown strings by normalizing them to Default.
-    apply_gui_ok(&mut engine, "theme", "preset", json!("not-a-theme"));
-    assert_eq!(engine.config.theme.preset_enum(), ThemePreset::Default);
-    assert_eq!(engine.config.theme.preset, "default");
-}
-
-#[test]
-fn gui_long_form_seek_apply_updates_the_live_player_after_admission() {
-    let mut engine = engine_with_queue(&["seed"]);
-    let mut player_rx = install_accepting_player(&mut engine);
-
-    let (response, effects) = engine.apply_gui_setting(gui_change(
-        "audio",
-        "long_form_seek_optimization",
-        json!("on"),
-    ));
-
-    assert!(response.ok);
-    assert!(effects.is_empty());
-    assert_eq!(
-        engine.config.audio.mpv.long_form_seek_optimization,
-        crate::config::LongFormSeekOptimization::On
-    );
-    assert!(matches!(
-        player_rx.try_recv(),
-        Ok(PlayerCmd::SetLongFormSeekOptimization(
-            crate::config::LongFormSeekOptimization::On
-        ))
-    ));
 }
 
 #[test]
@@ -547,142 +266,6 @@ fn one_shot_status_exposes_only_privacy_safe_daemon_cache_runtime_diagnostics() 
         Some(crate::remote::proto::LongFormSeekReason::ProbeFailed)
     );
     assert_eq!(runtime.last_cleanup_ms, Some(275));
-}
-
-#[test]
-fn rejected_live_long_form_seek_apply_does_not_commit_config() {
-    let mut engine = engine_with_queue(&["seed"]);
-    let player_rx = install_accepting_player(&mut engine);
-    drop(player_rx);
-    let before = engine.config.audio.mpv.long_form_seek_optimization;
-
-    let (response, effects) = engine.apply_gui_setting(gui_change(
-        "audio",
-        "long_form_seek_optimization",
-        json!("auto"),
-    ));
-
-    assert!(!response.ok);
-    assert_eq!(response.reason.as_deref(), Some("mpv_unavailable"));
-    assert!(effects.is_empty());
-    assert_eq!(engine.config.audio.mpv.long_form_seek_optimization, before);
-}
-
-#[tokio::test]
-async fn reset_all_applies_default_long_form_policy_before_committing_config() {
-    let mut engine = engine_with_queue(&["seed"]);
-    engine.config.audio.mpv.long_form_seek_optimization =
-        crate::config::LongFormSeekOptimization::On;
-    let mut player_rx = install_accepting_player(&mut engine);
-
-    let (response, shutdown, effects) = engine.handle_remote(RemoteCommand::ResetAllSettings).await;
-
-    assert!(response.ok);
-    assert!(!shutdown);
-    assert!(effects.is_empty());
-    assert!(matches!(
-        player_rx.try_recv(),
-        Ok(PlayerCmd::SetLongFormSeekOptimization(
-            crate::config::LongFormSeekOptimization::Off
-        ))
-    ));
-    assert_eq!(
-        engine.config.audio.mpv.long_form_seek_optimization,
-        crate::config::LongFormSeekOptimization::Off
-    );
-}
-
-#[tokio::test]
-async fn rejected_reset_all_policy_delivery_leaves_daemon_config_untouched() {
-    let mut engine = engine_with_queue(&["seed"]);
-    engine.config.audio.mpv.long_form_seek_optimization =
-        crate::config::LongFormSeekOptimization::On;
-    let player_rx = install_accepting_player(&mut engine);
-    drop(player_rx);
-
-    let (response, shutdown, effects) = engine.handle_remote(RemoteCommand::ResetAllSettings).await;
-
-    assert!(!response.ok);
-    assert!(!shutdown);
-    assert!(effects.is_empty());
-    assert_eq!(
-        engine.config.audio.mpv.long_form_seek_optimization,
-        crate::config::LongFormSeekOptimization::On
-    );
-}
-
-#[test]
-fn gui_apply_rejects_bad_values_and_unknown_fields() {
-    let mut engine = engine_with_queue(&["seed"]);
-
-    for (group, field, value, reason) in [
-        ("playback", "speed_tenths", json!("fast"), "bad_value"),
-        ("eq", "preset", json!("not-a-preset"), "bad_value"),
-        ("streaming", "mode", json!("invalid"), "bad_value"),
-        ("search", "audius_app_name", json!(42), "bad_value"),
-        ("ui", "language", json!("fr"), "bad_value"),
-        ("storage", "download_concurrency", json!(0), "bad_value"),
-        ("animations", "nope", json!(true), "bad_value"),
-        ("theme", "accent", json!("not-hex"), "bad_value"),
-        ("theme", "not_a_role", json!("#ffffff"), "unknown_setting"),
-        ("nope", "field", json!(true), "unknown_setting"),
-    ] {
-        let (response, effects) = engine.apply_gui_setting(gui_change(group, field, value));
-        assert!(!response.ok, "{group}.{field} should be rejected");
-        assert_eq!(response.reason.as_deref(), Some(reason));
-        assert!(effects.is_empty());
-    }
-}
-
-#[test]
-fn gui_search_index_resolution_prefers_visible_rows_then_library_then_safe_fallback() {
-    let mut engine = engine_with_queue(&[]);
-    let requester = RequesterKey::new(1, Some("page-a".to_owned()));
-    let searched = Song::from_source(
-        crate::search_source::SearchSource::Jamendo,
-        "jam-1",
-        "Jam title",
-        "Jam artist",
-        "2:00",
-        crate::api::PlayableRef::DirectUrl {
-            source: crate::search_source::SearchSource::Jamendo,
-            url: "https://cdn.example/audio.mp3".to_owned(),
-        },
-    );
-    engine.index_gui_search(
-        &requester,
-        &[crate::api::GuiSearchGroup {
-            source: crate::search_source::SearchSource::Jamendo,
-            songs: vec![searched.clone()],
-            error: None,
-        }],
-    );
-    let searched_row_id = crate::api::gui_search_row_id(&searched);
-    assert_eq!(
-        engine
-            .resolve_video_id(Some(&requester), &searched_row_id)
-            .unwrap()
-            .watch_url(),
-        "https://cdn.example/audio.mp3"
-    );
-
-    engine.library.favorites.push(song("dQw4w9WgXcQ"));
-    assert_eq!(
-        engine
-            .resolve_video_id(Some(&requester), "dQw4w9WgXcQ")
-            .unwrap()
-            .title,
-        "title-dQw4w9WgXcQ"
-    );
-    let fallback = engine
-        .resolve_video_id(Some(&requester), "TAfHyXrULiM")
-        .unwrap();
-    assert_eq!(fallback.title, "TAfHyXrULiM");
-    assert!(
-        engine
-            .resolve_video_id(Some(&requester), "bad/not/video")
-            .is_none()
-    );
 }
 
 #[tokio::test]
@@ -946,7 +529,7 @@ fn media_snapshot_for_radio_stream_disables_track_specific_music_controls() {
 }
 
 #[tokio::test]
-async fn remote_commands_cover_no_load_branches_and_gui_search_dispatch() {
+async fn remote_commands_cover_no_load_branches() {
     let mut engine = engine_with_queue(&[]);
 
     for command in [
@@ -963,68 +546,6 @@ async fn remote_commands_cover_no_load_branches_and_gui_search_dispatch() {
         assert!(!shutdown);
         assert!(effects.is_empty());
     }
-
-    let (response, shutdown, effects) = engine
-        .handle_remote(RemoteCommand::RunSearch {
-            ticket: 1,
-            query: "   ".to_owned(),
-            source: crate::search_source::SearchSource::Youtube,
-        })
-        .await;
-    assert!(!response.ok);
-    assert_eq!(response.reason.as_deref(), Some("empty_query"));
-    assert!(!shutdown);
-    assert!(effects.is_empty());
-
-    let (response, _, effects) = engine
-        .handle_remote(RemoteCommand::RunSearch {
-            ticket: 2,
-            query: "x".repeat(REMOTE_MAX_QUERY_BYTES + 1),
-            source: crate::search_source::SearchSource::Youtube,
-        })
-        .await;
-    assert!(!response.ok);
-    assert_eq!(response.reason.as_deref(), Some("query_too_long"));
-    assert!(effects.is_empty());
-
-    let requester = RequesterKey::new(1, Some("engine-page".to_owned()));
-    let (response, _, effects) = engine
-        .handle_session_remote(
-            RemoteCommand::RunSearch {
-                ticket: 3,
-                query: "  city pop  ".to_owned(),
-                source: crate::search_source::SearchSource::SoundCloud,
-            },
-            requester,
-        )
-        .await;
-    assert!(response.ok);
-    assert!(matches!(
-        effects.as_slice(),
-        [EngineEffect::GuiSearch {
-            ticket: 3,
-            query,
-            source: crate::search_source::SearchSource::SoundCloud,
-            ..
-        }] if query == "city pop"
-    ));
-
-    let (response, _, effects) = engine
-        .handle_remote(RemoteCommand::SetGeminiKey {
-            key: "  key-123  ".to_owned(),
-        })
-        .await;
-    assert!(response.ok);
-    assert!(effects.is_empty());
-    assert_eq!(engine.config.gemini_api_key.as_deref(), Some("key-123"));
-
-    let (response, _, _) = engine
-        .handle_remote(RemoteCommand::SetGeminiKey {
-            key: "   ".to_owned(),
-        })
-        .await;
-    assert!(response.ok);
-    assert!(engine.config.gemini_api_key.is_none());
 
     let _player_rx = install_accepting_player(&mut engine);
     engine.loaded_video_id = Some("queued-before-quit".to_owned());
@@ -1060,19 +581,6 @@ async fn remote_repeat_and_streaming_guards_preserve_music_mode_invariant() {
     assert!(effects.is_empty());
     assert_eq!(engine.queue.repeat, crate::queue::Repeat::Off);
 
-    let (response, effects) = engine.apply_gui_setting(gui_change(
-        "playback",
-        "repeat",
-        serde_json::to_value(crate::queue::Repeat::All).unwrap(),
-    ));
-    assert!(!response.ok);
-    assert_eq!(
-        response.reason.as_deref(),
-        Some("incompatible_playback_modes")
-    );
-    assert!(effects.is_empty());
-    assert_eq!(engine.queue.repeat, crate::queue::Repeat::Off);
-
     engine.streaming = false;
     engine.queue.repeat = crate::queue::Repeat::All;
     engine.config.repeat = crate::queue::Repeat::All;
@@ -1091,26 +599,6 @@ async fn remote_repeat_and_streaming_guards_preserve_music_mode_invariant() {
     assert!(effects.is_empty());
     assert!(!engine.streaming);
     assert_eq!(engine.config.autoplay_streaming, Some(false));
-
-    // The AI actor carries a snapshot and can race a repeat change. Its owner-lane backstop must
-    // return a structured rejection with zero effects and preserve every mode/config field.
-    engine.consecutive_streaming_failures = 2;
-    assert!(
-        engine.build_ai_context().repeat_on,
-        "the actor snapshot must preflight the conflict"
-    );
-    let (response, effects) = engine.ai_set_autoplay(true);
-    assert!(!response.ok);
-    assert_eq!(
-        response.reason.as_deref(),
-        Some("incompatible_playback_modes")
-    );
-    assert!(effects.is_empty());
-    assert!(!engine.streaming);
-    assert_eq!(engine.queue.repeat, crate::queue::Repeat::All);
-    assert_eq!(engine.config.repeat, crate::queue::Repeat::All);
-    assert_eq!(engine.config.autoplay_streaming, Some(false));
-    assert_eq!(engine.consecutive_streaming_failures, 2);
 }
 
 #[tokio::test]
@@ -1258,25 +746,6 @@ async fn remote_semantic_caps_reject_abuse() {
         .await;
     assert!(!resp.ok);
     assert_eq!(resp.reason.as_deref(), Some("query_too_long"));
-
-    // Over-long Gemini key is rejected and does not overwrite the stored key.
-    let (resp, _, _) = engine
-        .handle_remote(RemoteCommand::SetGeminiKey {
-            key: "k".repeat(REMOTE_MAX_GEMINI_KEY_BYTES + 1),
-        })
-        .await;
-    assert!(!resp.ok);
-    assert_eq!(resp.reason.as_deref(), Some("key_too_long"));
-    assert!(engine.config.gemini_api_key.is_none());
-
-    // A request containing an unknown row is rejected as an indivisible stale selection.
-    let (resp, _, _) = engine
-        .handle_remote(RemoteCommand::EnqueueTracks {
-            video_ids: vec!["not-a-valid-id".into(), "also/bad".into()],
-        })
-        .await;
-    assert!(!resp.ok);
-    assert_eq!(resp.reason.as_deref(), Some("stale_results"));
 }
 
 #[tokio::test]

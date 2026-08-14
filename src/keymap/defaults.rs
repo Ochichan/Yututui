@@ -201,7 +201,7 @@ pub fn groups() -> Vec<(KeyContext, Vec<Action>)> {
 
 /// A flat, header-free list of every editable `(context, action)`, in display order. The
 /// Keys-tab cursor indexes directly into this.
-/// One editable action row for the wire keymap catalog (docs/gui/05 Hotkeys tab).
+/// One editable action row for the wire keymap catalog.
 pub struct WireAction {
     pub context: &'static str,
     pub id: &'static str,

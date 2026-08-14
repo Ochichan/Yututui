@@ -346,9 +346,6 @@ impl From<RuntimeEvent> for Msg {
                     seed_video_id,
                     error,
                 }),
-                // Daemon-owner lane only: the standalone TUI rejects `run_search`
-                // (`daemon_required`), so its api actor never produces this.
-                crate::api::ApiEvent::GuiSearchCompleted { .. } => Msg::Noop,
             },
             RuntimeEvent::Artwork(crate::artwork::ArtworkEvent::Result {
                 video_id,
@@ -467,7 +464,7 @@ impl From<RuntimeEvent> for Msg {
             }) => {
                 // Session ops are intercepted in the run loop (the Publisher's owner
                 // lane) before Msg conversion — the reducer never sees sessions
-                // (docs/gui/02 §14). Reaching here means a host forgot the intercept.
+                //. Reaching here means a host forgot the intercept.
                 unreachable!("SessionSubscribe must be handled in the owner loop, not the reducer")
             }
             RuntimeEvent::Resolver(crate::resolver::ResolverEvent::Resolved {

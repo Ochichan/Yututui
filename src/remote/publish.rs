@@ -1,5 +1,5 @@
 //! The v8 Publisher: turns owner-state changes into session push events without ever
-//! touching the reducer (docs/gui/02 §14).
+//! touching the reducer.
 //!
 //! Both owner hosts call [`Publisher::observe`] after turns that can change a projected
 //! facet, on the owner-loop thread next to their existing `media.publish(..)` observers,
@@ -9,7 +9,7 @@
 //! someone is subscribed, and the serialized payload fans out by `Arc` (the per-session
 //! envelope is spliced at write time by the session writer).
 //!
-//! Frozen rule (docs/gui/02 §14, tested here): the 1 Hz `PlayerTimePos` tick while
+//! Frozen rule: the 1 Hz `PlayerTimePos` tick while
 //! playing changes only `elapsed_ms`, which is deliberately **outside** the player
 //! fingerprint — a time-tick turn emits nothing, ever. Clients interpolate.
 //!
@@ -25,9 +25,8 @@ use crate::api::Song;
 use crate::queue::Queue;
 
 use super::proto::{
-    AiMessageModel, DownloadStatusModel, EqModel, InstanceMode, PlayerModel, PlaylistSummaryModel,
-    PushEvent, QueueModel, RemoteResponse, ServerFrame, SpotifyPlaylistModel, Topic, TrackModel,
-    TransferJobModel, TransferPhaseModel, TransferReportModel,
+    EqModel, InstanceMode, PlayerModel, PushEvent, QueueModel, RemoteResponse, ServerFrame, Topic,
+    TrackModel,
 };
 use super::sessions::{RemoteSessionHub, RemoteSessionRef};
 
@@ -57,18 +56,11 @@ pub struct CoreView<'a> {
     pub long_form_seek_status: Option<crate::player::long_form_seek::CacheStatus>,
     /// The media-art cache's resolved file for the CURRENT track (already gated by the
     /// host — stale art from a previous track never appears here). Rides the player
-    /// snapshot so the GUI can fetch `ytm://app/art/<key>`.
+    /// snapshot so clients can read the cached file directly.
     pub artwork: Option<CoreArtwork<'a>>,
     /// Library favorite membership and dislike signals — the two halves the rating
-    /// cycle is synthesized from, projected into every [`TrackModel`]
-    /// (docs/gui/02 §11.2). Both owners hold these stores natively.
-    pub library: &'a crate::library::Library,
-    pub signals: &'a crate::signals::Signals,
-}
-
-/// The two rating stores every [`TrackModel`] projection resolves against — the
-/// borrowed pair hosts hand to [`Publisher::search_completed`].
-pub struct RatingStores<'a> {
+    /// cycle is synthesized from, projected into every [`TrackModel`].
+    /// Both owners hold these stores natively.
     pub library: &'a crate::library::Library,
     pub signals: &'a crate::signals::Signals,
 }
@@ -200,16 +192,8 @@ pub struct Publisher {
     /// Retained serialized `lyrics_snapshot` payload — the event-driven lyrics lane's
     /// initial-snapshot source for `handle_subscribe`. Unlike player/queue/settings,
     /// lyrics never ride `observe`: the host publishes explicitly on track change and
-    /// fetch completion (docs/gui/02 §7).
+    /// fetch completion.
     last_lyrics: Option<Arc<Vec<u8>>>,
-    last_playlists: Option<Arc<Vec<u8>>>,
-    last_downloads: Option<Arc<Vec<u8>>>,
-    last_transfer: Option<Arc<Vec<u8>>>,
-    last_ai: Option<Arc<Vec<u8>>>,
-    /// Retained `why_gem_provenance` — the `ai` topic's second subscribe snapshot.
-    last_whygem: Option<Arc<Vec<u8>>>,
-    /// Retained `accounts_snapshot` (presence/toggles only — never credentials).
-    last_accounts: Option<Arc<Vec<u8>>>,
     #[cfg(test)]
     last_projection_work: ProjectionWork,
 }
@@ -232,12 +216,6 @@ impl Publisher {
             last_settings: None,
             settings_rev: 0,
             last_lyrics: None,
-            last_playlists: None,
-            last_downloads: None,
-            last_transfer: None,
-            last_ai: None,
-            last_whygem: None,
-            last_accounts: None,
             #[cfg(test)]
             last_projection_work: ProjectionWork::default(),
         }
@@ -343,7 +321,7 @@ impl Publisher {
 
     /// Owner-lane handler for [`super::server::RemoteEvent::SessionSubscribe`]: record
     /// the subscriptions, emit one initial snapshot per **newly** subscribed topic, then
-    /// the `Reply{ok}` — all into this session's queue, in that order (docs/gui/02 §6).
+    /// the `Reply{ok}` — all into this session's queue, in that order.
     pub fn handle_subscribe(
         &mut self,
         view: &CoreView<'_>,
@@ -386,19 +364,6 @@ impl Publisher {
         session
             .apply_subscribe(page_id, topics, |new_topics| {
                 for &topic in new_topics {
-                    // The `ai` topic retains two sibling snapshots (transcript state and
-                    // why-gem provenance); every other topic serves at most one payload.
-                    if topic == Topic::Ai {
-                        for payload in [self.last_ai.clone(), self.last_whygem.clone()]
-                            .into_iter()
-                            .flatten()
-                        {
-                            if !self.hub.send_event_to(session, topic, &payload) {
-                                return false;
-                            }
-                        }
-                        continue;
-                    }
                     let payload = match topic {
                         Topic::Player => Some(event_payload(&PushEvent::PlayerSnapshot {
                             model: Box::new(player_model(view)),
@@ -412,12 +377,8 @@ impl Publisher {
                         // Event-driven lane: serve the retained payload (None before the
                         // host's first publish — the client's empty default covers that).
                         Topic::Lyrics => self.last_lyrics.clone(),
-                        Topic::Playlists => self.last_playlists.clone(),
-                        Topic::Downloads => self.last_downloads.clone(),
-                        Topic::Transfer => self.last_transfer.clone(),
-                        Topic::Accounts => self.last_accounts.clone(),
-                        // Event-only topics are registered without an initial snapshot.
-                        _ => None,
+                        // The system topic is event-only: no initial snapshot.
+                        Topic::System => None,
                     };
                     if let Some(payload) = payload
                         && !self.hub.send_event_to(session, topic, &payload)
@@ -462,7 +423,7 @@ impl Publisher {
     }
 
     /// Whether any session wants lyrics right now — the host gates its lrclib fetches
-    /// on this so a headless daemon with no GUI attached never talks to the network.
+    /// on this so a headless daemon with no subscriber never talks to the network.
     pub fn lyrics_subscribed(&self) -> bool {
         self.hub.any_subscribed(Topic::Lyrics)
     }
@@ -482,176 +443,8 @@ impl Publisher {
         }
     }
 
-    pub fn playlists_subscribed(&self) -> bool {
-        self.hub.any_subscribed(Topic::Playlists)
-    }
-
-    pub fn publish_playlists(&mut self, items: Vec<PlaylistSummaryModel>) {
-        let payload = event_payload(&PushEvent::PlaylistsSnapshot { items });
-        self.last_playlists = Some(Arc::clone(&payload));
-        if self.hub.any_subscribed(Topic::Playlists) {
-            self.hub.broadcast(Topic::Playlists, &payload);
-        }
-    }
-
-    pub fn downloads_subscribed(&self) -> bool {
-        self.hub.any_subscribed(Topic::Downloads)
-    }
-
-    pub fn publish_downloads(&mut self, items: Vec<DownloadStatusModel>) {
-        let payload = event_payload(&PushEvent::DownloadsSnapshot { items });
-        self.last_downloads = Some(Arc::clone(&payload));
-        if self.hub.any_subscribed(Topic::Downloads) {
-            self.hub.broadcast(Topic::Downloads, &payload);
-        }
-    }
-
-    pub fn transfer_subscribed(&self) -> bool {
-        self.hub.any_subscribed(Topic::Transfer)
-    }
-
-    pub fn publish_transfer(
-        &mut self,
-        phase: TransferPhaseModel,
-        sources: Vec<SpotifyPlaylistModel>,
-        job: Option<TransferJobModel>,
-        report: Option<TransferReportModel>,
-        error: Option<String>,
-    ) {
-        let payload = event_payload(&PushEvent::TransferState {
-            phase,
-            sources,
-            job,
-            report,
-            error,
-        });
-        self.last_transfer = Some(Arc::clone(&payload));
-        if self.hub.any_subscribed(Topic::Transfer) {
-            self.hub.broadcast(Topic::Transfer, &payload);
-        }
-    }
-
-    pub fn publish_ai(
-        &mut self,
-        messages: Vec<AiMessageModel>,
-        thinking: bool,
-        suggestions: Vec<TrackModel>,
-    ) {
-        let payload = event_payload(&PushEvent::AiState {
-            messages,
-            thinking,
-            suggestions,
-        });
-        self.last_ai = Some(Arc::clone(&payload));
-        if self.hub.any_subscribed(Topic::Ai) {
-            self.hub.broadcast(Topic::Ai, &payload);
-        }
-    }
-
-    pub fn whygem_recorded(&self) -> bool {
-        self.last_whygem.is_some()
-    }
-
-    /// Publish which rows carry pick provenance (the "why?" affordance set). Retained
-    /// beside the transcript as the `ai` topic's second subscribe snapshot.
-    pub fn publish_why_gem(&mut self, video_ids: Vec<String>) {
-        let payload = event_payload(&PushEvent::WhyGemProvenance { video_ids });
-        self.last_whygem = Some(Arc::clone(&payload));
-        if self.hub.any_subscribed(Topic::Ai) {
-            self.hub.broadcast(Topic::Ai, &payload);
-        }
-    }
-
-    /// Publish the retained accounts snapshot (presence/toggles only). The auth-URL
-    /// half of the topic is one-shot (`publish_accounts_auth_url`) and never retained.
-    pub fn publish_accounts(
-        &mut self,
-        lastfm: super::proto::LastfmAccountModel,
-        listenbrainz: super::proto::ListenBrainzAccountModel,
-        spotify: super::proto::SpotifyAccountModel,
-        scrobble_local: bool,
-    ) {
-        let payload = event_payload(&PushEvent::AccountsSnapshot {
-            lastfm,
-            listenbrainz,
-            spotify,
-            scrobble_local,
-        });
-        self.last_accounts = Some(Arc::clone(&payload));
-        if self.hub.any_subscribed(Topic::Accounts) {
-            self.hub.broadcast(Topic::Accounts, &payload);
-        }
-    }
-
-    /// One-shot: the browser-approval URL for a just-started auth flow. Deliberately
-    /// NOT retained — replaying a stale approval URL to a later subscriber would send
-    /// the user into a dead flow.
-    pub fn publish_accounts_auth_url(&self, service: &str, url: &str) {
-        if self.hub.any_subscribed(Topic::Accounts) {
-            let payload = event_payload(&PushEvent::AccountsAuthUrl {
-                service: service.to_owned(),
-                url: url.to_owned(),
-            });
-            self.hub.broadcast(Topic::Accounts, &payload);
-        }
-    }
-
-    /// One-shot sibling of the auth URL: the flow ended without connecting.
-    pub fn publish_accounts_auth_failed(&self, service: &str, error: &str) {
-        if self.hub.any_subscribed(Topic::Accounts) {
-            let payload = event_payload(&PushEvent::AccountsAuthFailed {
-                service: service.to_owned(),
-                error: error.to_owned(),
-            });
-            self.hub.broadcast(Topic::Accounts, &payload);
-        }
-    }
-
-    pub fn publish_library_invalidated(&self) {
-        if self.hub.any_subscribed(Topic::Library) {
-            let payload = event_payload(&PushEvent::LibraryInvalidated);
-            self.hub.broadcast(Topic::Library, &payload);
-        }
-    }
-
-    /// Fan a completed GUI search out on the `search` topic (one-off event, not a
-    /// snapshot — the host loop calls this straight from the api-answer lane).
-    pub fn search_completed(
-        &self,
-        requester: &super::RemoteSessionScope,
-        ticket: u64,
-        query: &str,
-        source: crate::search_source::SearchSource,
-        groups: &[crate::api::GuiSearchGroup],
-        stores: RatingStores<'_>,
-    ) -> bool {
-        let Some(session) = requester.session() else {
-            return false;
-        };
-        let payload = event_payload(&PushEvent::SearchCompleted {
-            ticket,
-            page_id: requester.page_id().map(str::to_owned),
-            query: query.to_string(),
-            source,
-            groups: groups
-                .iter()
-                .map(|group| super::proto::SearchGroup {
-                    source: group.source,
-                    tracks: group
-                        .songs
-                        .iter()
-                        .map(|song| gui_search_track_model(song, stores.library, stores.signals))
-                        .collect(),
-                    error: group.error.clone(),
-                })
-                .collect(),
-        });
-        self.hub
-            .send_event_to_subscriber(session, requester.page_id(), Topic::Search, &payload)
-    }
-
     /// The owner is exiting: `shutting_down` on the `system` topic for subscribers,
-    /// then a `Goodbye` to every session (docs/gui/02 §7).
+    /// then a `Goodbye` to every session.
     pub(crate) fn quiesce_owner_admission(&self) {
         self.hub.quiesce_owner_admission();
     }
@@ -676,7 +469,7 @@ fn event_payload(event: &PushEvent) -> Arc<Vec<u8>> {
 }
 
 /// Build the wire player model from a view. `pub(crate)` for the App↔Daemon parity
-/// harness (docs/gui/10 §4), which compares exactly these projections across hosts.
+/// harness, which compares exactly these projections across hosts.
 pub(crate) fn player_model(view: &CoreView<'_>) -> PlayerModel {
     let (pos, len) = view.queue.position();
     PlayerModel {
@@ -962,7 +755,7 @@ pub(crate) fn long_form_seek_reason(
 }
 
 /// Project a [`Song`] to the wire track shape, with the rating halves resolved from the
-/// owner's library/signals stores (docs/gui/02 §11.2).
+/// owner's library/signals stores.
 pub(crate) fn track_model(
     song: &Song,
     library: &crate::library::Library,
@@ -987,19 +780,9 @@ pub(crate) fn track_model(
     }
 }
 
-fn gui_search_track_model(
-    song: &Song,
-    library: &crate::library::Library,
-    signals: &crate::signals::Signals,
-) -> TrackModel {
-    let mut model = track_model(song, library, signals);
-    model.video_id = crate::api::gui_search_row_id(song);
-    model
-}
-
 /// `duration_secs` when known, else parse the required display string
 /// (`"3:45"`, `"1:02:03"`) — old persisted rows lack the numeric field
-/// (docs/gui/02 §11.2 conversion rule).
+///.
 fn song_duration_ms(song: &Song) -> Option<u64> {
     if let Some(secs) = song.duration_secs {
         return Some(u64::from(secs) * 1000);

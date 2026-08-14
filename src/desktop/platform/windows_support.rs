@@ -32,26 +32,15 @@ enum UserEvent {
     StartupChanged {
         error: Option<String>,
     },
-    /// Live connection state from the persistent v8 gateway thread (docs/gui/03 §3.2).
+    /// Live connection state from the persistent v8 gateway thread.
     Gateway(gateway::GatewayEvent),
-    /// A request concerning the main window: an IPC line from its webview, or an activate.
-    Main(MainRequest),
     Activation(ActivationIntent),
     Quit,
-}
-
-#[derive(Debug)]
-enum MainRequest {
-    /// One IPC envelope line posted by the main window's webview.
-    Ipc { generation: u64, body: String },
 }
 
 impl WindowsTrayApp {
     fn reconcile_window_placements(&mut self) {
         let mut persist = false;
-        if let Some(main) = &self.main_window {
-            persist |= main.reconcile_live_placement();
-        }
         if let Some(panel) = &self.panel {
             let changed = panel.reconcile_live_placement();
             persist |= changed && panel.is_pinned();
@@ -62,13 +51,6 @@ impl WindowsTrayApp {
     }
 
     fn handle_scale_factor_changed(&mut self, window_id: tao::window::WindowId) {
-        if let Some(main) = &self.main_window
-            && main.window_id() == window_id
-        {
-            main.reconcile_live_placement();
-            main.record_geometry();
-            self.geometry_dirty_at = Some(Instant::now());
-        }
         if let Some(panel) = &self.panel
             && panel.window_id() == window_id
         {
@@ -294,7 +276,7 @@ impl WindowsTrayApp {
     }
 
     fn shutdown(&mut self) {
-        self.persist_main_geometry();
+        self.persist_geometry();
         self.stop_polling();
         // Tear down the gateway session cleanly (drops the handle → signals shutdown).
         self.gateway.take();
@@ -533,7 +515,6 @@ fn user_event_from_menu_id(id: &MenuId) -> Option<UserEvent> {
     let action = action_from_menu_id(id)?;
     Some(match action {
         MenuAction::ShowMiniPlayer => UserEvent::ShowMiniPlayer(None),
-        MenuAction::OpenMainWindow => UserEvent::Activation(ActivationIntent::ShowMain),
         MenuAction::Refresh => UserEvent::Refresh,
         MenuAction::QuitTray => UserEvent::Quit,
         other => UserEvent::Menu(other),
@@ -559,7 +540,6 @@ fn action_from_menu_id(id: &MenuId) -> Option<MenuAction> {
         "resume_daemon" => Some(MenuAction::ResumeDaemon),
         "stop_daemon" => Some(MenuAction::StopDaemon),
         "show_mini_player" => Some(MenuAction::ShowMiniPlayer),
-        "open_main_window" => Some(MenuAction::OpenMainWindow),
         "open_tui" => Some(MenuAction::OpenTui),
         "refresh" => Some(MenuAction::Refresh),
         "toggle_startup" => Some(MenuAction::ToggleStartup),
@@ -583,7 +563,6 @@ fn action_slug(action: MenuAction) -> &'static str {
         MenuAction::ResumeDaemon => "resume_daemon",
         MenuAction::StopDaemon => "stop_daemon",
         MenuAction::ShowMiniPlayer => "show_mini_player",
-        MenuAction::OpenMainWindow => "open_main_window",
         MenuAction::OpenTui => "open_tui",
         MenuAction::Refresh => "refresh",
         MenuAction::ToggleStartup => "toggle_startup",
@@ -655,27 +634,6 @@ fn truncate_tooltip(text: String) -> String {
     }
     short.push_str("...");
     short
-}
-
-/// Build the `window.__YTM_BOOT__` object literal injected at page load (docs/gui/04 §3.3).
-/// The frontend falls back to its app.css role defaults when no theme is injected.
-fn boot_json(conn: &gateway::ConnState) -> String {
-    let owner = match conn {
-        gateway::ConnState::Online { owner_mode, .. } => serde_json::to_value(owner_mode).ok(),
-        _ => None,
-    };
-    serde_json::json!({
-        "platform": "windows",
-        "version": env!("CARGO_PKG_VERSION"),
-        "coreVersion": serde_json::Value::Null,
-        "protocolVersion": crate::remote::proto::PROTOCOL_VERSION,
-        "ownerMode": owner,
-        "locale": "en",
-        "theme": serde_json::Value::Null,
-        "uiState": serde_json::Value::Null,
-        "devFlags": { "devFrontend": false },
-    })
-    .to_string()
 }
 
 fn set_app_user_model_id() {
@@ -757,19 +715,6 @@ fn app_icon() -> Result<Icon, Box<dyn Error>> {
     let image = image::load_from_memory(&ICO_BYTES[entry.offset..entry.end()])?.to_rgba8();
     let (width, height) = image.dimensions();
     Ok(Icon::from_rgba(image.into_raw(), width, height)?)
-}
-
-/// Title-bar/taskbar icon for tao windows (the main window). Same .ico the tray uses;
-/// 32 px is the classic small-icon slot, and tao/Windows scale the rest.
-pub(crate) fn window_icon() -> Option<tao::window::Icon> {
-    let entry = find_ico_entry(ICO_BYTES, 32)
-        .or_else(|| find_ico_entry(ICO_BYTES, 48))
-        .or_else(|| find_ico_entry(ICO_BYTES, 256))?;
-    let image = image::load_from_memory(&ICO_BYTES[entry.offset..entry.end()])
-        .ok()?
-        .to_rgba8();
-    let (width, height) = image.dimensions();
-    tao::window::Icon::from_rgba(image.into_raw(), width, height).ok()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -871,7 +816,6 @@ mod tests {
             MenuAction::ResumeDaemon,
             MenuAction::StopDaemon,
             MenuAction::ShowMiniPlayer,
-            MenuAction::OpenMainWindow,
             MenuAction::OpenTui,
             MenuAction::Refresh,
             MenuAction::ToggleStartup,
@@ -979,24 +923,6 @@ mod tests {
             submenu_menu_id(MenuSubmenuId::Playback).as_ref(),
             "yututray:submenu:playback"
         );
-    }
-
-    #[test]
-    fn boot_json_tags_windows_and_reflects_owner_mode() {
-        let offline = boot_json(&crate::desktop::gateway::ConnState::Offline {
-            reason: "no_core".to_string(),
-        });
-        let parsed: serde_json::Value = serde_json::from_str(&offline).unwrap();
-        assert_eq!(parsed["platform"], "windows");
-        assert!(parsed["ownerMode"].is_null());
-
-        let online = boot_json(&crate::desktop::gateway::ConnState::Online {
-            protocol_version: 8,
-            capabilities: vec!["events-v8".to_string()],
-            owner_mode: InstanceMode::Daemon,
-        });
-        let parsed: serde_json::Value = serde_json::from_str(&online).unwrap();
-        assert_eq!(parsed["ownerMode"], "daemon");
     }
 
     #[test]

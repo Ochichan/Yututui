@@ -1,9 +1,9 @@
-//! App↔DaemonEngine parity: the convention→contract upgrade (docs/gui/10 §4).
+//! App↔DaemonEngine parity: the convention→contract upgrade.
 //!
 //! One shared script of remote commands is applied to BOTH owner implementations; after
 //! every command the two owners must project **equal** `PlayerModel`/`QueueModel` wire
 //! models (and agree on the reply's `ok`/`reason`). This turns "the engine is kept in
-//! sync with the reducer by convention" (docs/gui/01 §4) into an executable contract.
+//! sync with the reducer by convention" into an executable contract.
 //!
 //! Harness scope and its deliberate normalization:
 //! - The long shared script covers settings/toggle/queue-membership behavior without a live
@@ -27,9 +27,7 @@ use crate::app::{AiMsg, App, Cmd, Msg, PlayerControl, PlayerMsg};
 use crate::config::Config;
 use crate::media::MediaCommand;
 use crate::queue::{Queue, Repeat};
-use crate::remote::proto::{
-    RateChange, RemoteCommand, RemoteSettingChange, ServerFrame, ToggleState, Topic,
-};
+use crate::remote::proto::{RemoteCommand, RemoteSettingChange, ServerFrame, ToggleState, Topic};
 use crate::remote::publish;
 use crate::remote::{SessionLine, SessionTuning, test_command_reply, test_register};
 use crate::signals::Signals;
@@ -67,29 +65,6 @@ fn b0_script() -> Vec<RemoteCommand> {
             to: 0,
             expected_rev: None,
         }, // queue_index on both owners
-        // The rating cycle on the current track ("b" since the seed): the projected
-        // TrackModel favorite/disliked halves must stay equal through a full
-        // neutral → like → dislike → neutral revolution, and the guards must agree.
-        RemoteCommand::Rate {
-            video_id: "b".to_owned(),
-            rating: RateChange::Cycle,
-        },
-        RemoteCommand::Rate {
-            video_id: "b".to_owned(),
-            rating: RateChange::Cycle,
-        },
-        RemoteCommand::Rate {
-            video_id: "b".to_owned(),
-            rating: RateChange::Cycle,
-        },
-        RemoteCommand::Rate {
-            video_id: "not-current".to_owned(),
-            rating: RateChange::Cycle,
-        }, // unknown_track on both owners
-        RemoteCommand::Rate {
-            video_id: "b".to_owned(),
-            rating: RateChange::Up,
-        }, // not_supported on both owners (only the cycle is wired today)
         RemoteCommand::ToggleShuffle,
         RemoteCommand::CycleRepeat,
         RemoteCommand::CycleRepeat,
@@ -178,10 +153,8 @@ fn command_classifier_pins_shared_and_owner_boundary_exceptions() {
         CommandParityClass::SharedMayRebase
     );
     assert_eq!(
-        command_parity_class(&RemoteCommand::RunSearch {
-            ticket: 7,
+        command_parity_class(&RemoteCommand::Play {
             query: "query".to_owned(),
-            source: crate::search_source::SearchSource::Youtube,
         }),
         CommandParityClass::StandaloneRejected
     );
@@ -664,7 +637,7 @@ fn assert_reply_before_player_event(
     }
 }
 
-/// Regression for the v8 owner-loop ordering contract (docs/gui/02 §6): the command mutation and
+/// Regression for the v8 owner-loop ordering contract: the command mutation and
 /// its response happen on the owner turn, and the post-turn publisher observes the new state only
 /// afterwards. Repeat enough times that the old oneshot wakeup race was easy to reproduce while
 /// keeping the assertion deterministic against each session's single outbound lane.
@@ -897,19 +870,17 @@ async fn track_rating_cycle_and_recommendation_projection_stay_in_parity() {
     let (mut app, mut engine) = hermetic_pair();
     assert_parity("track rating baseline", &app, &engine);
 
-    for step in ["liked", "disliked", "neutral"] {
-        let command = RemoteCommand::Rate {
-            video_id: "b".to_owned(),
-            rating: RateChange::Cycle,
-        };
-        let app_response = app_apply(&mut app, command.clone());
-        let (engine_response, shutdown, effects) = engine.handle_remote(command).await;
+    // The OS media like/dislike commands ride `rating::toggle_*` on both owners:
+    // liked → disliked → neutral, with the projections compared at every step.
+    for (step, command) in [
+        ("liked", MediaCommand::Like),
+        ("disliked", MediaCommand::Dislike),
+        ("neutral", MediaCommand::Dislike),
+    ] {
+        app.update(Msg::Media(command.clone()));
+        let (shutdown, effects) = engine.handle_media(command).await;
         assert!(!shutdown);
         assert!(effects.is_empty());
-        assert_eq!(
-            app_response.reason, engine_response.reason,
-            "track rating {step}: owners disagree on the reason"
-        );
         assert_eq!(
             serde_json::to_value(&*app.signals).unwrap(),
             serde_json::to_value(engine.signals()).unwrap(),
@@ -922,14 +893,10 @@ async fn track_rating_cycle_and_recommendation_projection_stay_in_parity() {
 #[tokio::test]
 async fn media_like_repairs_dislike_and_clears_like_in_parity() {
     let (mut app, mut engine) = hermetic_pair();
-    for _ in 0..2 {
-        let command = RemoteCommand::Rate {
-            video_id: "b".to_owned(),
-            rating: RateChange::Cycle,
-        };
-        app_apply(&mut app, command.clone());
-        engine.handle_remote(command).await;
-    }
+    app.update(Msg::Media(MediaCommand::Dislike));
+    let (shutdown, effects) = engine.handle_media(MediaCommand::Dislike).await;
+    assert!(!shutdown);
+    assert!(effects.is_empty());
     assert!(app.signals.is_disliked("b"));
 
     for step in ["liked", "neutral"] {
@@ -957,17 +924,10 @@ async fn radio_station_rating_cycle_stays_in_parity() {
     assert_parity("radio baseline", &app, &engine);
 
     for step in ["favorite", "unfavorite"] {
-        let cmd = RemoteCommand::Rate {
-            video_id: "st1".to_owned(),
-            rating: RateChange::Cycle,
-        };
-        let app_resp = app_apply(&mut app, cmd.clone());
-        let (engine_resp, shutdown, _) = engine.handle_remote(cmd).await;
+        app.update(Msg::Media(MediaCommand::Like));
+        let (shutdown, effects) = engine.handle_media(MediaCommand::Like).await;
         assert!(!shutdown);
-        assert_eq!(
-            app_resp.reason, engine_resp.reason,
-            "radio rating {step}: owners disagree on the reason"
-        );
+        assert!(effects.is_empty());
         assert_parity(&format!("radio rating {step}"), &app, &engine);
     }
 }
@@ -997,10 +957,7 @@ async fn daemon_conflicts_reject_without_state_or_effects() {
         assert_eq!(engine.status(), before, "rejection mutated daemon state");
     }
 
-    for (repeat, streaming, command) in [
-        (Repeat::Off, true, RemoteCommand::CycleRepeat),
-        (Repeat::Off, true, gui_repeat(Repeat::All)),
-    ] {
+    for (repeat, streaming, command) in [(Repeat::Off, true, RemoteCommand::CycleRepeat)] {
         let mut engine = engine_with_modes(repeat, streaming).await;
         let before = engine.status();
         let (response, shutdown, effects) = engine.handle_remote(command).await;
@@ -1036,7 +993,7 @@ async fn daemon_conflict_disables_remain_allowed() {
         assert_eq!(status.repeat, Repeat::One);
     }
 
-    for command in [RemoteCommand::CycleRepeat, gui_repeat(Repeat::Off)] {
+    for command in [RemoteCommand::CycleRepeat] {
         let mut engine = engine_with_modes(Repeat::One, true).await;
         let (response, shutdown, effects) = engine.handle_remote(command).await;
         let status = engine.status();
@@ -1059,7 +1016,12 @@ async fn ai_autoplay_revalidation_rejects_and_recovers_in_lockstep() {
     let mut engine = engine_with_modes(Repeat::All, false).await;
 
     let app_effects = app.update(Msg::Ai(AiMsg::SetAutoplay(true)));
-    let (engine_response, engine_effects) = engine.ai_set_autoplay(true);
+    let (engine_response, engine_shutdown, engine_effects) = engine
+        .handle_remote(RemoteCommand::Streaming {
+            state: ToggleState::On,
+        })
+        .await;
+    assert!(!engine_shutdown);
 
     assert!(app_effects.is_empty(), "App rejection emitted effects");
     assert!(!engine_response.ok);
@@ -1088,7 +1050,12 @@ async fn ai_autoplay_revalidation_rejects_and_recovers_in_lockstep() {
     let mut engine = engine_with_modes(Repeat::One, true).await;
 
     let app_effects = app.update(Msg::Ai(AiMsg::SetAutoplay(false)));
-    let (engine_response, engine_effects) = engine.ai_set_autoplay(false);
+    let (engine_response, engine_shutdown, engine_effects) = engine
+        .handle_remote(RemoteCommand::Streaming {
+            state: ToggleState::Off,
+        })
+        .await;
+    assert!(!engine_shutdown);
 
     assert!(engine_response.ok);
     assert!(engine_effects.is_empty());

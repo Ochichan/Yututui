@@ -8,11 +8,9 @@ license = "MIT"
 
 [features]
 default = []
-ts-export = ["dep:ts-rs"]
 
 [dependencies]
 serde = { version = "1.0.228", features = ["derive"] }
-ts-rs = { version = "10", optional = true, features = ["no-serde-warnings"] }
 
 [lints.rust]
 unsafe_op_in_unsafe_fn = "deny"

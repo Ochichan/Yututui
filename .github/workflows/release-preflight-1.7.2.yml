@@ -45,8 +45,8 @@ jobs:
           fi
 
           flake_versions="$(grep -Fc "version = \"$PREFLIGHT_VERSION\";" flake.nix)"
-          if [ "$flake_versions" -ne 3 ]; then
-            echo "::error::preflight expects three synchronized flake.nix versions, found $flake_versions"
+          if [ "$flake_versions" -ne 1 ]; then
+            echo "::error::preflight expects one synchronized flake.nix version, found $flake_versions"
             exit 1
           fi
 

@@ -89,7 +89,7 @@ pub enum RemoteEvent {
     /// A session sent `Subscribe`. Handled on the owner loop — never the reducer — by
     /// the [`crate::remote::publish::Publisher`]: it records the subscriptions, emits
     /// one initial snapshot per newly subscribed topic, then the `Reply`, all in order
-    /// into this session's outbound queue (docs/gui/02 §6/§8).
+    /// into this session's outbound queue.
     SessionSubscribe {
         session: RemoteSessionRef,
         frame_id: u64,
@@ -548,7 +548,7 @@ fn default_capabilities() -> Vec<String> {
         super::WEB_DAV_SYNC_CAPABILITY.to_string(),
         super::OPEN_SUBSONIC_CAPABILITY.to_string(),
         RETAINED_REQUEST_OUTCOMES_CAPABILITY.to_string(),
-        // v8 sessions with live push (docs/gui/02 §10) — advertised now that subscribe
+        // v8 sessions with live push — advertised now that subscribe
         // delivers initial snapshots through the owner-lane Publisher.
         "events-v8".to_string(),
     ]
@@ -596,7 +596,7 @@ fn secondary_capabilities_do_not_advertise_owner_bound_integrations() {
 
 #[cfg(test)]
 #[test]
-fn standalone_capabilities_do_not_advertise_long_form_seek_gui_mutation() {
+fn standalone_capabilities_do_not_advertise_long_form_seek_mutation() {
     assert!(
         !default_capabilities()
             .contains(&super::LONG_FORM_SEEK_OPTIMIZATION_CAPABILITY.to_string())
@@ -781,7 +781,7 @@ fn log_connection_task_result(result: Result<(), JoinError>) {
     }
 }
 
-/// Read the first line and discriminate the connection mode (docs/gui/02 §4.3):
+/// Read the first line and discriminate the connection mode:
 /// a one-shot `RemoteRequest` (`command` key) is answered and closed; a `HelloRequest`
 /// (`hello` key) upgrades into a long-lived session. The two shapes are structurally
 /// unambiguous, so this is two explicit parse attempts, never `untagged`.
@@ -886,7 +886,7 @@ mod one_shot_tests;
 
 /// Session-mode socket tests. Deliberately NOT unix-gated: on the Windows CI leg these
 /// run over a real named pipe, which makes them the standing long-lived-duplex smoke the
-/// v8 design calls out as its one genuinely new transport risk (docs/gui/02 §19.1).
+/// v8 design calls out as its one genuinely new transport risk.
 #[cfg(test)]
 mod session_socket_tests;
 

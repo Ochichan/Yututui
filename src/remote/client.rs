@@ -328,10 +328,8 @@ async fn send_to_instance_with_request_id(
         let retry = send_attempt(&instance, &command, request_id, version).await;
         let retry_is_authoritative = match retry_class {
             RequestRetryClass::RetainedOutcome => attempt_is_retained_replay(&retry),
-            // RunSearch is deliberately executed afresh: an `ok` acknowledgement proves at
-            // least one dispatch, while a pre-admission rejection cannot resolve whether the
-            // first attempt dispatched. Status does not require confirmation and accepts any
-            // well-formed fresh retry response below.
+            // Read-only commands are deliberately executed afresh: Status does not require
+            // confirmation and accepts any well-formed fresh retry response below.
             RequestRetryClass::ReexecuteReadOnly => {
                 !requires_confirmation || attempt_confirms_fresh_dispatch(&retry)
             }

@@ -97,8 +97,8 @@ async fn subscribe_owner_pressure_returns_server_busy_without_closing_the_sessio
 }
 
 #[tokio::test]
-async fn equal_request_ids_and_tickets_from_two_sessions_keep_their_origins() {
-    let endpoint = test_endpoint("two-search-origins");
+async fn equal_request_ids_from_two_sessions_keep_their_origins() {
+    let endpoint = test_endpoint("two-command-origins");
     let listener = bind(&endpoint).unwrap();
     let hub = test_hub();
     let (seen_tx, mut seen_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -108,17 +108,13 @@ async fn equal_request_ids_and_tickets_from_two_sessions_keep_their_origins() {
         Arc::from("secret"),
         Arc::new(move |event| match event {
             RemoteEvent::SessionCommand {
-                command: RemoteCommand::RunSearch { ticket, .. },
+                command: RemoteCommand::Status,
                 origin,
                 reply,
             } => {
-                let observed = (
-                    origin.session_id(),
-                    origin.page_id().map(str::to_owned),
-                    ticket,
-                );
+                let observed = (origin.session_id(), origin.page_id().map(str::to_owned));
                 let accepted = seen_tx.send(observed).is_ok();
-                let _ = reply.send(RemoteResponse::ok("searching".to_owned()));
+                let _ = reply.send(RemoteResponse::ok("accepted".to_owned()));
                 accepted
             }
             RemoteEvent::SessionSubscribe { .. } => true,
@@ -146,7 +142,7 @@ async fn equal_request_ids_and_tickets_from_two_sessions_keep_their_origins() {
                 request_id: None,
                 page_id: Some(page_id.to_owned()),
                 op: ClientOp::Subscribe {
-                    topics: vec![Topic::Search],
+                    topics: vec![Topic::Player],
                 },
             },
         )
@@ -155,13 +151,11 @@ async fn equal_request_ids_and_tickets_from_two_sessions_keep_their_origins() {
             &mut write_half,
             &ClientFrame {
                 id: 1,
+                // A read-only command re-executes on a same-ID retry instead of
+                // joining the first session's retained outcome.
                 request_id: Some("same-reconnect-id".to_owned()),
                 page_id: Some(page_id.to_owned()),
-                op: ClientOp::Command(RemoteCommand::RunSearch {
-                    ticket: 1,
-                    query: page_id.to_owned(),
-                    source: crate::search_source::SearchSource::All,
-                }),
+                op: ClientOp::Command(RemoteCommand::Status),
             },
         )
         .await;
@@ -180,7 +174,7 @@ async fn equal_request_ids_and_tickets_from_two_sessions_keep_their_origins() {
     observed.sort_by_key(|item| item.0);
     let mut expected: Vec<_> = clients
         .iter()
-        .map(|(session_id, page_id, _, _)| (*session_id, Some(page_id.clone()), 1))
+        .map(|(session_id, page_id, _, _)| (*session_id, Some(page_id.clone())))
         .collect();
     expected.sort_by_key(|item| item.0);
     assert_eq!(observed, expected);
@@ -188,7 +182,7 @@ async fn equal_request_ids_and_tickets_from_two_sessions_keep_their_origins() {
     for (_, _, reader, _) in &mut clients {
         match read_json_line::<_, ServerFrame>(reader).await {
             ServerFrame::Reply { id: 1, resp } => assert!(resp.ok),
-            other => panic!("expected search admission reply, got {other:?}"),
+            other => panic!("expected command reply, got {other:?}"),
         }
     }
     hub.shutdown_all();
@@ -237,7 +231,7 @@ async fn raw_session_command_from_replaced_page_is_rejected_before_owner_dispatc
                 request_id: None,
                 page_id: Some(page_id.to_owned()),
                 op: ClientOp::Subscribe {
-                    topics: vec![Topic::Search],
+                    topics: vec![Topic::Player],
                 },
             },
         )
@@ -251,7 +245,7 @@ async fn raw_session_command_from_replaced_page_is_rejected_before_owner_dispatc
             request_id: None,
             page_id: Some("page-a".to_owned()),
             op: ClientOp::Unsubscribe {
-                topics: vec![Topic::Search],
+                topics: vec![Topic::Player],
             },
         },
     )
@@ -269,11 +263,7 @@ async fn raw_session_command_from_replaced_page_is_rejected_before_owner_dispatc
             id: 13,
             request_id: None,
             page_id: Some("page-a".to_owned()),
-            op: ClientOp::Command(RemoteCommand::RunSearch {
-                ticket: 1,
-                query: "stale".to_owned(),
-                source: crate::search_source::SearchSource::All,
-            }),
+            op: ClientOp::Command(RemoteCommand::TogglePause),
         },
     )
     .await;
@@ -291,11 +281,7 @@ async fn raw_session_command_from_replaced_page_is_rejected_before_owner_dispatc
             id: 14,
             request_id: None,
             page_id: Some("page-b".to_owned()),
-            op: ClientOp::Command(RemoteCommand::RunSearch {
-                ticket: 2,
-                query: "current".to_owned(),
-                source: crate::search_source::SearchSource::All,
-            }),
+            op: ClientOp::Command(RemoteCommand::TogglePause),
         },
     )
     .await;

@@ -30,22 +30,10 @@ fn help_documents_each_window_activation_intent() {
     ] {
         assert!(help.contains(expected), "missing {expected:?} in:\n{help}");
     }
-    if yututui::desktop::assets::DIST_EMBEDDED {
-        assert!(help.contains("--main-window"));
-        assert!(help.contains("Open the experimental main window"));
-    } else {
-        assert!(!help.contains("--main-window"));
-    }
-}
-
-#[test]
-fn main_window_is_rejected_when_the_full_gui_is_not_embedded() {
-    if yututui::desktop::assets::DIST_EMBEDDED {
-        return;
-    }
-    let output = run(&["--main-window"]);
-    assert!(!output.status.success());
-    assert!(stderr(&output).contains("full GUI main window is not included"));
+    assert!(
+        !help.contains("--main-window"),
+        "the removed main window must not appear in help:\n{help}"
+    );
 }
 
 #[test]
@@ -62,7 +50,12 @@ fn help_and_version_exit_without_starting_the_desktop_event_loop() {
 
 #[test]
 fn unknown_option_is_a_usage_error() {
-    let output = run(&["--not-a-real-option"]);
-    assert_eq!(output.status.code(), Some(2));
-    assert!(stderr(&output).contains("try `yututray --help`"));
+    for option in ["--not-a-real-option", "--main-window"] {
+        let output = run(&[option]);
+        assert_eq!(output.status.code(), Some(2), "option: {option}");
+        assert!(
+            stderr(&output).contains("try `yututray --help`"),
+            "option: {option}"
+        );
+    }
 }

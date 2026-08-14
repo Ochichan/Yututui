@@ -58,15 +58,17 @@ impl DaemonEngine {
                 seed_video_id,
                 songs,
             } => {
-                let Some(pending) = self.take_streaming_request(
-                    request_id,
-                    &seed_video_id,
-                    StreamingRequestStage::Preflight,
-                ) else {
+                if self
+                    .take_streaming_request(
+                        request_id,
+                        &seed_video_id,
+                        StreamingRequestStage::Preflight,
+                    )
+                    .is_none()
+                {
                     return Vec::new();
-                };
-                let slot = Self::streaming_mode_slot(pending.mode);
-                self.extend_queue_from_picks(songs, slot).await
+                }
+                self.extend_queue_from_picks(songs).await
             }
             ApiEvent::StreamingError {
                 request_id,
@@ -295,27 +297,11 @@ impl DaemonEngine {
                 config: self.config.streaming.clone(),
             }];
         }
-        let slot = Self::streaming_mode_slot(pending.mode);
-        self.extend_queue_from_picks(sanitized, slot).await
+        self.extend_queue_from_picks(sanitized).await
     }
 
-    #[cfg(test)]
-    pub(super) async fn extend_queue_from_streaming(
-        &mut self,
-        songs: Vec<Song>,
-    ) -> Vec<EngineEffect> {
-        let slot = Self::streaming_mode_slot(self.config.streaming.mode);
-        self.extend_queue_from_picks(songs, slot).await
-    }
-
-    /// Queue extension with WhyGem provenance. Queue capacity decides the accepted prefix;
-    /// rejected candidates never become fetchable explanations.
-    pub(super) async fn extend_queue_from_picks(
-        &mut self,
-        songs: Vec<Song>,
-        slot: &str,
-    ) -> Vec<EngineEffect> {
-        let video_ids: Vec<String> = songs.iter().map(|song| song.video_id.clone()).collect();
+    /// Queue extension for autoplay picks. Queue capacity decides the accepted prefix.
+    pub(super) async fn extend_queue_from_picks(&mut self, songs: Vec<Song>) -> Vec<EngineEffect> {
         let old_len = self.queue.len();
         let was_idle = self.loaded_video_id.is_none();
         let previous = was_idle.then(|| self.queue.snapshot());
@@ -326,9 +312,9 @@ impl DaemonEngine {
         }
 
         // An idle queue must admit the first newly appended track to the player before any
-        // recommendation provenance or success bookkeeping becomes observable. In particular,
-        // an empty queue already selects its first appended row; calling `next` would either skip
-        // that row or (for a single pick) fail to load anything at all.
+        // success bookkeeping becomes observable. In particular, an empty queue already
+        // selects its first appended row; calling `next` would either skip that row or
+        // (for a single pick) fail to load anything at all.
         if was_idle {
             self.queue
                 .goto(old_len.min(self.queue.len().saturating_sub(1)));
@@ -343,22 +329,11 @@ impl DaemonEngine {
             }
         }
 
-        self.record_why_gem_ids(slot, video_ids.into_iter().take(added));
         self.consecutive_streaming_failures = 0;
         if !was_idle {
             self.save_session();
         }
         Vec::new()
-    }
-
-    /// The local streaming origin shown by WhyGem. Gemini reason roles remain lower-case;
-    /// this source label intentionally follows the user-facing mode names.
-    pub(super) fn streaming_mode_slot(mode: StreamingMode) -> &'static str {
-        match mode {
-            StreamingMode::Focused => "Focused",
-            StreamingMode::Balanced => "Balanced",
-            StreamingMode::Discovery => "Discovery",
-        }
     }
 
     pub(super) fn note_streaming_failure(&mut self, status: String) {

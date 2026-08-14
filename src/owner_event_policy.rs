@@ -88,8 +88,7 @@ pub(crate) fn api_event_policy(event: &crate::api::ApiEvent) -> EventPolicy {
         | crate::api::ApiEvent::PlaylistTracks { .. }
         | crate::api::ApiEvent::PlaylistTracksError { .. }
         | crate::api::ApiEvent::ArtistPage { .. }
-        | crate::api::ApiEvent::ArtistPageError { .. }
-        | crate::api::ApiEvent::GuiSearchCompleted { .. } => EventPolicy::MustDeliver {
+        | crate::api::ApiEvent::ArtistPageError { .. } => EventPolicy::MustDeliver {
             lane: Lane::WorkResult,
         },
         crate::api::ApiEvent::SearchResults { .. } | crate::api::ApiEvent::SearchError { .. } => {

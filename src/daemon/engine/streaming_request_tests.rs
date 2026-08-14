@@ -135,9 +135,7 @@ async fn disable_reenable_same_seed_rejects_the_old_request_generation() {
 }
 
 #[tokio::test]
-async fn mode_change_rejects_old_results_instead_of_using_the_new_why_gem_source() {
-    use crate::remote::proto::ResponseData;
-
+async fn mode_change_rejects_old_results_and_replaces_the_pending_request() {
     let mut engine = tests::engine_with_queue(&["seed"]);
     engine.loaded_video_id = Some("seed".to_owned());
     engine.streaming = true;
@@ -156,7 +154,6 @@ async fn mode_change_rejects_old_results_instead_of_using_the_new_why_gem_source
         })
         .await;
     assert!(!engine.queue.contains_video_id("old-pick"));
-    assert!(engine.gui_fetch_why_gem("old-pick").data.is_none());
     assert_eq!(
         engine
             .pending_streaming_request
@@ -177,10 +174,7 @@ async fn mode_change_rejects_old_results_instead_of_using_the_new_why_gem_source
             songs: vec![song("new-pick")],
         })
         .await;
-    let Some(ResponseData::WhyGem(model)) = engine.gui_fetch_why_gem("new-pick").data else {
-        panic!("new request should record WhyGem provenance");
-    };
-    assert_eq!(model.slot, "Discovery");
+    assert!(engine.queue.contains_video_id("new-pick"));
 }
 
 #[tokio::test]
@@ -193,7 +187,7 @@ async fn admitted_same_seed_manual_replacement_cancels_the_old_queue_revision() 
     let old_queue_rev = engine.queue.rev();
 
     let replacement = Song::remote("seed", "replacement", "manual artist", "4:00");
-    let response = engine.gui_replace_queue(vec![replacement]).await;
+    let response = tests::replace_queue_with_songs(&mut engine, vec![replacement]).await;
     assert!(response.ok);
     assert_ne!(engine.queue.rev(), old_queue_rev);
     engine.reconcile_pending_streaming_request();

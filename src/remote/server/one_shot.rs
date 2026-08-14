@@ -134,7 +134,7 @@ pub(super) async fn build_tracked_response(
         TrackedRemoteResponse::untracked(response_for_one_shot_version(request_version, response))
     };
     // Range, not equality: the v7 one-shot shapes are frozen, so a v8 server keeps serving
-    // shipped v7 clients (`ytt -r`, the tray) forever (docs/gui/02 §9).
+    // shipped v7 clients (`ytt -r`, the tray) forever.
     if !(PROTOCOL_VERSION_V7..=PROTOCOL_VERSION).contains(&req.version) {
         return untracked(RemoteResponse::err("bad_version"));
     }
@@ -146,9 +146,6 @@ pub(super) async fn build_tracked_response(
     }
     if let Err(err) = req.command.validate() {
         return untracked(RemoteResponse::err(err.reason()));
-    }
-    if matches!(req.command, RemoteCommand::RunSearch { .. }) {
-        return untracked(RemoteResponse::err("session_required"));
     }
     if !hub.owner_admission_is_open() {
         return untracked(RemoteResponse::err("shutting_down"));

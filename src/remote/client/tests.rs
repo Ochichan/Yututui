@@ -401,18 +401,14 @@ async fn successor_bad_token_rejection_does_not_overwrite_ambiguous_mutation() {
 }
 
 #[tokio::test]
-async fn run_search_accepts_a_fresh_retry_ack_without_retained_capability_or_proof() {
-    let endpoint = test_endpoint("search-fresh-retry-ack");
+async fn status_accepts_a_fresh_retry_ack_without_retained_capability_or_proof() {
+    let endpoint = test_endpoint("status-fresh-retry-ack");
     let listener = bind_test_listener(&endpoint);
     let server = tokio::spawn(serve_eof_then_fresh_response(
         listener,
-        RemoteResponse::ok("search dispatched".to_owned()),
+        RemoteResponse::ok("status served".to_owned()),
     ));
-    let command = RemoteCommand::RunSearch {
-        ticket: 7,
-        query: "query".to_owned(),
-        source: crate::search_source::SearchSource::Youtube,
-    };
+    let command = RemoteCommand::Status;
 
     let response = send_to_instance(legacy_v8_instance(endpoint.clone()), command)
         .await
@@ -421,31 +417,30 @@ async fn run_search_accepts_a_fresh_retry_ack_without_retained_capability_or_pro
     let _ = std::fs::remove_file(endpoint);
 
     assert!(response.ok);
-    assert_eq!(response.message.as_deref(), Some("search dispatched"));
+    assert_eq!(response.message.as_deref(), Some("status served"));
     assert_eq!(request_ids[0], request_ids[1]);
 }
 
 #[tokio::test]
-async fn run_search_fresh_retry_rejection_preserves_confirmation_lost() {
-    let endpoint = test_endpoint("search-fresh-retry-rejected");
+async fn status_fresh_retry_takes_the_fresh_response_verbatim() {
+    let endpoint = test_endpoint("status-fresh-retry-rejected");
     let listener = bind_test_listener(&endpoint);
     let server = tokio::spawn(serve_eof_then_fresh_response(
         listener,
         RemoteResponse::err("bad_token"),
     ));
-    let command = RemoteCommand::RunSearch {
-        ticket: 8,
-        query: "query".to_owned(),
-        source: crate::search_source::SearchSource::Youtube,
-    };
+    let command = RemoteCommand::Status;
 
-    let err = send_to_instance(legacy_v8_instance(endpoint.clone()), command)
+    // A read-only command needs no dispatch confirmation: any well-formed fresh retry
+    // response is authoritative, including a rejection.
+    let response = send_to_instance(legacy_v8_instance(endpoint.clone()), command)
         .await
-        .unwrap_err();
+        .unwrap();
     let request_ids = server.await.unwrap();
     let _ = std::fs::remove_file(endpoint);
 
-    assert_eq!(err, ClientError::ConfirmationLost);
+    assert!(!response.ok);
+    assert_eq!(response.reason.as_deref(), Some("bad_token"));
     assert_eq!(request_ids[0], request_ids[1]);
 }
 
@@ -882,7 +877,6 @@ fn info_rejection_never_reflects_owner_text() {
         ),
         message: Some("another owner-controlled field".to_string()),
         status: None,
-        data: None,
     };
 
     let message = info_rejection_message(&response);

@@ -99,24 +99,8 @@ jobs:
       - name: Dependency policy
         run: cargo deny check bans licenses sources
 
-      - name: GUI frontend (typecheck, test, build)
-        run: |
-          cd gui
-          npm ci
-          npm run check
-          npm run test
-          npm run build
-
-      - name: GUI protocol type drift
-        run: scripts/check-gui-types.sh
-
       - name: Feature graph invariants
-        run: |
-          grep -qE '^default = \[\]' Cargo.toml
-          if grep -E '^desktop = \[' Cargo.toml | grep -q 'ts-export'; then
-            echo "error: the desktop feature must not enable ts-export" >&2
-            exit 1
-          fi
+        run: grep -qE '^default = \[\]' Cargo.toml
 
   dependency-review:
     name: Dependency review

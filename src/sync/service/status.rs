@@ -37,11 +37,6 @@ pub struct LocalSyncSnapshot {
     pub playlist_revision: u64,
 }
 
-#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
-#[cfg_attr(
-    feature = "ts-export",
-    ts(export, export_to = "gui/src/generated/protocol/")
-)]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SyncStatusReport {
     pub state: SyncHealthState,
@@ -50,10 +45,8 @@ pub struct SyncStatusReport {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub device_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(feature = "ts-export", ts(type = "number | null"))]
     pub last_attempt_unix: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(feature = "ts-export", ts(type = "number | null"))]
     pub last_success_unix: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub failure: Option<SyncFailureKind>,

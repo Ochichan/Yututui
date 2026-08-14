@@ -116,8 +116,6 @@ fn rejected_live_settings_roll_back_config_and_playback_state() {
     let speed = engine.playback.speed;
     let configured_speed = engine.config.speed;
     let normalize = engine.config.normalize;
-    let preset = engine.config.eq_preset;
-    let bands = engine.config.eq_bands;
 
     let (response, effects) = engine.set_setting(RemoteSettingChange::Speed { tenths: 15 });
     assert!(!response.ok);
@@ -129,14 +127,4 @@ fn rejected_live_settings_roll_back_config_and_playback_state() {
     assert!(!response.ok);
     assert!(effects.is_empty());
     assert_eq!(engine.config.normalize, normalize);
-
-    let (response, effects) = engine.apply_gui_setting(crate::remote::proto::GuiSettingChange {
-        group: "eq".to_owned(),
-        field: "preset".to_owned(),
-        value: serde_json::json!("bass_boost"),
-    });
-    assert!(!response.ok);
-    assert!(effects.is_empty());
-    assert_eq!(engine.config.eq_preset, preset);
-    assert_eq!(engine.config.eq_bands, bands);
 }

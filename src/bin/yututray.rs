@@ -32,9 +32,7 @@ fn try_main() -> Result<(), Box<dyn Error>> {
         let launch_without_console = matches!(
             args.first().map(String::as_str),
             None | Some("--background") | Some("--mini")
-        ) || args
-            .first()
-            .is_some_and(|arg| arg == "--main-window" && yututui::desktop::assets::DIST_EMBEDDED);
+        );
         if !launch_without_console {
             attach_parent_console();
         }
@@ -44,21 +42,11 @@ fn try_main() -> Result<(), Box<dyn Error>> {
             println!("yututray {}", env!("CARGO_PKG_VERSION"));
         }
         Some("--help") | Some("-h") => print_help(),
-        // Default to tray-only. The main window is still experimental and must be
-        // opened explicitly so package-manager users do not see an unfinished GUI.
+        // `--background` is the startup-entry verb: tray only, no window.
         Some("--background") => {
             run_default(ActivationIntent::EnsureTray, ActivationIntent::EnsureTray)?
         }
         Some("--mini") => run_default(ActivationIntent::ShowMini, ActivationIntent::ShowMini)?,
-        Some("--main-window") if yututui::desktop::assets::DIST_EMBEDDED => {
-            run_default(ActivationIntent::ShowMain, ActivationIntent::ShowMain)?
-        }
-        Some("--main-window") => {
-            return Err(
-                "the full GUI main window is not included in this build; use the tray mini player"
-                    .into(),
-            );
-        }
         Some("--once") => block_on(print_once()),
         Some("--install-startup") => install_startup(),
         Some("--uninstall-startup") => uninstall_startup(),
@@ -99,10 +87,6 @@ fn print_help() {
     println!("Options:");
     println!("      --background Run the tray companion from a startup entry (tray only)");
     println!("      --mini       Open the tray mini player");
-    if yututui::desktop::assets::DIST_EMBEDDED {
-        println!("      --main-window");
-        println!("                   Open the experimental main window");
-    }
     println!("      --install-startup");
     println!("                   Enable login startup for yututray");
     println!("      --uninstall-startup");

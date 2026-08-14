@@ -62,11 +62,6 @@ impl<'de> Deserialize<'de> for AudioBackend {
 ///
 /// `Off` remains the release default. `Auto` is intentionally available only as an explicit,
 /// experimental opt-in until the cross-platform rollout gate is complete.
-#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
-#[cfg_attr(
-    feature = "ts-export",
-    ts(export, export_to = "gui/src/generated/protocol/")
-)]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LongFormSeekOptimization {

@@ -111,7 +111,7 @@ fn request_for_song(song: &Song) -> LyricsRequest {
 }
 
 /// Seconds → whole milliseconds, non-negative. All lrclib lines are synced, so `ms` is
-/// always `Some` here; the wire keeps `Option` for unsynced sources (docs/gui/02 §7).
+/// always `Some` here; the wire keeps `Option` for unsynced sources.
 fn to_models(lines: &[LyricLine]) -> Vec<LyricLineModel> {
     lines
         .iter()

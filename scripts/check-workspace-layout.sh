@@ -55,8 +55,6 @@ core_dependencies = [
 expected_core_path = os.path.join(root, "crates", "yututui-core")
 if len(core_dependencies) != 1 or os.path.realpath(core_dependencies[0]["path"] or "") != expected_core_path:
     raise SystemExit("root package must depend on the in-workspace yututui-core path")
-if "yututui-core/ts-export" not in root_package["features"].get("ts-export", []):
-    raise SystemExit("root ts-export feature must forward to yututui-core/ts-export")
 ' "$PWD"
 
 echo "workspace layout ok"

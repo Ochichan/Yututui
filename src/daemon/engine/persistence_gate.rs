@@ -6,16 +6,7 @@ use crate::remote::proto::{RemoteCommand, RemoteResponse};
 /// Only operations that do not change durable daemon state may continue after coherent
 /// persistence ownership has been lost. Unknown future commands default to rejection.
 fn may_continue_read_only(command: &RemoteCommand) -> bool {
-    matches!(
-        command,
-        RemoteCommand::Status
-            | RemoteCommand::RunSearch { .. }
-            | RemoteCommand::Quit
-            // v8 pure reads: paging/drill-down/provenance never touch durable state.
-            | RemoteCommand::FetchLibraryPage { .. }
-            | RemoteCommand::FetchPlaylistDetail { .. }
-            | RemoteCommand::FetchWhyGem { .. }
-    )
+    matches!(command, RemoteCommand::Status | RemoteCommand::Quit)
 }
 
 pub(super) fn current_recovery_status() -> Result<(), StartupRecoveryError> {
@@ -157,10 +148,6 @@ impl DaemonEngine {
         self.save_personal_state(context, StoreKind::Library);
     }
 
-    pub(super) fn save_playlists(&mut self, context: &str) {
-        self.save_personal_state(context, StoreKind::Playlists);
-    }
-
     fn save_personal_state(&mut self, context: &str, failure_kind: StoreKind) {
         if self.should_skip_remote_save() {
             return;
@@ -240,69 +227,6 @@ impl DaemonEngine {
         Ok(installed)
     }
 
-    /// Persist an owner candidate without touching the live daemon store. The caller may swap it
-    /// only after this gate returns success.
-    pub(super) fn persist_transfer_playlists_candidate(
-        &mut self,
-        candidate: &crate::playlists::Playlists,
-    ) -> Result<(), crate::transfer::local_playlist::LocalPlaylistStoreError> {
-        if let Err(error) = current_recovery_status() {
-            return Err(
-                crate::transfer::local_playlist::LocalPlaylistStoreError::resumable(format!(
-                    "daemon recovery preflight rejected transfer playlist persistence: {error}"
-                )),
-            );
-        }
-        if self.should_skip_remote_save() {
-            return Err(
-                crate::transfer::local_playlist::LocalPlaylistStoreError::resumable(
-                    "daemon persistence gate is read-only for this owner turn",
-                ),
-            );
-        }
-        let commit = self
-            .reconcile_personal_state(candidate)
-            .and_then(|state| {
-                crate::personal_state::PersonalStateCommit::prepare_for_runtime(
-                    state,
-                    candidate.revision(),
-                )
-            })
-            .map_err(|error| {
-                crate::transfer::local_playlist::LocalPlaylistStoreError::resumable(format!(
-                    "failed to prepare daemon transfer playlists: {error}"
-                ))
-            })?;
-        let paths = self.personal_state_paths().map_err(|error| {
-            crate::transfer::local_playlist::LocalPlaylistStoreError::resumable(format!(
-                "failed to resolve personal-state storage: {error}"
-            ))
-        })?;
-        let installed = match save_store(StoreKind::Playlists, || {
-            commit.commit(&paths).map_err(std::io::Error::other)
-        }) {
-            Ok(installed) => installed,
-            Err(error) => {
-                let message = format!("failed to save daemon transfer playlists: {error}");
-                self.record_persistence_failure("daemon transfer playlists", error);
-                return Err(
-                    crate::transfer::local_playlist::LocalPlaylistStoreError::resumable(message),
-                );
-            }
-        };
-        if installed != *commit.state() {
-            let error = std::io::Error::other(
-                "personal state changed while the daemon transfer was installing",
-            );
-            let message = format!("failed to save daemon transfer playlists: {error}");
-            self.record_persistence_failure("daemon transfer playlists", error);
-            Err(crate::transfer::local_playlist::LocalPlaylistStoreError::resumable(message))
-        } else {
-            self.install_personal_state(installed);
-            Ok(())
-        }
-    }
-
     pub(super) fn save_signals(&mut self, context: &str) {
         self.save_personal_state(context, StoreKind::Signals);
     }
@@ -352,6 +276,22 @@ impl DaemonEngine {
         } else {
             (response, shutdown, effects)
         }
+    }
+}
+
+impl DaemonEngine {
+    #[cfg(test)]
+    pub(super) fn playlists_rev(&self) -> u64 {
+        self.playlists_rev
+    }
+
+    #[cfg(test)]
+    pub(super) fn library_invalidations(&self) -> u64 {
+        self.library_invalidations
+    }
+
+    pub(super) fn bump_playlists_rev(&mut self) {
+        self.playlists_rev = self.playlists_rev.wrapping_add(1);
     }
 }
 

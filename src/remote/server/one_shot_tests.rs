@@ -78,7 +78,7 @@ async fn one_shot_reports_server_busy_when_owner_rejects() {
 }
 
 #[tokio::test]
-async fn one_shot_run_search_validates_before_requiring_a_session() {
+async fn one_shot_play_validates_before_owner_dispatch() {
     let emits = Arc::new(AtomicUsize::new(0));
     let sink_emits = Arc::clone(&emits);
     let emit: EventSink = Arc::new(move |_| {
@@ -88,12 +88,8 @@ async fn one_shot_run_search_validates_before_requiring_a_session() {
     let request = |query: String| RemoteRequest {
         version: PROTOCOL_VERSION,
         token: "secret".to_owned(),
-        request_id: Some("one-shot-search".to_owned()),
-        command: RemoteCommand::RunSearch {
-            ticket: 1,
-            query,
-            source: crate::search_source::SearchSource::Youtube,
-        },
+        request_id: Some("one-shot-play".to_owned()),
+        command: RemoteCommand::Play { query },
     };
 
     let oversized = build_response(
@@ -104,9 +100,6 @@ async fn one_shot_run_search_validates_before_requiring_a_session() {
     )
     .await;
     assert_eq!(oversized.reason.as_deref(), Some("query_too_long"));
-
-    let valid = build_response(request("valid".to_owned()), "secret", &emit, &test_hub()).await;
-    assert_eq!(valid.reason.as_deref(), Some("session_required"));
     assert_eq!(emits.load(Ordering::Relaxed), 0);
 }
 
@@ -343,10 +336,8 @@ async fn server_round_trips_request_through_the_reducer() {
         version: PROTOCOL_VERSION,
         token: "secret".to_string(),
         request_id: None,
-        command: RemoteCommand::RunSearch {
-            ticket: 1,
+        command: RemoteCommand::Play {
             query: "q".repeat(crate::remote::proto::REMOTE_MAX_QUERY_BYTES + 1),
-            source: crate::search_source::SearchSource::Youtube,
         },
     };
     let resp = parse(&send_line(&path, &serde_json::to_string(&bad_query).unwrap()).await);
