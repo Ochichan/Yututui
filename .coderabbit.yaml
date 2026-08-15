@@ -23,7 +23,6 @@ reviews:
       - "wip"
   path_filters:
     - "!**/node_modules/**"
-    - "!gui/dist/**"
     - "!ds-bundle/**"
     - "!assets/**"
     - "!Cargo.lock"
@@ -72,11 +71,6 @@ reviews:
         Templates rendered and pushed to homebrew-tap / scoop-bucket / AUR on release. Check
         that version, checksum, URL and binary-name changes stay consistent across every
         packaging target in the same diff; a partial update ships a broken package.
-    - path: "gui/src/**"
-      instructions: |
-        Embedded Svelte + TypeScript frontend served by the Rust binary — not a standalone app.
-        Check message/IPC contracts against the Rust side (see `gui/WIRING.md`), avoid
-        unbounded reactive loops, and keep bundle additions justified.
     - path: "scripts/size-baseline.tsv"
       instructions: |
         File-size ratchet baseline. A change here is only legitimate when the same commit grows
@@ -118,4 +112,3 @@ knowledge_base:
       - "AGENTS.md"
       - "CLAUDE.md"
       - "ARCHITECTURE.md"
-      - "gui/WIRING.md"

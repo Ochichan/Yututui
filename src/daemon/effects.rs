@@ -6,9 +6,7 @@ use std::time::Duration;
 
 use tokio::task::{JoinError, JoinSet};
 
-use super::{
-    DaemonEvent, DaemonEventSender, engine, gui_search_pending::GuiSearchPending, personal_export,
-};
+use super::{DaemonEvent, DaemonEventSender, engine, personal_export};
 use crate::player::lifetime::ShutdownLatch;
 
 const TERMINAL_RETRY_DELAY: Duration = Duration::from_millis(5);
@@ -217,47 +215,6 @@ pub(super) fn dispatch_engine_effects(
     event_tx: &DaemonEventSender,
     shutdown: &ShutdownLatch,
     tasks: &mut DaemonEffectTasks,
-    gui_search_pending: &mut GuiSearchPending,
-    effects: Vec<engine::EngineEffect>,
-) -> Vec<DaemonEvent> {
-    dispatch_engine_effects_inner(
-        api,
-        event_tx,
-        shutdown,
-        tasks,
-        gui_search_pending,
-        None,
-        effects,
-    )
-}
-
-pub(super) fn dispatch_session_engine_effects(
-    api: &crate::api::ApiHandle,
-    event_tx: &DaemonEventSender,
-    shutdown: &ShutdownLatch,
-    tasks: &mut DaemonEffectTasks,
-    gui_search_pending: &mut GuiSearchPending,
-    origin: &crate::remote::RemoteSessionScope,
-    effects: Vec<engine::EngineEffect>,
-) -> Vec<DaemonEvent> {
-    dispatch_engine_effects_inner(
-        api,
-        event_tx,
-        shutdown,
-        tasks,
-        gui_search_pending,
-        Some(origin),
-        effects,
-    )
-}
-
-fn dispatch_engine_effects_inner(
-    api: &crate::api::ApiHandle,
-    event_tx: &DaemonEventSender,
-    shutdown: &ShutdownLatch,
-    tasks: &mut DaemonEffectTasks,
-    gui_search_pending: &mut GuiSearchPending,
-    session_origin: Option<&crate::remote::RemoteSessionScope>,
     effects: Vec<engine::EngineEffect>,
 ) -> Vec<DaemonEvent> {
     tasks.reap_finished();
@@ -337,45 +294,6 @@ fn dispatch_engine_effects_inner(
                         crate::tools::ytdlp::UpdateOutcome::Installed { .. }
                     )
                 });
-            }
-            engine::EngineEffect::GuiSearch {
-                requester: requester_key,
-                ticket,
-                query,
-                source,
-                config,
-            } => {
-                let Some(origin) = session_origin.filter(|origin| {
-                    requester_key.session_id() == origin.session_id()
-                        && requester_key.page_id() == origin.page_id()
-                }) else {
-                    tracing::error!(
-                        session_id = requester_key.session_id(),
-                        page_id = ?requester_key.page_id(),
-                        "GUI search effect did not match its owner-turn session origin"
-                    );
-                    continue;
-                };
-                let request_id = gui_search_pending.begin(
-                    requester_key,
-                    origin.clone(),
-                    ticket,
-                    query.clone(),
-                    source,
-                );
-                if let Err(error) = api.gui_search(request_id, query, source, config) {
-                    tracing::warn!(%error, "api command enqueue failed");
-                    if !shutdown.is_triggered() {
-                        terminal.push(DaemonEvent::Api(crate::api::ApiEvent::GuiSearchCompleted {
-                            request_id,
-                            groups: vec![crate::api::GuiSearchGroup {
-                                source,
-                                songs: Vec::new(),
-                                error: Some(error.to_string()),
-                            }],
-                        }));
-                    }
-                }
             }
             engine::EngineEffect::TransportRecoveryRetry {
                 generation,
@@ -503,86 +421,5 @@ mod tests {
 
         tasks.shutdown().await;
         assert_eq!(tasks.len(), 0);
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn gui_search_enqueue_failure_keeps_requester_route_for_terminal_completion() {
-        let (interactive_tx, interactive_rx) = tokio::sync::mpsc::channel(1);
-        let (bulk_tx, _bulk_rx) = tokio::sync::mpsc::channel(1);
-        drop(interactive_rx);
-        let api = crate::api::ApiHandle::from_test_senders(interactive_tx, bulk_tx);
-        let (event_tx, _event_rx) = event_channel();
-        let shutdown = ShutdownLatch::new();
-        let mut tasks = DaemonEffectTasks::new();
-        let mut pending = GuiSearchPending::default();
-        let requester = crate::remote::RemoteSessionScope::for_test(44, Some("page"));
-        let requester_key = engine::RequesterKey::new(44, Some("page".to_owned()));
-
-        let terminal = dispatch_session_engine_effects(
-            &api,
-            &event_tx,
-            &shutdown,
-            &mut tasks,
-            &mut pending,
-            &requester,
-            vec![engine::EngineEffect::GuiSearch {
-                requester: requester_key,
-                ticket: 8,
-                query: "needle".to_owned(),
-                source: crate::search_source::SearchSource::Youtube,
-                config: crate::search_source::SearchConfig::default(),
-            }],
-        );
-
-        let [DaemonEvent::Api(crate::api::ApiEvent::GuiSearchCompleted { request_id, groups })] =
-            terminal.as_slice()
-        else {
-            panic!("enqueue failure must synthesize one terminal GUI completion");
-        };
-        assert_eq!(groups.len(), 1);
-        assert!(groups[0].error.is_some());
-        let route = pending
-            .take(*request_id)
-            .expect("synthesized completion must retain its requester route");
-        assert_eq!(route.requester.session_id(), 44);
-        assert_eq!(route.requester.page_id(), Some("page"));
-        assert_eq!(route.requester_key.session_id(), 44);
-        assert_eq!(route.requester_key.page_id(), Some("page"));
-        assert_eq!(route.ticket, 8);
-        assert_eq!(route.query, "needle");
-        tasks.shutdown().await;
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn gui_search_effect_cannot_bind_to_a_different_session_turn() {
-        let (interactive_tx, mut interactive_rx) = tokio::sync::mpsc::channel(1);
-        let (bulk_tx, _bulk_rx) = tokio::sync::mpsc::channel(1);
-        let api = crate::api::ApiHandle::from_test_senders(interactive_tx, bulk_tx);
-        let (event_tx, _event_rx) = event_channel();
-        let shutdown = ShutdownLatch::new();
-        let mut tasks = DaemonEffectTasks::new();
-        let mut pending = GuiSearchPending::default();
-        let origin = crate::remote::RemoteSessionScope::for_test(44, Some("page"));
-
-        let terminal = dispatch_session_engine_effects(
-            &api,
-            &event_tx,
-            &shutdown,
-            &mut tasks,
-            &mut pending,
-            &origin,
-            vec![engine::EngineEffect::GuiSearch {
-                requester: engine::RequesterKey::new(45, Some("page".to_owned())),
-                ticket: 8,
-                query: "needle".to_owned(),
-                source: crate::search_source::SearchSource::Youtube,
-                config: crate::search_source::SearchConfig::default(),
-            }],
-        );
-
-        assert!(terminal.is_empty());
-        assert_eq!(pending.len(), 0);
-        assert!(interactive_rx.try_recv().is_err());
-        tasks.shutdown().await;
     }
 }

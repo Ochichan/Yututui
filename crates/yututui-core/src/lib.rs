@@ -9,11 +9,6 @@ use serde::{Deserialize, Serialize};
 pub mod playback;
 
 /// Repeat mode, cycled by the `r` key.
-#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
-#[cfg_attr(
-    feature = "ts-export",
-    ts(export, export_to = "gui/src/generated/protocol/")
-)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Repeat {

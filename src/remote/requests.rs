@@ -272,7 +272,6 @@ fn compact_semantic_response(response: &RemoteResponse) -> RemoteResponse {
         // Like `status`, the optional large payload is dropped from compacted retained
         // outcomes — a replayed mutation keeps its semantic verdict, not its data body.
         status: None,
-        data: None,
     }
 }
 
@@ -468,7 +467,6 @@ impl CommandDeduper {
                     reason: None,
                     message: None,
                     status: None,
-                    data: None,
                 })
                 .expect("minimal RemoteResponse serialization is infallible")
                 .len()
@@ -608,11 +606,9 @@ impl CommandDeduper {
     where
         F: FnOnce(oneshot::Sender<RemoteResponse>) -> bool,
     {
-        // Status is a read-only snapshot. RunSearch completes through a separately correlated
-        // push. Retaining either immediate acknowledgement in the idempotency cache would let
-        // large snapshots consume the mutation retry budget or replay an incomplete response.
-        // Execute them independently, while still classifying a lost RunSearch acknowledgement as
-        // ambiguous because its dispatch may already have happened.
+        // Status is a read-only snapshot. Retaining its response in the idempotency cache
+        // would let a large snapshot consume the mutation retry budget or replay a stale
+        // answer. Execute it independently per attempt instead.
         if command.request_retry_class() == RequestRetryClass::ReexecuteReadOnly {
             let (reply_tx, reply_rx) = oneshot::channel();
             if !emit(reply_tx) {
@@ -1136,7 +1132,6 @@ mod tests {
                                 reason: Some("applied".to_owned()),
                                 message: Some(large_message),
                                 status: None,
-                                data: None,
                             })
                             .expect("dedupe receiver is live");
                         true
@@ -1275,13 +1270,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn gui_search_same_id_reexecutes_instead_of_replaying_dead_session_dispatch_ack() {
+    async fn read_only_same_id_reexecutes_instead_of_replaying_a_retained_outcome() {
         let cache = CommandDeduper::new(1);
-        let command = RemoteCommand::RunSearch {
-            ticket: 1,
-            query: "same query".to_owned(),
-            source: crate::search_source::SearchSource::All,
-        };
+        let command = RemoteCommand::Status;
         let executions = Arc::new(AtomicUsize::new(0));
         for message in ["session-a", "session-b"] {
             let executions = Arc::clone(&executions);

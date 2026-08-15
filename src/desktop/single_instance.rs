@@ -1,9 +1,9 @@
-//! Single-instance lock for the GUI *process itself* (docs/gui/03 §6).
+//! Single-instance lock for the tray-companion *process itself*.
 //!
-//! Entirely separate from the core's `InstanceFile`/primary socket — the GUI never binds the
-//! primary socket and never writes an `InstanceFile`. Windows uses a named mutex; unix uses
-//! `flock` on a lockfile in the runtime dir. A second launch signals the first (which shows +
-//! focuses the main window) over a small per-user activate endpoint, then exits.
+//! Entirely separate from the core's `InstanceFile`/primary socket — the tray companion never
+//! binds the primary socket and never writes an `InstanceFile`. Windows uses a named mutex; unix
+//! uses `flock` on a lockfile in the runtime dir. A second launch signals the first (which shows
+//! + focuses the mini player) over a small per-user activate endpoint, then exits.
 
 use std::collections::VecDeque;
 use std::io;
@@ -37,7 +37,6 @@ static ACTIVATION_LISTENER: std::sync::Mutex<Option<ActivationListener>> =
 pub enum ActivationIntent {
     EnsureTray,
     ShowMini,
-    ShowMain,
 }
 
 impl ActivationIntent {
@@ -45,7 +44,6 @@ impl ActivationIntent {
         match self {
             Self::EnsureTray => "ensure_tray",
             Self::ShowMini => "show_mini",
-            Self::ShowMain => "show_main",
         }
     }
 
@@ -53,7 +51,6 @@ impl ActivationIntent {
         match value {
             "ensure_tray" => Some(Self::EnsureTray),
             "show_mini" => Some(Self::ShowMini),
-            "show_main" | "activate" => Some(Self::ShowMain),
             _ => None,
         }
     }
@@ -610,15 +607,6 @@ pub fn shutdown_activation_listener() {
     drop(listener);
 }
 
-/// Compatibility wrapper for callers that have not adopted explicit activation intents yet.
-pub fn spawn_activate_listener<F, R>(on_activate: F) -> io::Result<()>
-where
-    F: Fn() -> R + Send + Sync + 'static,
-    R: IntoActivationDelivery,
-{
-    spawn_activation_listener(move |_| on_activate())
-}
-
 /// Second instance: deliver an intent and wait for the primary to acknowledge it.
 pub fn signal_activation(intent: ActivationIntent) -> io::Result<()> {
     let endpoint = activate_endpoint()?;
@@ -684,11 +672,6 @@ pub fn signal_activation(intent: ActivationIntent) -> io::Result<()> {
     })
 }
 
-/// Compatibility wrapper preserving the former “surface the main window” behavior.
-pub fn signal_activate() {
-    let _ = signal_activation(ActivationIntent::ShowMain);
-}
-
 #[cfg(all(test, unix))]
 mod tests {
     use std::os::unix::io::AsRawFd;
@@ -703,17 +686,11 @@ mod tests {
 
     #[test]
     fn activation_intents_round_trip_and_reject_unknown_values() {
-        for intent in [
-            ActivationIntent::EnsureTray,
-            ActivationIntent::ShowMini,
-            ActivationIntent::ShowMain,
-        ] {
+        for intent in [ActivationIntent::EnsureTray, ActivationIntent::ShowMini] {
             assert_eq!(ActivationIntent::from_wire(intent.wire()), Some(intent));
         }
-        assert_eq!(
-            ActivationIntent::from_wire("activate"),
-            Some(ActivationIntent::ShowMain)
-        );
+        assert_eq!(ActivationIntent::from_wire("activate"), None);
+        assert_eq!(ActivationIntent::from_wire("show_main"), None);
         assert_eq!(ActivationIntent::from_wire("surprise"), None);
     }
 
@@ -724,7 +701,7 @@ mod tests {
             let intent = if index % 2 == 0 {
                 ActivationIntent::ShowMini
             } else {
-                ActivationIntent::ShowMain
+                ActivationIntent::EnsureTray
             };
             assert!(activations.deliver_or_defer(intent, |_, _| false));
         }
@@ -759,7 +736,7 @@ mod tests {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         assert_eq!(seen.len(), PENDING_ACTIVATION_CAPACITY + 1);
         assert_eq!(seen[0], ActivationIntent::ShowMini);
-        assert_eq!(seen[1], ActivationIntent::ShowMain);
+        assert_eq!(seen[1], ActivationIntent::EnsureTray);
         assert_eq!(
             seen[PENDING_ACTIVATION_CAPACITY],
             ActivationIntent::EnsureTray
@@ -801,14 +778,14 @@ mod tests {
         for (delivered, expected_ack) in [(true, "ok"), (false, "rejected")] {
             let (mut client, mut server) = tokio::io::duplex(64);
             let callback = |intent| {
-                assert_eq!(intent, ActivationIntent::ShowMain);
+                assert_eq!(intent, ActivationIntent::ShowMini);
                 delivered.then_some(()).ok_or("event loop closed")
             };
             let serve = serve_activation_connection(&mut server, &callback);
             let exchange = async {
                 write_newline_frame(
                     &mut client,
-                    ActivationIntent::ShowMain.wire(),
+                    ActivationIntent::ShowMini.wire(),
                     ACTIVATE_FRAME_MAX_BYTES,
                 )
                 .await?;
@@ -899,7 +876,7 @@ mod tests {
         let fast_exchange = async {
             write_newline_frame(
                 &mut fast,
-                ActivationIntent::ShowMain.wire(),
+                ActivationIntent::ShowMini.wire(),
                 ACTIVATE_FRAME_MAX_BYTES,
             )
             .await?;
@@ -919,7 +896,7 @@ mod tests {
             *seen
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner),
-            vec![ActivationIntent::ShowMain]
+            vec![ActivationIntent::ShowMini]
         );
         assert!(!path.exists(), "listener shutdown should remove its socket");
     }

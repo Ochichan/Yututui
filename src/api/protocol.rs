@@ -5,8 +5,8 @@ use tokio::sync::mpsc::{Sender, error::TrySendError};
 use crate::search_source::{SearchConfig, SearchSource};
 use crate::streaming::{CandidateSource, StreamingConfig, StreamingMode};
 
+use super::Song;
 use super::domain::ArtistPage;
-use super::{GuiSearchGroup, GuiSearchRequestId, Song};
 
 /// Which auth mode the live API client ended up in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -41,16 +41,6 @@ pub enum ArtistIntent {
 pub enum ApiCmd {
     Search {
         request_id: u64,
-        query: String,
-        source: SearchSource,
-        config: SearchConfig,
-    },
-    /// A GUI-session search (`RemoteCommand::RunSearch`): per-catalog result groups,
-    /// answered as [`ApiEvent::GuiSearchCompleted`] through an opaque request id. Requester
-    /// routing remains in the daemon owner, and this independent lane never disturbs the TUI
-    /// Search screen's [`ApiEvent::SearchResults`].
-    GuiSearch {
-        request_id: GuiSearchRequestId,
         query: String,
         source: SearchSource,
         config: SearchConfig,
@@ -107,7 +97,6 @@ pub enum ApiCmd {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ApiCommandKind {
     Search,
-    GuiSearch,
     Streaming,
     StreamingPreflight,
     ResolveTrack,
@@ -121,7 +110,6 @@ impl ApiCommandKind {
     fn label(self) -> &'static str {
         match self {
             ApiCommandKind::Search => "search",
-            ApiCommandKind::GuiSearch => "GUI search",
             ApiCommandKind::Streaming => "streaming",
             ApiCommandKind::StreamingPreflight => "streaming preflight",
             ApiCommandKind::ResolveTrack => "track resolve",
@@ -135,7 +123,6 @@ impl ApiCommandKind {
     pub(super) fn lane(self) -> ApiLane {
         match self {
             ApiCommandKind::Search
-            | ApiCommandKind::GuiSearch
             | ApiCommandKind::ResolveTrack
             | ApiCommandKind::SearchPlaylists
             | ApiCommandKind::SearchArtists => ApiLane::Interactive,
@@ -190,7 +177,6 @@ impl ApiCmd {
     pub(super) fn kind(&self) -> ApiCommandKind {
         match self {
             ApiCmd::Search { .. } => ApiCommandKind::Search,
-            ApiCmd::GuiSearch { .. } => ApiCommandKind::GuiSearch,
             ApiCmd::Streaming { .. } => ApiCommandKind::Streaming,
             ApiCmd::StreamingPreflight { .. } => ApiCommandKind::StreamingPreflight,
             ApiCmd::ResolveTrack { .. } => ApiCommandKind::ResolveTrack,
@@ -262,11 +248,6 @@ pub enum ApiEvent {
         title: String,
         error: String,
     },
-    /// Per-catalog groups answering [`ApiCmd::GuiSearch`], correlated only by an opaque id.
-    GuiSearchCompleted {
-        request_id: GuiSearchRequestId,
-        groups: Vec<GuiSearchGroup>,
-    },
 }
 
 /// Handle for issuing API requests; results return as [`ApiEvent`]s.
@@ -276,17 +257,6 @@ pub struct ApiHandle {
 }
 
 impl ApiHandle {
-    #[cfg(test)]
-    pub(crate) fn from_test_senders(
-        interactive_tx: Sender<ApiCmd>,
-        bulk_tx: Sender<ApiCmd>,
-    ) -> Self {
-        Self {
-            interactive_tx,
-            bulk_tx,
-        }
-    }
-
     fn enqueue(&self, cmd: ApiCmd) -> Result<(), ApiEnqueueError> {
         let tx = match cmd.kind().lane() {
             ApiLane::Interactive => &self.interactive_tx,
@@ -306,21 +276,6 @@ impl ApiHandle {
         config: SearchConfig,
     ) -> Result<(), ApiEnqueueError> {
         self.enqueue(ApiCmd::Search {
-            request_id,
-            query: query.into(),
-            source,
-            config,
-        })
-    }
-
-    pub fn gui_search(
-        &self,
-        request_id: GuiSearchRequestId,
-        query: impl Into<String>,
-        source: SearchSource,
-        config: SearchConfig,
-    ) -> Result<(), ApiEnqueueError> {
-        self.enqueue(ApiCmd::GuiSearch {
             request_id,
             query: query.into(),
             source,

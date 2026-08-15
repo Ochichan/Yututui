@@ -6,8 +6,7 @@
 use tokio::sync::mpsc;
 
 use crate::owner_event_policy::{
-    api_event_policy, download_event_policy, player_event_policy, remote_event_policy,
-    scrobble_event_policy, transfer_event_policy,
+    api_event_policy, player_event_policy, remote_event_policy, scrobble_event_policy,
 };
 use crate::remote::server::RemoteEvent;
 use crate::util::delivery::{DeliveryResult, OwnerEvent, OwnerEventIngress};
@@ -33,13 +32,6 @@ pub(super) enum DaemonEvent {
     /// The lyrics actor resolved (or failed to find) lines for a track. Fetches are
     /// gated on a live `lyrics` subscriber; see [`super::lyrics_host::LyricsHost`].
     Lyrics(crate::lyrics::LyricsEvent),
-    /// Download actor progress/results. Import-owned variants are transfer-lane work and
-    /// are ignored by the daemon downloads host.
-    Download(crate::download::DownloadEvent),
-    /// Transfer actor progress/results, reduced by the daemon transfer host.
-    Transfer(crate::transfer::actor::TransferEvent),
-    /// DJ Gem actor output, reduced by the daemon AI host on the owner lane.
-    Ai(crate::ai::AiEvent),
     /// A playback-self-heal yt-dlp update check finished (see
     /// [`super::engine::EngineEffect::YtdlpSelfHeal`]).
     YtdlpHeal {
@@ -83,22 +75,6 @@ impl DaemonEvent {
             DaemonEvent::Lyrics(_) => EventPolicy::MustDeliver {
                 lane: Lane::WorkResult,
             },
-            DaemonEvent::Download(event) => download_event_policy(event),
-            DaemonEvent::Transfer(event) => transfer_event_policy(event),
-            DaemonEvent::Ai(crate::ai::AiEvent::Thinking(_)) => EventPolicy::CoalesceLatest {
-                lane: Lane::Telemetry,
-                key: Key::AiThinking,
-            },
-            // The daemon AI host settles its own in-flight request state on the owner lane, so a
-            // terminal pick result must arrive even when its seed is no longer current.
-            DaemonEvent::Ai(crate::ai::AiEvent::StreamingPicks { .. }) => {
-                EventPolicy::MustDeliver {
-                    lane: Lane::WorkResult,
-                }
-            }
-            DaemonEvent::Ai(_) => EventPolicy::MustDeliver {
-                lane: Lane::WorkResult,
-            },
             DaemonEvent::YtdlpHeal { .. } => EventPolicy::MustDeliver {
                 lane: Lane::WorkResult,
             },
@@ -130,9 +106,6 @@ impl DaemonEvent {
             DaemonEvent::OpenSubsonicBridge(_) => "open_subsonic_bridge",
             DaemonEvent::OpenSubsonicReady => "open_subsonic_ready",
             DaemonEvent::Lyrics(_) => "lyrics",
-            DaemonEvent::Download(_) => "download",
-            DaemonEvent::Transfer(_) => "transfer",
-            DaemonEvent::Ai(_) => "ai",
             DaemonEvent::YtdlpHeal { .. } => "ytdlp_heal",
             DaemonEvent::TransportRecoveryRetry { .. } => "transport_recovery_retry",
             DaemonEvent::PersonalExportFinished(_) => "personal_export_finished",
@@ -149,9 +122,6 @@ impl DaemonEvent {
     pub(super) fn telemetry_slot(&self) -> Option<DaemonTelemetrySlot> {
         match self {
             DaemonEvent::MediaArt(ready) => Some(DaemonTelemetrySlot::MediaArt(ready.key.clone())),
-            DaemonEvent::Download(crate::download::DownloadEvent::Progress {
-                video_id, ..
-            }) => Some(DaemonTelemetrySlot::DownloadProgress(video_id.clone())),
             DaemonEvent::Api(crate::api::ApiEvent::SearchResults { request_id, .. })
             | DaemonEvent::Api(crate::api::ApiEvent::SearchError { request_id, .. }) => {
                 Some(DaemonTelemetrySlot::StaleSearch(*request_id))
@@ -188,7 +158,6 @@ const DAEMON_TELEMETRY_SLOTS: usize = 256;
 pub(crate) enum DaemonTelemetrySlot {
     Static(Key),
     MediaArt(String),
-    DownloadProgress(String),
     StaleSearch(u64),
     StaleStreaming(u64, String),
 }

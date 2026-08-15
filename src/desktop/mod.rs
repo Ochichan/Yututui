@@ -5,13 +5,11 @@
 //! of this layer so the terminal player stays small and the platform code remains isolated.
 
 pub mod app;
-pub mod assets;
 pub mod bridge;
 pub mod clipboard;
 pub mod control;
 pub mod executor;
 pub mod gateway;
-mod gateway_frontend;
 pub mod launch;
 pub mod menu_model;
 pub mod native_error;

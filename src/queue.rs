@@ -20,7 +20,7 @@ pub(crate) use mutation::{QueueMutationPlan, QueueRemovalPlayback, QueueReplacem
 /// Hard cap on queued tracks (priority #1: bounded memory).
 const MAX: usize = 999;
 
-/// Owner-global queue revision source (docs/gui/02 §14). One counter per process —
+/// Owner-global queue revision source. One counter per process —
 /// deliberately NOT per-`Queue`: radio mode and `--resume` swap whole queues through
 /// snapshots, and two independently-counted queues could land on the same rev across a
 /// stash/swap, making a change invisible to rev-comparing observers (the v8 publisher).
@@ -110,10 +110,6 @@ impl Queue {
 
     pub fn len(&self) -> usize {
         self.songs.len()
-    }
-
-    pub(crate) fn has_capacity_for(&self, additional: usize) -> bool {
-        additional <= MAX.saturating_sub(self.songs.len())
     }
 
     pub(crate) fn remaining_capacity(&self) -> usize {
@@ -1427,7 +1423,7 @@ mod tests {
 
     #[test]
     fn rev_is_owner_global_so_queue_swaps_never_collide() {
-        // The radio-mode scenario (docs/gui/02 §14): stash queue A, live on queue B,
+        // The radio-mode scenario: stash queue A, live on queue B,
         // mutate both the same number of times, swap back. A per-queue counter would
         // repeat an already-seen rev; the process-global source cannot.
         let mut seen = std::collections::HashSet::new();

@@ -22,14 +22,13 @@ use crate::desktop::executor::{DesktopCommandExecutor, SubmitError};
 use crate::desktop::launch;
 use crate::desktop::menu_model::{self, MenuAction, MenuEntry, MenuItem as ModelItem, TrayState};
 use crate::desktop::panel::{self, DesktopCommandError, PanelCommand, PanelRequest, PanelTheme};
-use crate::desktop::platform::main_window::MainWindow;
 use crate::desktop::platform::panel_window::MiniPlayerPanel;
 use crate::desktop::single_instance::{self, Acquire, ActivationIntent};
 use crate::desktop::startup::{self, StartupStatus};
 use crate::desktop::status::{self, PollConfig, PollUpdate};
 use crate::desktop::window_state::DesktopState;
 use crate::desktop::{bridge, gateway};
-use crate::remote::proto::{InstanceMode, PushEvent, RemoteCommand, Topic};
+use crate::remote::proto::{InstanceMode, RemoteCommand, Topic};
 
 const APP_ID: &str = "io.github.ochi.yututui.tray";
 const POLL_THREAD_NAME: &str = "yututray-status";
@@ -37,7 +36,6 @@ const COMMAND_THREAD_NAME: &str = "yututray-command";
 const ICO_BYTES: &[u8] = include_bytes!("../../../assets/icons/yututui.ico");
 const GEOMETRY_SAVE_DELAY: Duration = Duration::from_millis(500);
 const MINI_WEBVIEW_GRACE: Duration = Duration::from_secs(15);
-const MAIN_WEBVIEW_GRACE: Duration = Duration::from_secs(60);
 
 /// Give the mini player a true tool-window identity. tao's skip-taskbar flag
 /// removes the taskbar tab, while WS_EX_TOOLWINDOW also excludes the window
@@ -158,15 +156,12 @@ pub(crate) fn show_native_error(title: &[u16], message: &[u16]) {
 }
 
 pub fn run(
-    mut initial_intent: ActivationIntent,
+    initial_intent: ActivationIntent,
     secondary_intent: ActivationIntent,
 ) -> Result<(), Box<dyn Error>> {
-    if initial_intent == ActivationIntent::ShowMain && !crate::desktop::assets::DIST_EMBEDDED {
-        initial_intent = ActivationIntent::EnsureTray;
-    }
     set_app_user_model_id();
 
-    // Single GUI instance (docs/gui/03 §6): a second launch activates the first and exits.
+    // Single GUI instance: a second launch activates the first and exits.
     // Held until the process exits (tao's run() diverges, so this never drops early).
     let _instance = match single_instance::acquire()? {
         Acquire::Primary(guard) => Some(guard),
@@ -184,9 +179,6 @@ pub fn run(
     single_instance::spawn_activation_listener({
         let deferred_activations = deferred_activations.clone();
         move |intent| {
-            if intent == ActivationIntent::ShowMain && !crate::desktop::assets::DIST_EMBEDDED {
-                return false;
-            }
             deferred_activations.deliver_or_defer(intent, |proxy, intent| {
                 proxy.send_event(UserEvent::Activation(intent)).is_ok()
             })
@@ -262,9 +254,6 @@ pub fn run(
             Event::Resumed => app.reconcile_window_placements(),
             Event::UserEvent(UserEvent::Gateway(ev)) => {
                 app.handle_gateway(ev);
-            }
-            Event::UserEvent(UserEvent::Main(req)) => {
-                app.handle_main(req, target);
             }
             Event::UserEvent(UserEvent::Activation(intent)) => {
                 app.handle_activation(intent, target);
@@ -362,7 +351,6 @@ struct WindowsTrayApp {
     tray: Option<TrayIcon>,
     menu: Option<WindowsMenu>,
     panel: Option<MiniPlayerPanel>,
-    main_window: Option<MainWindow>,
     gateway: Option<gateway::GatewayHandle>,
     desktop_app: DesktopApp,
     last_conn: gateway::ConnState,
@@ -388,7 +376,6 @@ struct WindowsTrayApp {
     last_tray_panel_click: Option<Instant>,
     command_executor: Option<DesktopCommandExecutor>,
     panel_teardown_at: Option<Instant>,
-    main_teardown_at: Option<Instant>,
     panel_gateway_requests: HashMap<u64, (u64, u64)>,
     startup_toggle_pending: bool,
 }
@@ -408,7 +395,6 @@ impl WindowsTrayApp {
             tray: None,
             menu: None,
             panel: None,
-            main_window: None,
             gateway: None,
             desktop_app,
             last_conn: gateway::ConnState::Connecting,
@@ -431,7 +417,6 @@ impl WindowsTrayApp {
             last_tray_panel_click: None,
             command_executor: Some(DesktopCommandExecutor::spawn(COMMAND_THREAD_NAME)?),
             panel_teardown_at: None,
-            main_teardown_at: None,
             panel_gateway_requests: HashMap::new(),
             startup_toggle_pending: false,
         })
@@ -459,7 +444,7 @@ impl WindowsTrayApp {
     }
 
     /// Spawn the persistent v8 session thread; connection-state events route back to the
-    /// loop as `UserEvent::Gateway` (docs/gui/03 §3.2).
+    /// loop as `UserEvent::Gateway`.
     fn start_gateway(&mut self) {
         if self.gateway.is_some() {
             return;
@@ -516,15 +501,9 @@ impl WindowsTrayApp {
                         self.resume_available,
                     ));
                 }
-                if let Some(main) = &self.main_window {
-                    main.eval(&bridge::receive_script(&bridge::InEnvelope::conn(
-                        self.last_conn.to_conn_payload(),
-                    )));
-                }
             }
-            // A topic push or correlated reply from the session — hand it straight to the
-            // page. Frames that arrive with no window open are dropped; the window re-subs
-            // and gets fresh snapshots when it next loads (docs/gui/03 §3.2).
+            // A topic push or correlated reply from the session. Only native-command results
+            // (correlated by id) have a consumer; page-bound frames are dropped.
             gateway::GatewayEvent::Frame(env) => self.handle_gateway_frame(env, None),
             gateway::GatewayEvent::PageFrame {
                 envelope: env,
@@ -534,13 +513,9 @@ impl WindowsTrayApp {
                 sequence,
                 topic,
                 event,
-                envelope,
+                envelope: _,
             } => {
                 if self.desktop_app.apply_push(sequence, topic, *event) {
-                    // Apply the shared sequence gate before any consumer sees the frame.
-                    if let Some(main) = &self.main_window {
-                        main.eval(&bridge::receive_script(&envelope));
-                    }
                     self.apply_snapshot_locale();
                     if let Some(status) = self.desktop_app.status_projection() {
                         self.apply_update(PollUpdate::connected(status));
@@ -553,12 +528,6 @@ impl WindowsTrayApp {
     fn handle_gateway_frame(&mut self, env: bridge::InEnvelope, source_generation: Option<u64>) {
         if source_generation.is_none() && gateway::is_native_request_id(env.id) {
             self.handle_native_command_result(env);
-            return;
-        }
-        if let Some(main) = &self.main_window
-            && source_generation.is_none_or(|generation| generation == main.page_generation())
-        {
-            main.eval(&bridge::receive_script(&env));
         }
     }
 
@@ -633,148 +602,17 @@ impl WindowsTrayApp {
         }
     }
 
-    fn handle_main(&mut self, req: MainRequest, target: &EventLoopWindowTarget<UserEvent>) {
-        match req {
-            MainRequest::Ipc { generation, body } => {
-                if self
-                    .main_window
-                    .as_ref()
-                    .is_none_or(|main| generation != main.page_generation())
-                {
-                    return;
-                }
-                match bridge::dispatch(&body) {
-                    bridge::BridgeAction::Reply(env) => {
-                        if let Some(main) = &self.main_window {
-                            main.eval(&bridge::receive_script(&env));
-                        }
-                    }
-                    bridge::BridgeAction::Win(op) => self.handle_win_op(op, target),
-                    // Commands/requests/subscriptions go to the live v8 session; its replies and
-                    // topic pushes come back as `UserEvent::Gateway(Frame(..))`.
-                    bridge::BridgeAction::ToGateway(env) => {
-                        if let Some(rejection) = gateway::send_or_reject_from_generation(
-                            self.gateway.as_ref(),
-                            env,
-                            Some(generation),
-                        ) && let Some(main) = &self.main_window
-                            && main.page_generation() == generation
-                        {
-                            main.eval(&bridge::receive_script(&rejection));
-                        }
-                    }
-                    bridge::BridgeAction::Ignore => {}
-                }
-            }
-        }
-    }
-
     fn handle_activation(
         &mut self,
         intent: ActivationIntent,
         target: &EventLoopWindowTarget<UserEvent>,
     ) {
-        if intent == ActivationIntent::ShowMain && !crate::desktop::assets::DIST_EMBEDDED {
-            return;
-        }
         let _ = self.dispatch_desktop_event(DesktopEvent::Activation(intent), target, None);
     }
 
-    fn handle_win_op(&mut self, op: bridge::WinOp, target: &EventLoopWindowTarget<UserEvent>) {
-        match op {
-            bridge::WinOp::FrontendReady => self.replay_main_frontend(target),
-            bridge::WinOp::Hide => {
-                self.persist_main_geometry();
-                let _ = self.dispatch_desktop_event(
-                    DesktopEvent::WindowVisibility {
-                        kind: WindowKind::Main,
-                        visible: false,
-                    },
-                    target,
-                    None,
-                );
-            }
-            bridge::WinOp::Drag => {
-                if let Some(main) = &self.main_window {
-                    main.start_drag();
-                }
-            }
-            bridge::WinOp::StartDaemon => self.start_daemon(false),
-            bridge::WinOp::CopyText(text) => {
-                if let Err(error) = crate::desktop::clipboard::copy_text(&text) {
-                    report_error(format_args!("could not copy text: {error}"));
-                }
-            }
-            bridge::WinOp::OpenUrl(url) if !url.trim().is_empty() => {
-                let opened = crate::util::browser::open_in_browser_checked(&url);
-                if !opened.launched() {
-                    report_error(format_args!(
-                        "could not open URL in browser: {}",
-                        opened.failure_summary()
-                    ));
-                }
-            }
-            bridge::WinOp::PersistUi(snapshot) => {
-                if let Some(main) = &self.main_window {
-                    main.cache_ui_snapshot(snapshot);
-                }
-            }
-            _ => {}
-        }
-    }
-
-    fn replay_main_frontend(&mut self, target: &EventLoopWindowTarget<UserEvent>) {
-        let mut transition = self
-            .desktop_app
-            .handle_event(DesktopEvent::FrontendReady(WindowKind::Main));
-        let Some((WindowKind::Main, replay)) = transition.replay.take() else {
-            return;
-        };
-        let Some(main) = &self.main_window else {
-            return;
-        };
-        main.mark_frontend_ready();
-        gateway::refresh_ready_main_frontend(self.gateway.as_ref());
-        main.eval(&bridge::receive_script(&bridge::InEnvelope::conn(
-            self.last_conn.to_conn_payload(),
-        )));
-        if let Some(model) = replay.snapshot.player {
-            main.eval(&bridge::receive_script(&bridge::InEnvelope::event(
-                "player",
-                serde_json::to_value(PushEvent::PlayerSnapshot {
-                    model: Box::new(model),
-                })
-                .unwrap_or(serde_json::Value::Null),
-            )));
-        }
-        if let Some(model) = replay.snapshot.queue {
-            main.eval(&bridge::receive_script(&bridge::InEnvelope::event(
-                "queue",
-                serde_json::to_value(PushEvent::QueueSnapshot { model })
-                    .unwrap_or(serde_json::Value::Null),
-            )));
-        }
-        if let Some(model) = replay.snapshot.settings {
-            main.eval(&bridge::receive_script(&bridge::InEnvelope::event(
-                "settings",
-                serde_json::to_value(PushEvent::SettingsSnapshot {
-                    model: Box::new(model),
-                })
-                .unwrap_or(serde_json::Value::Null),
-            )));
-        }
-        self.apply_desktop_transition(transition, target, None);
-    }
-
-    /// Persist the main window's current geometry so relaunch restores it (docs/gui/03 §8).
-    fn persist_main_geometry(&self) {
+    /// Persist the pinned mini player's current geometry so relaunch restores it.
+    fn persist_geometry(&self) {
         let mut state = DesktopState::load();
-        if let Some(main) = &self.main_window
-            && let Some(rect) = main.geometry()
-        {
-            state.main = Some(rect);
-            state.placement_v2.main = main.placement();
-        }
         if let Some(panel) = &self.panel
             && panel.is_pinned()
             && let Some(placement) = panel.placement()
@@ -1127,7 +965,7 @@ impl WindowsTrayApp {
                 self.complete_panel_request(correlated, None);
             }
             PanelCommand::SetTheme(theme) => {
-                // Same load-mutate-save as the main-window geometry persist, so
+                // Same load-mutate-save as persist_geometry, so
                 // concurrent writes are never clobbered.
                 let mut state = DesktopState::load();
                 state.mini_theme = Some(theme.id().to_string());
@@ -1255,24 +1093,7 @@ impl WindowsTrayApp {
         }
     }
 
-    fn hide_main_window(&mut self) {
-        if let Some(main) = &self.main_window {
-            main.hide();
-            self.main_teardown_at = if DesktopState::load().keep_webview_alive {
-                None
-            } else {
-                Some(Instant::now() + MAIN_WEBVIEW_GRACE)
-            };
-        }
-    }
-
     fn handle_geometry_changed(&mut self, window_id: tao::window::WindowId) {
-        if let Some(main) = &self.main_window
-            && main.window_id() == window_id
-        {
-            main.record_geometry();
-            self.geometry_dirty_at = Some(Instant::now());
-        }
         if let Some(panel) = &self.panel
             && panel.window_id() == window_id
             && panel.is_pinned()
@@ -1299,23 +1120,12 @@ impl WindowsTrayApp {
                 );
             }
         }
-        if self.main_teardown_at.is_some_and(|due| now >= due) {
-            self.main_teardown_at = None;
-            if let Some(main) = &self.main_window {
-                main.teardown_webview();
-                let _ = self.dispatch_desktop_event(
-                    DesktopEvent::FrontendTornDown(WindowKind::Main),
-                    target,
-                    None,
-                );
-            }
-        }
         if self
             .geometry_dirty_at
             .is_some_and(|dirty| now.duration_since(dirty) >= GEOMETRY_SAVE_DELAY)
         {
             self.geometry_dirty_at = None;
-            self.persist_main_geometry();
+            self.persist_geometry();
         }
     }
 
@@ -1324,15 +1134,10 @@ impl WindowsTrayApp {
         let geometry = self
             .geometry_dirty_at
             .map(|dirty| dirty + GEOMETRY_SAVE_DELAY);
-        [
-            blur,
-            geometry,
-            self.panel_teardown_at,
-            self.main_teardown_at,
-        ]
-        .into_iter()
-        .flatten()
-        .min()
+        [blur, geometry, self.panel_teardown_at]
+            .into_iter()
+            .flatten()
+            .min()
     }
 
     fn handle_window_close(
@@ -1351,24 +1156,6 @@ impl WindowsTrayApp {
                 target,
                 None,
             );
-        }
-        // Main window close button → hide to tray (docs/gui/03 §4), saving geometry first.
-        if let Some(main) = &self.main_window
-            && main.window_id() == window_id
-        {
-            self.persist_main_geometry();
-            if DesktopState::load().close_to_tray {
-                let _ = self.dispatch_desktop_event(
-                    DesktopEvent::WindowVisibility {
-                        kind: WindowKind::Main,
-                        visible: false,
-                    },
-                    target,
-                    None,
-                );
-            } else {
-                let _ = self.proxy.send_event(UserEvent::Quit);
-            }
         }
     }
 
@@ -1391,24 +1178,6 @@ impl WindowsTrayApp {
             );
             let _ = self.dispatch_desktop_event(
                 DesktopEvent::FrontendTornDown(WindowKind::Mini),
-                target,
-                None,
-            );
-        }
-        if self
-            .main_window
-            .as_ref()
-            .is_some_and(|main| main.window_id() == window_id)
-        {
-            self.main_window = None;
-            self.main_teardown_at = None;
-            let _ = self.dispatch_desktop_event(
-                DesktopEvent::WindowEvent(DesktopWindowEvent::Hidden(WindowKind::Main)),
-                target,
-                None,
-            );
-            let _ = self.dispatch_desktop_event(
-                DesktopEvent::FrontendTornDown(WindowKind::Main),
                 target,
                 None,
             );

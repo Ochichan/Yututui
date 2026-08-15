@@ -6,7 +6,7 @@
 //! the token guards against accidental / cross-user cross-talk (the real boundary is the
 //! runtime dir's `0700` perms).
 //!
-//! Protocol v8 (docs/gui/02) adds a long-lived **session** mode beside one-shot on the
+//! Protocol v8 adds a long-lived **session** mode beside one-shot on the
 //! same listener. The v7 one-shot request/response byte shapes are frozen forever —
 //! additive fields only (`#[serde(default)]` + `skip_serializing_if`); the golden corpus
 //! in [`freeze`] locks them.
@@ -28,18 +28,10 @@ mod session;
 
 pub(crate) use command::RequestRetryClass;
 pub use command::{
-    GuiSettingChange, REMOTE_MAX_EXPORT_DIRECTORY_BYTES, REMOTE_MAX_GEMINI_KEY_BYTES,
-    REMOTE_MAX_PAGE_LIMIT, REMOTE_MAX_QUERY_BYTES, REMOTE_MAX_SETTING_NAME_BYTES,
-    REMOTE_MAX_SETTING_STRING_BYTES, REMOTE_MAX_TOPICS, REMOTE_MAX_TRACK_ID_BYTES,
-    REMOTE_MAX_TRACK_IDS, RateChange, RemoteCommand, RemoteSettingChange,
+    REMOTE_MAX_EXPORT_DIRECTORY_BYTES, REMOTE_MAX_QUERY_BYTES, REMOTE_MAX_TOPICS,
+    REMOTE_MAX_TRACK_IDS, RemoteCommand, RemoteSettingChange,
 };
-pub use model::{
-    AiMessageModel, AiRoleModel, ArtworkRef, DownloadStateModel, DownloadStatusModel,
-    KeymapConflictModel, LastfmAccountModel, LibraryPageModel, ListenBrainzAccountModel,
-    LyricLineModel, PlaylistDetailModel, PlaylistSummaryModel, SpotifyAccountModel,
-    SpotifyPlaylistModel, TrackModel, TransferJobModel, TransferPhaseModel, TransferReportModel,
-    WhyGemModel,
-};
+pub use model::{ArtworkRef, LyricLineModel, TrackModel, WhyGemModel};
 pub use model_player::{EqModel, PlayerModel, QueueModel};
 pub use model_settings::{
     ActionInfoModel, AnimationsModel, AudioSettingsModel, KeymapSettingsModel,
@@ -48,8 +40,7 @@ pub use model_settings::{
     ThemeSettingsModel, UiSettingsModel,
 };
 pub use session::{
-    ClientFrame, ClientOp, HelloAck, HelloBody, HelloRequest, PushEvent, SearchGroup, ServerFrame,
-    Topic,
+    ClientFrame, ClientOp, HelloAck, HelloBody, HelloRequest, PushEvent, ServerFrame, Topic,
 };
 
 /// The version this build speaks. Servers accept one-shot requests in the
@@ -79,11 +70,6 @@ pub const CONFIRMATION_LOST_REASON: &str = "confirmation_lost";
 /// the published instance descriptor advertises this capability.
 pub const RETAINED_REQUEST_OUTCOMES_CAPABILITY: &str = "retained-request-outcomes-v1";
 
-#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
-#[cfg_attr(
-    feature = "ts-export",
-    ts(export, export_to = "gui/src/generated/protocol/")
-)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum InstanceMode {
@@ -121,7 +107,7 @@ pub struct RemoteRequest {
     /// Stable identity for retaining state-changing outcomes within this advertised owner's
     /// current 60-second retention window. It is not safe to reuse after that window or after the
     /// descriptor token/owner changes.
-    /// Status and RunSearch use it only for validation/correlation and execute afresh. Optional so
+    /// Status uses it only for validation/correlation and executes afresh. Optional so
     /// the frozen v7 request stays byte-for-byte compatible; current clients always populate it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub request_id: Option<String>,
@@ -139,37 +125,6 @@ pub struct RemoteResponse {
     pub message: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status: Option<StatusSnapshot>,
-    /// Additive v8 per-command reply payload (docs/gui/02 §13): absent on every
-    /// pre-existing reply (byte-identical v7/v8 wire) and deserializes to a genuine
-    /// `None` from old servers. A named field on purpose — `#[serde(flatten)]` over an
-    /// `Option` yields `Some(default)` on plain replies, breaking the freeze corpus's
-    /// value-equality contract.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub data: Option<ResponseData>,
-}
-
-/// Typed per-command reply payloads riding [`RemoteResponse::data`]. Untagged: each
-/// variant serializes as its bare shape — exactly the body the GUI's consumers read
-/// (the gateway projects `data` as the `req` reply payload and folds it into the `cmd`
-/// reply body). Keep the shapes structurally disjoint so untagged deserialization stays
-/// unambiguous.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(untagged)]
-pub enum ResponseData {
-    /// `clear_romanization_cache` → `{ cleared }` (wired in the settings stream).
-    Cleared {
-        cleared: u64,
-    },
-    LibraryPage(LibraryPageModel),
-    PlaylistDetail(PlaylistDetailModel),
-    /// `fetch_why_gem` → the pick rationale; the command replies with NO data (the
-    /// gateway projects null) when the track has no recorded provenance.
-    WhyGem(model::WhyGemModel),
-    /// `keymap_bind` → `{ conflict: { shadows } }` when the chord shadows another
-    /// binding (folded into the cmd reply body by the gateway).
-    KeymapConflict {
-        conflict: model::KeymapConflictModel,
-    },
 }
 
 impl RemoteResponse {
@@ -180,7 +135,6 @@ impl RemoteResponse {
             reason: Some("ok".to_string()),
             message: Some(message),
             status: None,
-            data: None,
         }
     }
 
@@ -191,7 +145,6 @@ impl RemoteResponse {
             reason: Some(reason.to_string()),
             message: None,
             status: None,
-            data: None,
         }
     }
 
@@ -204,7 +157,6 @@ impl RemoteResponse {
             reason: Some(reason.to_string()),
             message: Some(message),
             status: None,
-            data: None,
         }
     }
 
@@ -215,7 +167,6 @@ impl RemoteResponse {
             reason: Some("ok".to_string()),
             message: Some(snapshot.human_line()),
             status: Some(snapshot),
-            data: None,
         }
     }
 }
@@ -689,32 +640,6 @@ mod tests {
         .unwrap();
         assert!(line.contains("\"play\""), "got {line}");
         assert!(line.contains("\"hello\""), "got {line}");
-    }
-
-    #[test]
-    fn response_data_lane_is_byte_invisible_when_absent() {
-        // The v8 data lane must not change any pre-existing reply's bytes (v7 freeze)…
-        let ok = serde_json::to_string(&RemoteResponse::ok("pong".to_string())).unwrap();
-        assert!(!ok.contains("data"), "None data must not serialize: {ok}");
-        // …and a plain reply from an old server must deserialize to a genuine None so
-        // value-equality against constructor-built responses keeps holding.
-        let back: RemoteResponse =
-            serde_json::from_str(r#"{"ok":true,"reason":"ok","message":"pong"}"#).unwrap();
-        assert_eq!(back, RemoteResponse::ok("pong".to_string()));
-        assert!(back.data.is_none());
-    }
-
-    #[test]
-    fn response_data_lane_round_trips_typed_payloads() {
-        let mut resp = RemoteResponse::ok("cleared".to_string());
-        resp.data = Some(ResponseData::Cleared { cleared: 42 });
-        let line = serde_json::to_string(&resp).unwrap();
-        assert!(
-            line.contains(r#""data":{"cleared":42}"#),
-            "untagged variant serializes as its bare shape: {line}"
-        );
-        let back: RemoteResponse = serde_json::from_str(&line).unwrap();
-        assert_eq!(back, resp);
     }
 
     #[test]

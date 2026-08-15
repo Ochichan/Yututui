@@ -279,14 +279,14 @@ try {
 
     Ask-Check -Key "no_console_window" -Prompt "No console window remains open for yututray.exe"
     Ask-Check -Key "notification_icon_visible" -Prompt "Notification-area icon is visible or present in overflow"
-    Ask-Check -Key "background_starts_tray_only" -Prompt "The --background launch shows only the notification icon (no Mini Player or main window)"
+    Ask-Check -Key "background_starts_tray_only" -Prompt "The --background launch shows only the notification icon (no Mini Player window)"
     Assert-CaptureSuccess (Invoke-Capture -Name "activate-bare-intent" -File $TrayPath -Arguments @())
     Assert-TrayProcessRunning -Label "bare secondary activation"
     Ask-Check -Key "bare_secondary_opens_mini_player" -Prompt "A second bare yututray invocation focuses the Mini Player and exits without creating another tray process"
     Read-Host "Left-click the tray icon once to hide the Mini Player, then press Enter"
     Assert-CaptureSuccess (Invoke-Capture -Name "activate-background-intent" -File $TrayPath -Arguments @("--background"))
     Assert-TrayProcessRunning -Label "secondary --background activation"
-    Ask-Check -Key "secondary_background_raises_no_window" -Prompt "The secondary --background invocation exits without raising the Mini Player or main window"
+    Ask-Check -Key "secondary_background_raises_no_window" -Prompt "The secondary --background invocation exits without raising the Mini Player"
     Ask-Check -Key "left_click_toggles_mini_player" -Prompt "One left click opens the Mini Player, a second hides it, and a third opens it again without duplicating a window"
     Assert-TrayProcessRunning -Label "left click mini-player toggle"
     Ask-Check -Key "right_click_menu_opens" -Prompt "Right click opens the tray context menu and yututray.exe stays running"
@@ -299,16 +299,6 @@ try {
     Ask-Check -Key "mini_player_absent_from_taskbar" -Prompt "YuTuTray! Mini Player does not appear in the Windows taskbar"
     Ask-Check -Key "mini_player_absent_from_alt_tab" -Prompt "YuTuTray! Mini Player does not appear in Alt-Tab"
     Ask-Check -Key "mini_player_toolwindow_style" -Prompt "Using Spy++/WinDbg, the 'YuTuTray! Mini Player' HWND has WS_EX_TOOLWINDOW (0x80) set and WS_EX_APPWINDOW (0x40000) clear"
-
-    Assert-CaptureSuccess (Invoke-Capture -Name "activate-main-window-intent" -File $TrayPath -Arguments @("--main-window"))
-    Assert-TrayProcessRunning -Label "--main-window activation"
-    Capture-Screen -Name "main-window" | Out-Null
-    Ask-Check -Key "main_window_opens_from_intent" -Prompt "The --main-window activation opens/focuses one decorated YuTuTray! main window without creating a second tray process"
-    Ask-Check -Key "main_window_present_in_taskbar" -Prompt "The visible YuTuTray! main window appears in the Windows taskbar"
-    Ask-Check -Key "main_window_present_in_alt_tab" -Prompt "The visible YuTuTray! main window appears in Alt-Tab"
-    Ask-Check -Key "main_window_appwindow_style" -Prompt "Using Spy++/WinDbg, the 'YuTuTray!' main HWND has WS_EX_APPWINDOW (0x40000) set and WS_EX_TOOLWINDOW (0x80) clear"
-    Read-Host "Close the main window so it hides to the tray, then press Enter"
-    Ask-Check -Key "hidden_main_leaves_task_switchers" -Prompt "After hiding the main window, only the tray remains and YuTuTray! is absent from the taskbar and Alt-Tab"
 
     Read-Host "Use the tray menu to choose Open Player, then press Enter"
     Ask-Check -Key "open_tui_launches_terminal" -Prompt "Open Player launches a new Windows Terminal (or a persistent PowerShell/cmd fallback)"

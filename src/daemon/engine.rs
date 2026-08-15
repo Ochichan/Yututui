@@ -14,8 +14,8 @@ use crate::player::{self, PlayerCmd, PlayerEvent, PlayerHandle};
 use crate::queue::{Queue, QueueSnapshot};
 use crate::remote::proto::{
     ArtworkRef, InstanceMode, LongFormSeekRuntimeSnapshot, QueueItemSnapshot,
-    REMOTE_MAX_GEMINI_KEY_BYTES, REMOTE_MAX_QUERY_BYTES, REMOTE_MAX_TRACK_IDS, RemoteCommand,
-    RemoteResponse, RemoteSettingChange, SettingsSnapshot, StatusSnapshot, ToggleState,
+    REMOTE_MAX_QUERY_BYTES, RemoteCommand, RemoteResponse, RemoteSettingChange, SettingsSnapshot,
+    StatusSnapshot, ToggleState,
 };
 use crate::search_source::SearchConfig;
 use crate::session::{LastMode, SessionCache};
@@ -27,13 +27,7 @@ use crate::streaming::{StreamingConfig, StreamingMode};
 use crate::tools::PlaybackFailureClass;
 use crate::util::sanitize;
 
-mod accounts;
-mod ai_context;
 mod delivery;
-mod gui_library;
-mod gui_search;
-mod gui_settings;
-mod keymap_theme;
 mod media_session;
 mod open_subsonic_bridge;
 mod open_subsonic_runtime;
@@ -55,8 +49,6 @@ use delivery::{record_player_delivery, require_player_delivery};
 #[cfg(test)]
 use engine_session::SESSION_EVENTS_CAP;
 use engine_session::{DaemonOutcome, DaemonSessionEvent, data_dir};
-pub(super) use gui_search::RequesterKey;
-use gui_search::{GuiSearchAdmission, GuiSearchIndex};
 #[cfg(test)]
 pub(in crate::daemon) use persistence_gate::fail_store_saves_for_test;
 #[cfg(test)]
@@ -114,15 +106,6 @@ pub enum EngineEffect {
     YtdlpSelfHeal {
         video_id: String,
         tools: crate::config::ToolsConfig,
-    },
-    /// Run a GUI-session search off-loop (`RemoteCommand::RunSearch`); the answer
-    /// returns as [`ApiEvent::GuiSearchCompleted`] and is pushed on the `search` topic.
-    GuiSearch {
-        requester: RequesterKey,
-        ticket: u64,
-        query: String,
-        source: crate::search_source::SearchSource,
-        config: SearchConfig,
     },
     /// Re-enter the daemon owner loop after a bounded transport-recovery backoff.
     /// The generation makes an already-satisfied or superseded retry inert.
@@ -202,18 +185,6 @@ pub struct DaemonEngine {
     /// The media-session artwork cache's resolved file for a track, keyed by
     /// `video_id`; surfaced in [`Self::media_snapshot`] while the keys match.
     media_art: Option<crate::media::artwork::MediaArtworkReady>,
-    /// Per-session/page rows addressable by `play_tracks`/`enqueue_tracks`, hard-bounded by the
-    /// remote session cap so reloads and reconnects cannot grow owner memory indefinitely.
-    gui_search_index: GuiSearchIndex,
-    /// Session-only WhyGem provenance shared with the TUI's lifecycle policy.
-    why_gem: crate::why_gem::WhyGemLedger<crate::remote::proto::WhyGemModel>,
-    /// `accounts` topic revision + the transfer actor's live Spotify display name.
-    accounts_rev: u64,
-    spotify_user: Option<String>,
-    /// The `PlayVideo` overlay child, held so the window outlives the command turn.
-    /// A replacement spawn drops (closes) the previous window — one overlay at a time,
-    /// like the TUI. The daemon has no IPC observer; closing the window is the user's.
-    video_overlay: Option<crate::util::process_tree::OwnedProcessTree>,
 }
 
 struct PlayerRuntime {
@@ -301,7 +272,7 @@ impl DaemonEngine {
     }
 
     /// Construct explicit state; [`start`] adds disk loads, while parity tests stay hermetic
-    /// (docs/gui/10 §4; the engine must be buildable without touching `ProjectDirs`).
+    ///.
     pub(crate) fn with_state(
         state: EngineState,
         player_emit: Arc<dyn Fn(PlayerEvent) + Send + Sync>,
@@ -393,11 +364,6 @@ impl DaemonEngine {
             inactive_local_queue: None,
             session_events: VecDeque::new(),
             media_art: None,
-            gui_search_index: GuiSearchIndex::default(),
-            why_gem: crate::why_gem::WhyGemLedger::default(),
-            accounts_rev: 0,
-            spotify_user: None,
-            video_overlay: None,
         }
     }
 
@@ -463,13 +429,6 @@ impl DaemonEngine {
         self.config.effective_cookie()
     }
 
-    pub(crate) fn download_runtime(&self) -> crate::config::DownloadRuntimeConfig {
-        self.config.download_runtime(
-            self.config
-                .cookies_file_for_external_tools(data_dir().as_deref()),
-        )
-    }
-
     /// Stop the daemon-owned long-lived tasks before persistence/scrobble teardown.
     pub async fn shutdown_background(&mut self) {
         self.open_subsonic.shutdown().await;
@@ -478,206 +437,6 @@ impl DaemonEngine {
 
     pub fn initial_effects(&mut self) -> Vec<EngineEffect> {
         self.maybe_autoplay_extend()
-    }
-
-    pub(crate) fn gui_search_is_current(&self, requester: &RequesterKey, ticket: u64) -> bool {
-        self.gui_search_index.is_current(requester, ticket)
-    }
-
-    pub(crate) fn complete_gui_search(
-        &mut self,
-        requester: &RequesterKey,
-        ticket: u64,
-        groups: &[crate::api::GuiSearchGroup],
-    ) -> bool {
-        self.gui_search_index.complete(requester, ticket, groups)
-    }
-
-    #[cfg(test)]
-    fn index_gui_search(
-        &mut self,
-        requester: &RequesterKey,
-        groups: &[crate::api::GuiSearchGroup],
-    ) {
-        assert_eq!(
-            self.gui_search_index.begin(
-                requester,
-                0,
-                "test-index",
-                crate::search_source::SearchSource::All,
-            ),
-            GuiSearchAdmission::Start
-        );
-        assert!(self.gui_search_index.complete(requester, 0, groups));
-    }
-
-    /// `PlayVideo` host: spawn the shared mpv overlay for a track and pause the audio
-    /// instance (the same intent as the TUI's admission-atomic transition, minus its
-    /// IPC observer — the daemon cannot watch the window, so closing it and resuming
-    /// audio stay with the user/GUI). One overlay at a time; a new spawn replaces it.
-    fn play_video(&mut self, requester: Option<&RequesterKey>, video_id: String) -> RemoteResponse {
-        // Reap a window the user already closed so it doesn't linger as a zombie until
-        // engine teardown (no IPC observer to notice the exit), and so a replacement
-        // spawn doesn't pay the drop path's kill-and-wait for an already-dead child.
-        if self
-            .video_overlay
-            .as_mut()
-            .is_some_and(|overlay| matches!(overlay.try_wait(), Ok(Some(_))))
-        {
-            self.video_overlay = None;
-        }
-        let song = self
-            .queue
-            .ordered_iter()
-            .find(|song| song.video_id == video_id)
-            .cloned()
-            .or_else(|| self.resolve_video_id(requester, &video_id));
-        let Some(song) = song else {
-            return RemoteResponse::err("unknown_track");
-        };
-        let Some(youtube_id) = song.youtube_id().map(str::to_owned) else {
-            // Non-YouTube rows have no watch page to open a video for.
-            return RemoteResponse::err("not_supported");
-        };
-        let url = format!("https://music.youtube.com/watch?v={youtube_id}");
-        let cookies = self.config.cookies_file.clone();
-        let overlay = crate::video_overlay::spawn_video_overlay(
-            &url,
-            cookies.as_deref(),
-            self.config.video_layout,
-            self.playback.volume,
-            None,
-        );
-        let Some(overlay) = overlay else {
-            return RemoteResponse::err("player_spawn_failed");
-        };
-        self.video_overlay = Some(overlay);
-        // Don't fight the video for audio focus. Best-effort: a dead transport just
-        // means there was nothing playing to pause.
-        if !self.playback.paused
-            && self.loaded_video_id.is_some()
-            && self
-                .send_active_player_command("cycle_pause", PlayerCmd::CyclePause)
-                .is_ok()
-        {
-            self.source_recovery.supersede_transport();
-            self.playback.paused = true;
-        }
-        RemoteResponse::ok("video overlay started".to_string())
-    }
-
-    /// Resolve a GUI-addressed `video_id` to a playable [`Song`]: the last search's rows
-    /// first, then the library (favorites/history), then a bare row mpv resolves at load time
-    /// (covers e.g. AI suggestion chips that never went through search). Returns `None` for an
-    /// id that is neither known nor a plausible YouTube id, so a bogus/oversized id from a
-    /// buggy client or script can't enter the queue as a permanently-unplayable row.
-    fn resolve_video_id(&self, requester: Option<&RequesterKey>, video_id: &str) -> Option<Song> {
-        if let Some(song) = requester.and_then(|key| self.gui_search_index.resolve(key, video_id)) {
-            return Some(song);
-        }
-        if let Some(song) = self
-            .library
-            .favorites
-            .iter()
-            .chain(self.library.history.iter())
-            .find(|s| s.video_id == video_id)
-        {
-            return Some(song.clone());
-        }
-        crate::api::is_youtube_video_id(video_id).then(|| Song::remote(video_id, video_id, "", ""))
-    }
-
-    pub(crate) fn resolve_gui_track(
-        &self,
-        requester: Option<&RequesterKey>,
-        video_id: &str,
-    ) -> Option<Song> {
-        self.resolve_video_id(requester, video_id)
-    }
-
-    async fn play_tracks(
-        &mut self,
-        requester: Option<&RequesterKey>,
-        video_ids: Vec<String>,
-    ) -> RemoteResponse {
-        let songs = match self.resolve_video_ids_exact(requester, &video_ids) {
-            Ok(songs) => songs,
-            Err(reason) => return RemoteResponse::err(reason),
-        };
-        if !self.queue.has_capacity_for(songs.len()) {
-            return RemoteResponse::err("queue_full");
-        }
-        let manual_ids: Vec<String> = songs.iter().map(|song| song.video_id.clone()).collect();
-        let previous = self.queue.snapshot();
-        let expected = songs.len();
-        let added = self.queue.play_now_many(songs);
-        debug_assert_eq!(added, expected, "queue capacity was preflighted");
-        match self.load_current_or_restore_queue(previous).await {
-            Ok(()) => {
-                self.forget_why_gem_picks(manual_ids.iter().map(String::as_str));
-                RemoteResponse::status(self.status())
-            }
-            Err(error) => RemoteResponse::err(error.reason()),
-        }
-    }
-
-    async fn enqueue_tracks(
-        &mut self,
-        requester: Option<&RequesterKey>,
-        video_ids: Vec<String>,
-    ) -> RemoteResponse {
-        if video_ids.is_empty() {
-            return RemoteResponse::err("empty_selection");
-        }
-        let songs = match self.resolve_video_ids_exact(requester, &video_ids) {
-            Ok(songs) => songs,
-            Err(reason) => return RemoteResponse::err(reason),
-        };
-        if !self.queue.has_capacity_for(songs.len()) {
-            return RemoteResponse::err("queue_full");
-        }
-        let manual_ids: Vec<String> = songs.iter().map(|song| song.video_id.clone()).collect();
-        let previous = self.queue.snapshot();
-        let old_len = self.queue.len();
-        let was_idle = self.loaded_video_id.is_none();
-        let expected = songs.len();
-        let added = if self.config.effective_enqueue_next() && !was_idle {
-            self.queue.insert_next_many(songs)
-        } else {
-            self.queue.extend(songs)
-        };
-        debug_assert_eq!(added, expected, "queue capacity was preflighted");
-        if was_idle {
-            self.queue
-                .goto(old_len.min(self.queue.len().saturating_sub(1)));
-            return match self.load_current_or_restore_queue(previous).await {
-                Ok(()) => {
-                    self.forget_why_gem_picks(manual_ids.iter().map(String::as_str));
-                    RemoteResponse::status(self.status())
-                }
-                Err(error) => RemoteResponse::err(error.reason()),
-            };
-        }
-        self.forget_why_gem_picks(manual_ids.iter().map(String::as_str));
-        self.save_session();
-        RemoteResponse::status(self.status())
-    }
-
-    fn resolve_video_ids_exact(
-        &self,
-        requester: Option<&RequesterKey>,
-        video_ids: &[String],
-    ) -> Result<Vec<Song>, &'static str> {
-        if video_ids.is_empty() {
-            return Err("empty_selection");
-        }
-        if video_ids.len() > REMOTE_MAX_TRACK_IDS {
-            return Err("too_many_tracks");
-        }
-        video_ids
-            .iter()
-            .map(|id| self.resolve_video_id(requester, id).ok_or("stale_results"))
-            .collect()
     }
 
     pub async fn handle_player_event(&mut self, event: PlayerEvent) -> Vec<EngineEffect> {
@@ -802,9 +561,6 @@ impl DaemonEngine {
             // Track resolution belongs to the TUI's "what's playing" overlay; the
             // headless engine never issues one.
             ApiEvent::TrackResolved { .. } => Vec::new(),
-            // Intercepted by the host loop (index + `search` topic push) before it
-            // reaches the engine; defensive no-op if it ever lands here.
-            ApiEvent::GuiSearchCompleted { .. } => Vec::new(),
             event @ (ApiEvent::StreamingResults { .. }
             | ApiEvent::StreamingPreflighted { .. }
             | ApiEvent::StreamingError { .. }) => self.handle_streaming_api_event(event).await,
@@ -912,15 +668,10 @@ impl DaemonEngine {
     }
 
     /// The v8 publisher's read view of this owner (the daemon analog of
-    /// `App::core_view`; docs/gui/02 §14). Interpolates elapsed to "now" from the same
+    /// `App::core_view`). Interpolates elapsed to "now" from the same
     /// anchor the OS media session uses. EQ reflects config; the daemon has no ICY
     /// now-playing surface yet.
-    /// Read-only store accessors for the owner loop's push projections (search rows
-    /// carry the rating halves too).
-    pub(crate) fn library(&self) -> &Library {
-        &self.library
-    }
-
+    #[cfg(test)]
     pub(crate) fn signals(&self) -> &Signals {
         &self.signals
     }
@@ -978,7 +729,6 @@ impl DaemonEngine {
 
     fn restore_session_cache(&mut self, cache: SessionCache) {
         self.cancel_pending_streaming_request();
-        self.clear_why_gem();
         self.last_mode = cache.last_mode;
         let active_queue = cache.active_queue().cloned();
         self.inactive_normal_queue = cache.normal_queue.map(Arc::new);
@@ -1125,16 +875,12 @@ impl DaemonEngine {
             Ok(None) => return RemoteResponse::err("no_results"),
             Err(()) => return RemoteResponse::err("search_error"),
         };
-        let manual_id = song.video_id.clone();
         let previous = self.queue.snapshot();
         if !self.queue.play_now(song) {
             return RemoteResponse::err("queue_full");
         }
         match self.load_current_or_restore_queue(previous).await {
-            Ok(()) => {
-                self.forget_why_gem_picks([manual_id.as_str()]);
-                RemoteResponse::status(self.status())
-            }
+            Ok(()) => RemoteResponse::status(self.status()),
             Err(error) => RemoteResponse::err(error.reason()),
         }
     }
@@ -1148,7 +894,6 @@ impl DaemonEngine {
             Ok(None) => return RemoteResponse::err("no_results"),
             Err(()) => return RemoteResponse::err("search_error"),
         };
-        let manual_id = song.video_id.clone();
         let previous = self.queue.snapshot();
         let old_len = self.queue.len();
         let was_idle = self.loaded_video_id.is_none();
@@ -1164,14 +909,10 @@ impl DaemonEngine {
             self.queue
                 .goto(old_len.min(self.queue.len().saturating_sub(1)));
             return match self.load_current_or_restore_queue(previous).await {
-                Ok(()) => {
-                    self.forget_why_gem_picks([manual_id.as_str()]);
-                    RemoteResponse::status(self.status())
-                }
+                Ok(()) => RemoteResponse::status(self.status()),
                 Err(error) => RemoteResponse::err(error.reason()),
             };
         }
-        self.forget_why_gem_picks([manual_id.as_str()]);
         self.save_session();
         RemoteResponse::status(self.status())
     }
@@ -1569,7 +1310,7 @@ impl DaemonEngine {
         Ok(())
     }
 
-    fn current_audio_filter(&self) -> String {
+    pub(super) fn current_audio_filter(&self) -> String {
         eq::build_af_string(
             &self.config.effective_eq_bands(),
             self.config.effective_normalize(),
@@ -1579,14 +1320,7 @@ impl DaemonEngine {
 }
 
 #[cfg(test)]
-pub(in crate::daemon) fn test_engine() -> DaemonEngine {
-    tests::engine_with_queue(&[])
-}
-
-#[cfg(test)]
 mod delivery_tests;
-#[cfg(test)]
-mod gui_search_tests;
 #[cfg(test)]
 mod local_mode_tests;
 #[cfg(test)]

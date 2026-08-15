@@ -59,28 +59,3 @@ fn media_fingerprint_ignores_progress_but_tracks_projected_facets() {
     engine.library.toggle_favorite(&song("seed"));
     assert_ne!(engine.media_fingerprint(), baseline);
 }
-
-#[tokio::test]
-async fn daemon_reset_all_keeps_its_origin_main_full_config_semantics() {
-    let mut engine = engine_with_queue(&["seed"]);
-    engine.config.audio.mpv.output = Some("pipewire".to_owned());
-    engine.config.audio.mpv.device = Some("alsa/custom".to_owned());
-    engine.config.audio.mpv.cache_forward = "64MiB".to_owned();
-    engine.config.audio.mpv.cache_back = "12MiB".to_owned();
-    engine.config.audio.mpv.cache_defaults_revision = u64::MAX;
-
-    let (response, shutdown, effects) = engine.handle_remote(RemoteCommand::ResetAllSettings).await;
-
-    assert!(response.ok);
-    assert!(!shutdown);
-    assert!(effects.is_empty());
-    assert_eq!(engine.config.audio.mpv, Config::default().audio.mpv);
-    assert_eq!(
-        engine.config.audio.mpv.long_form_seek_optimization,
-        crate::config::LongFormSeekOptimization::Off
-    );
-    assert_eq!(
-        engine.config.audio.mpv.cache_defaults_revision,
-        crate::config::MPV_CACHE_DEFAULTS_REVISION
-    );
-}

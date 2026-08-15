@@ -208,7 +208,7 @@ async fn session_handshake_ping_command_and_subscribe() {
         },
     )
     .await;
-    // The initial player snapshot precedes the Reply (docs/gui/02 §6); `system`
+    // The initial player snapshot precedes the Reply; `system`
     // is event-only and produces no snapshot.
     match read_json_line::<_, ServerFrame>(&mut reader).await {
         ServerFrame::Event { seq, topic, event } => {
@@ -274,10 +274,8 @@ async fn session_handshake_ping_command_and_subscribe() {
             id: 31,
             request_id: None,
             page_id: None,
-            op: ClientOp::Command(RemoteCommand::RunSearch {
-                ticket: 1,
+            op: ClientOp::Command(RemoteCommand::Play {
                 query: "q".repeat(crate::remote::proto::REMOTE_MAX_QUERY_BYTES + 1),
-                source: crate::search_source::SearchSource::Youtube,
             }),
         },
     )

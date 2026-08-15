@@ -1,4 +1,4 @@
-//! Desktop geometry persistence (docs/gui/03 §8): `desktop.json` in yututray's independent
+//! Desktop geometry persistence: `desktop.json` in yututray's independent
 //! config root. The playback owner's yututui configuration tree is compatibility-read-only.
 //!
 //! Saved debounced on move/resize by the event loop; on restore the rect is clamped to the
@@ -31,8 +31,8 @@ pub struct Size {
     pub h: u32,
 }
 
-/// Versioned, monitor-relative placement.  The legacy absolute `main`/`mini`
-/// fields remain readable while this representation survives a monitor moving,
+/// Versioned, monitor-relative placement.  The legacy absolute `mini`
+/// field remains readable while this representation survives a monitor moving,
 /// changing scale, or disappearing between launches.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WindowPlacement {
@@ -48,21 +48,17 @@ pub struct WindowPlacement {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PlacementV2 {
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub main: Option<WindowPlacement>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mini: Option<WindowPlacement>,
 }
 
 impl PlacementV2 {
     fn is_empty(&self) -> bool {
-        self.main.is_none() && self.mini.is_none()
+        self.mini.is_none()
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DesktopState {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub main: Option<WindowRect>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mini: Option<Point>,
     /// Explicit behavior, independent of the selected skin. Unpinned panels are
@@ -71,8 +67,6 @@ pub struct DesktopState {
     pub mini_pinned: bool,
     #[serde(default, skip_serializing_if = "PlacementV2::is_empty")]
     pub placement_v2: PlacementV2,
-    #[serde(default = "default_true")]
-    pub close_to_tray: bool,
     #[serde(default)]
     pub keep_webview_alive: bool,
     /// Mini player skin id (`PanelTheme::id`). Stored as a plain string so an id
@@ -80,24 +74,6 @@ pub struct DesktopState {
     /// the whole file; `None` means the default theme.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mini_theme: Option<String>,
-}
-
-fn default_true() -> bool {
-    true
-}
-
-impl Default for DesktopState {
-    fn default() -> Self {
-        DesktopState {
-            main: None,
-            mini: None,
-            mini_pinned: false,
-            placement_v2: PlacementV2::default(),
-            close_to_tray: true,
-            keep_webview_alive: false,
-            mini_theme: None,
-        }
-    }
 }
 
 /// A monitor's logical rectangle, for clamping.
@@ -602,9 +578,8 @@ mod tests {
     }
 
     #[test]
-    fn defaults_close_to_tray() {
+    fn defaults_match_the_mini_player_contract() {
         let s = DesktopState::default();
-        assert!(s.close_to_tray);
         assert!(!s.keep_webview_alive);
         assert!(!s.mini_pinned);
         assert!(s.placement_v2.is_empty());
@@ -620,17 +595,9 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         let path = dir.join("desktop.json");
         let state = DesktopState {
-            main: Some(WindowRect {
-                x: 10,
-                y: 20,
-                w: 800,
-                h: 600,
-                maximized: false,
-            }),
             mini: Some(Point { x: 30, y: 40 }),
             mini_pinned: true,
             placement_v2: PlacementV2::default(),
-            close_to_tray: false,
             keep_webview_alive: true,
             mini_theme: Some("glass".to_owned()),
         };
@@ -776,26 +743,17 @@ mod tests {
     #[test]
     fn round_trips_through_json() {
         let s = DesktopState {
-            main: Some(WindowRect {
-                x: 1,
-                y: 2,
-                w: 1200,
-                h: 800,
-                maximized: true,
-            }),
             mini: Some(Point { x: 10, y: 20 }),
             mini_pinned: true,
             placement_v2: PlacementV2 {
-                main: Some(WindowPlacement {
+                mini: Some(WindowPlacement {
                     monitor_key: Some("primary".to_string()),
                     work_area: PRIMARY,
                     origin: Point { x: 1, y: 2 },
                     size: Size { w: 1200, h: 800 },
                     maximized: true,
                 }),
-                mini: None,
             },
-            close_to_tray: false,
             keep_webview_alive: true,
             mini_theme: Some("minimal".to_string()),
         };
@@ -805,7 +763,8 @@ mod tests {
 
     #[test]
     fn state_without_mini_theme_still_parses() {
-        // A desktop.json written before the theme field existed.
+        // A desktop.json written by an older build: the theme field is absent and the
+        // long-gone main-window keys are simply ignored (serde denies nothing here).
         let line = r#"{"main":{"x":1,"y":2,"w":1200,"h":800},"close_to_tray":true,"keep_webview_alive":false}"#;
         let s: DesktopState = serde_json::from_str(line).unwrap();
         assert_eq!(s.mini_theme, None);

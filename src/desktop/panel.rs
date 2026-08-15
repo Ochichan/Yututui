@@ -779,12 +779,25 @@ pub fn update_script(update: &PollUpdate) -> String {
 /// into the webview on every track change.
 pub const MAX_PANEL_ART_BYTES: u64 = 2 * 1024 * 1024;
 
+/// Content-type from magic bytes — art keys are content-addressed, not extension-tagged.
+fn sniff_image(bytes: &[u8]) -> &'static str {
+    if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        "image/jpeg"
+    } else if bytes.starts_with(&[0x89, b'P', b'N', b'G']) {
+        "image/png"
+    } else if bytes.len() >= 12 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
+        "image/webp"
+    } else {
+        "application/octet-stream"
+    }
+}
+
 /// `data:<mime>;base64,…` for raw image bytes (mime sniffed from magic bytes).
 pub fn art_data_uri(bytes: &[u8]) -> String {
     use base64::Engine;
     format!(
         "data:{};base64,{}",
-        super::assets::sniff_image(bytes),
+        sniff_image(bytes),
         base64::engine::general_purpose::STANDARD.encode(bytes)
     )
 }
@@ -796,9 +809,7 @@ pub fn load_art_data_uri(path: &std::path::Path) -> Option<String> {
     // window (the file can't grow between the size check and the read) and refuses to follow a
     // symlink out of the cache dir. Oversized/missing/unreadable all fall back to the placeholder.
     match crate::util::safe_fs::read_no_symlink_limited(path, MAX_PANEL_ART_BYTES) {
-        Ok(bytes) if super::assets::sniff_image(&bytes).starts_with("image/") => {
-            Some(art_data_uri(&bytes))
-        }
+        Ok(bytes) if sniff_image(&bytes).starts_with("image/") => Some(art_data_uri(&bytes)),
         Ok(_) => {
             tracing::debug!(target: "ytt_tray", path = %path.display(), "panel art has an unsupported image format");
             None

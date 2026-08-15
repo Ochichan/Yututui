@@ -20,11 +20,6 @@ const MAX_AUDIT_BYTES: u64 = 4 * 1024 * 1024;
 const MAX_AUDIT_ENTRIES: usize = 2_000;
 const AUDIT_RETENTION_SECONDS: i64 = 90 * 24 * 60 * 60;
 
-#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
-#[cfg_attr(
-    feature = "ts-export",
-    ts(export, export_to = "gui/src/generated/protocol/")
-)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SyncHealthState {
@@ -47,11 +42,6 @@ impl SyncHealthState {
     }
 }
 
-#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
-#[cfg_attr(
-    feature = "ts-export",
-    ts(export, export_to = "gui/src/generated/protocol/")
-)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SyncFailureKind {

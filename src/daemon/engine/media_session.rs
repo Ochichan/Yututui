@@ -16,7 +16,6 @@ use crate::signals;
 impl DaemonEngine {
     /// Retire every daemon-owned media process before slower shutdown durability barriers.
     pub(crate) fn shutdown_media_owners(&mut self) {
-        self.video_overlay = None;
         self.player = None;
     }
 
@@ -163,7 +162,7 @@ impl DaemonEngine {
                     let previous = self.queue.snapshot();
                     if self.queue.play_now(song) {
                         match self.load_current_or_restore_queue(previous).await {
-                            Ok(()) => self.forget_why_gem_picks([id.as_str()]),
+                            Ok(()) => {}
                             Err(error) => {
                                 self.last_error = Some(error.to_string());
                                 self.stop_playback();

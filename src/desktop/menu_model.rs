@@ -115,7 +115,6 @@ pub enum MenuAction {
     ResumeDaemon,
     StopDaemon,
     ShowMiniPlayer,
-    OpenMainWindow,
     OpenTui,
     Refresh,
     ToggleStartup,
@@ -141,7 +140,6 @@ impl MenuAction {
             | MenuAction::ResumeDaemon
             | MenuAction::StopDaemon
             | MenuAction::ShowMiniPlayer
-            | MenuAction::OpenMainWindow
             | MenuAction::OpenTui
             | MenuAction::Refresh
             | MenuAction::ToggleStartup
@@ -247,10 +245,6 @@ fn visit_items(entries: &[MenuEntry], visitor: &mut impl FnMut(&MenuItem)) {
 }
 
 pub fn build_menu(state: &TrayState) -> MenuModel {
-    build_menu_with_main_window(state, crate::desktop::assets::DIST_EMBEDDED)
-}
-
-fn build_menu_with_main_window(state: &TrayState, main_window_available: bool) -> MenuModel {
     let kind = state.kind();
     let connected = !matches!(kind, TrayStateKind::Disconnected);
     let has_track = state.status().is_some_and(|status| !is_idle(status));
@@ -303,7 +297,7 @@ fn build_menu_with_main_window(state: &TrayState, main_window_available: bool) -
         ],
     );
 
-    let mut entries = vec![
+    let entries = vec![
         item(track_label(state), false, None),
         item(state_label(state), false, None),
         MenuEntry::Separator,
@@ -341,11 +335,6 @@ fn build_menu_with_main_window(state: &TrayState, main_window_available: bool) -
             Some(MenuAction::OpenTui),
         ),
         item(
-            crate::t!("Open Main Window", "메인 창 열기", "メインウィンドウを開く"),
-            true,
-            Some(MenuAction::OpenMainWindow),
-        ),
-        item(
             crate::t!("Open at Login", "로그인 시 열기", "ログイン時に起動"),
             true,
             Some(MenuAction::ToggleStartup),
@@ -362,21 +351,6 @@ fn build_menu_with_main_window(state: &TrayState, main_window_available: bool) -
             Some(MenuAction::QuitTray),
         ),
     ];
-
-    // Packaged releases intentionally ship the native tray + mini player without the full
-    // web-GUI application. Do not expose an action that would open build.rs's missing-frontend
-    // stub; developer builds with an embedded dist retain the explicit main-window surface.
-    if !main_window_available {
-        entries.retain(|entry| {
-            !matches!(
-                entry,
-                MenuEntry::Item(MenuItem {
-                    action: Some(MenuAction::OpenMainWindow),
-                    ..
-                })
-            )
-        });
-    }
 
     MenuModel {
         state: kind,
@@ -628,7 +602,7 @@ mod tests {
     #[test]
     fn playing_menu_has_expected_labels_and_primary_action() {
         let _guard = crate::i18n::lock_for_test();
-        let model = build_menu_with_main_window(&TrayState::Connected(playing_status()), true);
+        let model = build_menu(&TrayState::Connected(playing_status()));
         assert_eq!(model.state, TrayStateKind::ConnectedPlaying);
         assert_eq!(model.primary_action, MenuAction::PlayPause);
         assert_eq!(model.summary_line(), "ConnectedPlaying: Artist - Song");
@@ -645,8 +619,8 @@ mod tests {
     #[test]
     fn native_menu_uses_the_product_structure_and_nested_sections() {
         let _guard = crate::i18n::lock_for_test();
-        let model = build_menu_with_main_window(&TrayState::Connected(playing_status()), true);
-        assert_eq!(model.entries.len(), 17);
+        let model = build_menu(&TrayState::Connected(playing_status()));
+        assert_eq!(model.entries.len(), 16);
         assert!(matches!(
             &model.entries[0],
             MenuEntry::Item(item) if item.label == "Artist - Song" && item.action.is_none()
@@ -655,7 +629,7 @@ mod tests {
             &model.entries[1],
             MenuEntry::Item(item) if item.label == "Standalone TUI: Playing" && item.action.is_none()
         ));
-        for index in [2, 6, 10, 14] {
+        for index in [2, 6, 10, 13] {
             assert!(matches!(&model.entries[index], MenuEntry::Separator));
         }
         assert_eq!(
@@ -673,7 +647,6 @@ mod tests {
                 MenuAction::Next,
                 MenuAction::ShowMiniPlayer,
                 MenuAction::OpenTui,
-                MenuAction::OpenMainWindow,
                 MenuAction::ToggleStartup,
                 MenuAction::QuitPlayer,
                 MenuAction::QuitTray,
@@ -725,16 +698,15 @@ mod tests {
     }
 
     #[test]
-    fn non_gui_package_keeps_tray_mini_and_hides_only_the_main_window() {
+    fn packaged_menu_keeps_tray_mini_and_open_tui() {
         let _guard = crate::i18n::lock_for_test();
-        let model = build_menu_with_main_window(&TrayState::Connected(playing_status()), false);
+        let model = build_menu(&TrayState::Connected(playing_status()));
         assert!(
             model
                 .action_item(MenuAction::ShowMiniPlayer)
                 .is_some_and(|item| item.enabled),
             "the native mini player remains a release surface"
         );
-        assert!(model.action_item(MenuAction::OpenMainWindow).is_none());
         assert!(model.action_item(MenuAction::OpenTui).is_some());
         assert!(model.action_item(MenuAction::QuitTray).is_some());
     }
@@ -781,7 +753,7 @@ mod tests {
     #[test]
     fn disconnected_menu_only_offers_resume_when_a_session_is_available() {
         let _guard = crate::i18n::lock_for_test();
-        let model = build_menu_with_main_window(&TrayState::disconnected(false), true);
+        let model = build_menu(&TrayState::disconnected(false));
         assert_eq!(model.state, TrayStateKind::Disconnected);
         assert_eq!(model.primary_action, MenuAction::OpenTui);
         assert!(!model.action_item(MenuAction::PlayPause).unwrap().enabled);
@@ -791,19 +763,13 @@ mod tests {
         assert!(model.action_item(MenuAction::OpenTui).unwrap().enabled);
         assert!(
             model
-                .action_item(MenuAction::OpenMainWindow)
-                .unwrap()
-                .enabled
-        );
-        assert!(
-            model
                 .action_item(MenuAction::ToggleStartup)
                 .unwrap()
                 .enabled
         );
         assert!(model.action_item(MenuAction::QuitTray).unwrap().enabled);
 
-        let resumable = build_menu_with_main_window(&TrayState::disconnected(true), true);
+        let resumable = build_menu(&TrayState::disconnected(true));
         assert!(
             resumable
                 .action_item(MenuAction::ResumeDaemon)
@@ -900,7 +866,6 @@ mod tests {
         );
         assert_eq!(MenuAction::OpenTui.remote_command(), None);
         assert_eq!(MenuAction::ShowMiniPlayer.remote_command(), None);
-        assert_eq!(MenuAction::OpenMainWindow.remote_command(), None);
         assert_eq!(MenuAction::StartDaemon.remote_command(), None);
         assert_eq!(MenuAction::StopDaemon.remote_command(), None);
         assert_eq!(MenuAction::ToggleStartup.remote_command(), None);

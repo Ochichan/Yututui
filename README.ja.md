@@ -89,8 +89,6 @@ macOS と Windows のリリースには、メニューバー / 通知領域の�
 ログイン時の自動起動は任意です: `yututray --install-startup`。
 
 パッケージ版にはネイティブ Tray とミニプレイヤー (`yututray --mini`) が含まれます。
-Web ベースのフル GUI アプリは含まれず、`--main-window` は GUI assets を埋め込んだ
-開発者ビルドでのみ使用できます。
 
 </details>
 

@@ -1038,14 +1038,6 @@ fn runtime_event_to_msg_validates_resolver_urls_and_side_channels() {
     ));
     assert!(matches!(msg, Msg::ResolveFailed { video_id } if video_id == "heal"));
 
-    let msg = Msg::from(RuntimeEvent::Api(
-        crate::api::ApiEvent::GuiSearchCompleted {
-            request_id: crate::api::GuiSearchRequestId::new(0, 1),
-            groups: Vec::new(),
-        },
-    ));
-    assert!(matches!(msg, Msg::Noop));
-
     let msg = Msg::from(RuntimeEvent::Signal(
         crate::player::lifetime::SignalEvent::Quit,
     ));

@@ -18,13 +18,11 @@ pub const PANEL_BLUR_DELAY: Duration = Duration::from_millis(300);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum WindowKind {
-    Main,
     Mini,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WindowRole {
-    MainApplication,
     MiniPopover,
     MiniPinned,
 }
@@ -42,13 +40,6 @@ pub struct WindowPolicy {
 impl WindowPolicy {
     pub fn for_window(kind: WindowKind, mini_pinned: bool) -> Self {
         match (kind, mini_pinned) {
-            (WindowKind::Main, _) => Self {
-                role: WindowRole::MainApplication,
-                show_in_taskbar: true,
-                show_in_app_switcher: true,
-                always_on_top: false,
-                dismiss_on_blur: false,
-            },
             (WindowKind::Mini, false) => Self {
                 role: WindowRole::MiniPopover,
                 show_in_taskbar: false,
@@ -164,15 +155,10 @@ pub enum DesktopEffect {
     EnsureMiniSurface,
     ShowMini,
     HideMini,
-    EnsureMainSurface,
-    ShowMain,
-    HideMain,
     ApplyWindowPolicy {
         kind: WindowKind,
         policy: WindowPolicy,
     },
-    UseRegularActivation,
-    UseAccessoryActivation,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -240,11 +226,9 @@ impl FocusDismiss {
 pub struct DesktopApp {
     snapshot: DesktopSnapshot,
     mini_pinned: bool,
-    main_visible: bool,
     mini_visible: bool,
     mini_focused: bool,
     mini_ready: bool,
-    main_ready: bool,
     dismiss: FocusDismiss,
 }
 
@@ -301,7 +285,6 @@ impl DesktopApp {
                 };
                 true
             }
-            (Topic::Search, PushEvent::SearchCompleted { .. }) => true,
             _ => false,
         };
         if applied {
@@ -333,10 +316,8 @@ impl DesktopApp {
             DesktopEvent::SnapshotChanged(snapshot) => self.snapshot = *snapshot,
             DesktopEvent::CommandCompleted { .. } => {}
             DesktopEvent::FrontendReady(kind) => {
-                match kind {
-                    WindowKind::Main => self.main_ready = true,
-                    WindowKind::Mini => self.mini_ready = true,
-                }
+                let WindowKind::Mini = kind;
+                self.mini_ready = true;
                 transition.replay = Some((
                     kind,
                     FrontendReplay {
@@ -348,24 +329,14 @@ impl DesktopApp {
                     transition.effects.extend(self.show_effects(kind));
                 }
             }
-            DesktopEvent::FrontendTornDown(kind) => match kind {
-                WindowKind::Main => self.main_ready = false,
-                WindowKind::Mini => self.mini_ready = false,
-            },
+            DesktopEvent::FrontendTornDown(kind) => {
+                let WindowKind::Mini = kind;
+                self.mini_ready = false;
+            }
             DesktopEvent::WindowEvent(event) => match event {
-                DesktopWindowEvent::Shown(WindowKind::Main) => {
-                    self.main_visible = true;
-                    transition.effects.push(DesktopEffect::UseRegularActivation);
-                }
                 DesktopWindowEvent::Shown(WindowKind::Mini) => {
                     self.mini_visible = true;
                     self.dismiss.cancel();
-                }
-                DesktopWindowEvent::Hidden(WindowKind::Main) => {
-                    self.main_visible = false;
-                    transition
-                        .effects
-                        .push(DesktopEffect::UseAccessoryActivation);
                 }
                 DesktopWindowEvent::Hidden(WindowKind::Mini) => {
                     self.mini_visible = false;
@@ -382,8 +353,6 @@ impl DesktopApp {
                         self.dismiss.blur(now);
                     }
                 }
-                DesktopWindowEvent::Focused(WindowKind::Main)
-                | DesktopWindowEvent::Blurred(WindowKind::Main) => {}
             },
             DesktopEvent::WindowVisibility { kind, visible } => {
                 if visible || self.is_window_visible(kind) {
@@ -422,9 +391,6 @@ impl DesktopApp {
                     ActivationIntent::ShowMini => transition
                         .effects
                         .extend(self.set_visibility(WindowKind::Mini, true)),
-                    ActivationIntent::ShowMain => transition
-                        .effects
-                        .extend(self.set_visibility(WindowKind::Main, true)),
                 }
             }
         }
@@ -433,17 +399,6 @@ impl DesktopApp {
 
     fn set_visibility(&mut self, kind: WindowKind, visible: bool) -> Vec<DesktopEffect> {
         match (kind, visible) {
-            (WindowKind::Main, true) => {
-                self.main_visible = true;
-                self.show_effects(kind)
-            }
-            (WindowKind::Main, false) => {
-                self.main_visible = false;
-                vec![
-                    DesktopEffect::HideMain,
-                    DesktopEffect::UseAccessoryActivation,
-                ]
-            }
             (WindowKind::Mini, true) => {
                 self.mini_visible = true;
                 self.dismiss.cancel();
@@ -460,20 +415,14 @@ impl DesktopApp {
 
     fn show_effects(&self, kind: WindowKind) -> Vec<DesktopEffect> {
         match (kind, self.is_frontend_ready(kind)) {
-            (WindowKind::Main, true) => {
-                vec![DesktopEffect::UseRegularActivation, DesktopEffect::ShowMain]
-            }
-            (WindowKind::Main, false) => vec![DesktopEffect::EnsureMainSurface],
             (WindowKind::Mini, true) => vec![DesktopEffect::ShowMini],
             (WindowKind::Mini, false) => vec![DesktopEffect::EnsureMiniSurface],
         }
     }
 
     pub fn is_window_visible(&self, kind: WindowKind) -> bool {
-        match kind {
-            WindowKind::Main => self.main_visible,
-            WindowKind::Mini => self.mini_visible,
-        }
+        let WindowKind::Mini = kind;
+        self.mini_visible
     }
 
     pub fn mini_pinned(&self) -> bool {
@@ -481,10 +430,8 @@ impl DesktopApp {
     }
 
     pub fn is_frontend_ready(&self, kind: WindowKind) -> bool {
-        match kind {
-            WindowKind::Main => self.main_ready,
-            WindowKind::Mini => self.mini_ready,
-        }
+        let WindowKind::Mini = kind;
+        self.mini_ready
     }
 
     pub fn mini_dismiss_deadline(&self) -> Option<Instant> {
@@ -661,11 +608,6 @@ mod tests {
         let pinned = WindowPolicy::for_window(WindowKind::Mini, true);
         assert!(pinned.always_on_top);
         assert!(!pinned.dismiss_on_blur);
-
-        let main = WindowPolicy::for_window(WindowKind::Main, false);
-        assert!(main.show_in_taskbar);
-        assert!(main.show_in_app_switcher);
-        assert!(!main.always_on_top);
     }
 
     #[test]
@@ -732,16 +674,6 @@ mod tests {
                 },
             ),
             (Topic::System, PushEvent::ShuttingDown),
-            (
-                Topic::Search,
-                PushEvent::SearchCompleted {
-                    ticket: 1,
-                    page_id: None,
-                    query: "topic".to_string(),
-                    source: SearchSource::Youtube,
-                    groups: Vec::new(),
-                },
-            ),
         ];
 
         for (expected_topic, event) in cases {
@@ -835,29 +767,24 @@ mod tests {
                 model: Box::new(player("ready")),
             },
         );
-        let activation = app.handle_event(DesktopEvent::Activation(ActivationIntent::ShowMain));
+        let activation = app.handle_event(DesktopEvent::Activation(ActivationIntent::ShowMini));
         assert_eq!(
             activation.effects,
-            vec![DesktopEffect::EnsureTray, DesktopEffect::EnsureMainSurface]
+            vec![DesktopEffect::EnsureTray, DesktopEffect::EnsureMiniSurface]
         );
-        assert!(!activation.effects.contains(&DesktopEffect::ShowMain));
-        let ready = app.handle_event(DesktopEvent::FrontendReady(WindowKind::Main));
+        assert!(!activation.effects.contains(&DesktopEffect::ShowMini));
+        let ready = app.handle_event(DesktopEvent::FrontendReady(WindowKind::Mini));
         let replay = ready.replay.unwrap().1;
-        assert!(app.is_frontend_ready(WindowKind::Main));
+        assert!(app.is_frontend_ready(WindowKind::Mini));
         assert_eq!(replay.snapshot.sequence, 3);
         assert!(matches!(
             replay.connection,
             DesktopConnection::Online { .. }
         ));
-        assert_eq!(
-            ready.effects,
-            vec![DesktopEffect::UseRegularActivation, DesktopEffect::ShowMain]
-        );
+        assert_eq!(ready.effects, vec![DesktopEffect::ShowMini]);
 
-        let _ = app.handle_event(DesktopEvent::FrontendReady(WindowKind::Mini));
-        let _ = app.handle_event(DesktopEvent::FrontendTornDown(WindowKind::Main));
-        assert!(!app.is_frontend_ready(WindowKind::Main));
-        assert!(app.is_frontend_ready(WindowKind::Mini));
+        let _ = app.handle_event(DesktopEvent::FrontendTornDown(WindowKind::Mini));
+        assert!(!app.is_frontend_ready(WindowKind::Mini));
     }
 
     #[test]
@@ -873,12 +800,6 @@ mod tests {
             DesktopEvent::Deadline,
             DesktopEvent::MiniPinned(false),
             DesktopEvent::Deadline,
-            DesktopEvent::Activation(ActivationIntent::ShowMain),
-            DesktopEvent::FrontendReady(WindowKind::Main),
-            DesktopEvent::WindowVisibility {
-                kind: WindowKind::Main,
-                visible: false,
-            },
         ];
         let mut windows = DesktopApp::default();
         let mut macos = DesktopApp::default();
@@ -890,28 +811,24 @@ mod tests {
             assert_eq!(windows, macos, "state after event {index}");
         }
         assert!(!windows.is_window_visible(WindowKind::Mini));
-        assert!(!windows.is_window_visible(WindowKind::Main));
     }
 
     #[test]
     fn failed_hidden_surface_clears_visibility_intent_without_a_show() {
         let mut app = DesktopApp::default();
-        let activation = app.handle_event(DesktopEvent::Activation(ActivationIntent::ShowMain));
+        let activation = app.handle_event(DesktopEvent::Activation(ActivationIntent::ShowMini));
         assert_eq!(
             activation.effects,
-            vec![DesktopEffect::EnsureTray, DesktopEffect::EnsureMainSurface]
+            vec![DesktopEffect::EnsureTray, DesktopEffect::EnsureMiniSurface]
         );
 
         let correction = app.handle_event(DesktopEvent::WindowEvent(DesktopWindowEvent::Hidden(
-            WindowKind::Main,
+            WindowKind::Mini,
         )));
-        assert_eq!(
-            correction.effects,
-            vec![DesktopEffect::UseAccessoryActivation]
-        );
-        assert!(!app.is_window_visible(WindowKind::Main));
+        assert!(correction.effects.is_empty());
+        assert!(!app.is_window_visible(WindowKind::Mini));
 
-        let ready = app.handle_event(DesktopEvent::FrontendReady(WindowKind::Main));
+        let ready = app.handle_event(DesktopEvent::FrontendReady(WindowKind::Mini));
         assert!(ready.effects.is_empty());
         assert!(ready.replay.is_some());
     }

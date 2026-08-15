@@ -24,12 +24,9 @@ mod sessions;
 mod settlement;
 pub mod watch;
 
-pub(crate) use sessions::MAX_SESSIONS;
 pub use sessions::{RemoteSessionHub, RemoteSessionRef, RemoteSessionScope};
 #[cfg(test)]
-pub(crate) use sessions::{
-    SessionLine, SessionTuning, SubscribeIngress, test_command_reply, test_register,
-};
+pub(crate) use sessions::{SessionLine, SessionTuning, test_command_reply, test_register};
 
 pub use server::{BindOutcome, RemoteReply, RemoteServer, await_primary_release, bind_or_detect};
 pub(crate) use settlement::{WireSettlement, WireSettlements};
@@ -79,9 +76,7 @@ pub(crate) fn reply_timeout_for(command: &proto::RemoteCommand) -> Duration {
         | RemoteCommand::QueueRemove { .. }
         | RemoteCommand::QueuePlayIfRevision { .. }
         | RemoteCommand::QueueRemoveIfRevision { .. }
-        | RemoteCommand::ResumeSession
-        | RemoteCommand::PlayTracks { .. }
-        | RemoteCommand::EnqueueTracks { .. } => PLAYBACK_REPLY_TIMEOUT,
+        | RemoteCommand::ResumeSession => PLAYBACK_REPLY_TIMEOUT,
         RemoteCommand::ExportPersonalData { .. } => PERSONAL_EXPORT_REPLY_TIMEOUT,
         RemoteCommand::SyncNow | RemoteCommand::SyncRevokeDevice { .. } => {
             MANUAL_SYNC_REPLY_TIMEOUT

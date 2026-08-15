@@ -1036,8 +1036,8 @@ fn build_webview(
     on_command: &Rc<dyn Fn(u64, PanelRequest)>,
 ) -> Result<WebView, Box<dyn Error>> {
     let on_command = Rc::clone(on_command);
-    // Windows: share the WebView2 user-data folder with the main window (docs/gui/03 §3)
-    // so both surfaces cost one browser-process set. macOS ignores the web context.
+    // Windows: the panel's WebView2 uses one explicit user-data folder (a known, purgeable
+    // spot that also works under a read-only install dir). macOS ignores the web context.
     #[cfg(windows)]
     let mut web_context = crate::desktop::platform::shared_web_context()?;
     #[cfg(windows)]

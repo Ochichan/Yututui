@@ -321,11 +321,11 @@ fn event_budget_matches_exact_max_width_wire_frame() {
     let seq = u64::MAX;
     let prefix = format!(
         "{{\"frame\":\"event\",\"seq\":{seq},\"topic\":\"{}\",\"event\":",
-        Topic::Downloads.wire_str()
+        Topic::Settings.wire_str()
     )
     .into_bytes();
     let exact_wire_len = prefix.len() + payload.len() + 2;
-    assert_eq!(prefix.len() + 2, 74, "pin the maximum envelope width");
+    assert_eq!(prefix.len() + 2, 73, "pin the maximum envelope width");
 
     let tuning = SessionTuning {
         max_queued_items: 1,
@@ -336,7 +336,7 @@ fn event_budget_matches_exact_max_width_wire_frame() {
     let (_, handle, mut rx) = exact_hub.register().unwrap();
     handle.seq.store(u64::MAX - 1, Ordering::Relaxed);
 
-    assert!(handle.push_event(Topic::Downloads, &payload));
+    assert!(handle.push_event(Topic::Settings, &payload));
     assert_eq!(handle.budget.snapshot(), (true, 1, exact_wire_len));
     let line = rx.try_recv().expect("event admitted at the exact byte cap");
     assert_eq!(line.cost(), Some(exact_wire_len));
@@ -361,14 +361,14 @@ fn event_budget_matches_exact_max_width_wire_frame() {
     });
     let (_, rejected, mut rejected_rx) = too_small.register().unwrap();
     rejected.seq.store(u64::MAX - 1, Ordering::Relaxed);
-    assert!(!rejected.push_event(Topic::Downloads, &payload));
+    assert!(!rejected.push_event(Topic::Settings, &payload));
     assert!(rejected_rx.try_recv().is_err());
     assert_eq!(rejected.budget.snapshot(), (true, 0, 0));
 
     let overflow = hub(SessionTuning::default());
     let (_, exhausted, mut exhausted_rx) = overflow.register().unwrap();
     exhausted.seq.store(u64::MAX, Ordering::Relaxed);
-    assert!(!exhausted.push_event(Topic::Downloads, &payload));
+    assert!(!exhausted.push_event(Topic::Settings, &payload));
     assert!(exhausted_rx.try_recv().is_err());
 }
 

@@ -10,10 +10,7 @@ use crate::search_source::{SearchConfig, SearchSource};
 use crate::streaming::{CandidateSource, StreamingMode};
 use crate::util::sanitize;
 
-use super::{
-    ApiCmd, ApiEvent, ApiHandle, ApiMode, ArtistIntent, GuiSearchGroup, GuiSearchRequestId,
-    PlaylistIntent, Song, ytmusic,
-};
+use super::{ApiCmd, ApiEvent, ApiHandle, ApiMode, ArtistIntent, PlaylistIntent, Song, ytmusic};
 
 const STREAMING_YTDLP_CACHE_TTL: Duration = Duration::from_secs(10 * 60);
 pub(super) const STREAMING_YTDLP_CACHE_MAX: usize = 512;
@@ -52,73 +49,6 @@ where
     ApiHandle {
         interactive_tx,
         bulk_tx,
-    }
-}
-
-/// Run one GUI search: per-catalog groups. A concrete `source` yields one group; `All`
-/// fans out over the enabled catalogs (like the TUI's merged path) but keeps results
-/// separated and failures per-source. A pasted YouTube URL short-circuits to a single
-/// youtube group — resolving it once, not once per catalog.
-async fn gui_search_groups(
-    api: &ytmusic::YtMusicApi,
-    query: &str,
-    source: SearchSource,
-    config: &SearchConfig,
-) -> Vec<GuiSearchGroup> {
-    let targets = gui_search_targets(query, source, config);
-    futures::future::join_all(targets.into_iter().map(|target| async move {
-        let result = if target == SearchSource::OpenSubsonic {
-            budget_server_search(search_open_subsonic(query, config))
-                .await
-                .0
-        } else {
-            search_one_interactive_source(api, query, target, config).await
-        };
-        match result {
-            Ok(songs) => GuiSearchGroup {
-                source: target,
-                songs,
-                error: None,
-            },
-            Err(error) => GuiSearchGroup {
-                source: target,
-                songs: Vec::new(),
-                error: Some(sanitize::sanitize_error_text(format!("{error:#}"))),
-            },
-        }
-    }))
-    .await
-}
-
-fn gui_search_targets(
-    query: &str,
-    source: SearchSource,
-    config: &SearchConfig,
-) -> Vec<SearchSource> {
-    if is_youtube_url_query(query) {
-        vec![SearchSource::Youtube]
-    } else if source == SearchSource::All {
-        let enabled = config.enabled_sources();
-        if enabled.is_empty() {
-            vec![SearchSource::Youtube]
-        } else {
-            enabled
-        }
-    } else {
-        vec![source]
-    }
-}
-
-async fn search_one_interactive_source(
-    api: &ytmusic::YtMusicApi,
-    query: &str,
-    source: SearchSource,
-    config: &SearchConfig,
-) -> anyhow::Result<Vec<Song>> {
-    if source == SearchSource::OpenSubsonic {
-        search_open_subsonic(query, config).await
-    } else {
-        api.search_songs(query, source, config).await
     }
 }
 
@@ -316,28 +246,6 @@ async fn interactive_search_event(
     }
 }
 
-async fn gui_search_event(
-    api: &ytmusic::YtMusicApi,
-    request_id: GuiSearchRequestId,
-    query: String,
-    source: SearchSource,
-    config: SearchConfig,
-) -> ApiEvent {
-    let groups = gui_search_groups(api, &query, source, &config).await;
-    let query_log = crate::util::query::query_log_preview(&query);
-    tracing::info!(
-        request_id = ?request_id,
-        query_bytes = query_log.bytes,
-        query_chars = query_log.chars,
-        query_preview = %query_log.preview,
-        query_truncated = query_log.truncated,
-        source = %source.code(),
-        groups = groups.len(),
-        "gui search completed"
-    );
-    ApiEvent::GuiSearchCompleted { request_id, groups }
-}
-
 async fn run_interactive_actor<F>(
     api: Arc<ytmusic::YtMusicApi>,
     mut rx: Receiver<ApiCmd>,
@@ -367,25 +275,6 @@ async fn run_interactive_actor<F>(
                     }));
                 } else {
                     emit(interactive_search_event(&api, request_id, query, source, config).await);
-                }
-            }
-            ApiCmd::GuiSearch {
-                request_id,
-                query,
-                source,
-                config,
-            } => {
-                if source == SearchSource::OpenSubsonic {
-                    if let Some(task) = dedicated_server_search.take() {
-                        task.abort();
-                    }
-                    let api = Arc::clone(&api);
-                    let emit = Arc::clone(&emit);
-                    dedicated_server_search = Some(tokio::spawn(async move {
-                        emit(gui_search_event(&api, request_id, query, source, config).await);
-                    }));
-                } else {
-                    emit(gui_search_event(&api, request_id, query, source, config).await);
                 }
             }
             ApiCmd::ResolveTrack { seq, query, config } => {
@@ -765,7 +654,6 @@ where
                 });
             }
             ApiCmd::Search { .. }
-            | ApiCmd::GuiSearch { .. }
             | ApiCmd::ResolveTrack { .. }
             | ApiCmd::SearchPlaylists { .. }
             | ApiCmd::SearchArtists { .. } => {
@@ -899,22 +787,5 @@ mod open_subsonic_search_tests {
         let (result, timed_out) = task.await.unwrap();
         assert!(result.is_err());
         assert!(timed_out);
-    }
-
-    #[test]
-    fn youtube_urls_short_circuit_every_gui_source_selection() {
-        let mut config = SearchConfig::default();
-        config.set_enabled(SearchSource::OpenSubsonic, true);
-        assert_eq!(
-            gui_search_targets(
-                "https://youtu.be/dQw4w9WgXcQ",
-                SearchSource::OpenSubsonic,
-                &config,
-            ),
-            vec![SearchSource::Youtube]
-        );
-        let all = gui_search_targets("ordinary query", SearchSource::All, &config);
-        assert!(all.contains(&SearchSource::Youtube));
-        assert!(all.contains(&SearchSource::OpenSubsonic));
     }
 }

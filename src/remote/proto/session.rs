@@ -1,6 +1,7 @@
 //! Protocol v8 session mode: long-lived duplex connections with server push.
 //!
-//! Wire spec: docs/gui/02 §4–§7. One listener, two connection modes — the first line of
+//! Wire spec for protocol v8 session mode: long-lived duplex connections with server push.
+//! One listener, two connection modes — the first line of
 //! a connection either parses as a legacy one-shot [`super::RemoteRequest`] (`command`
 //! key) or as a [`HelloRequest`] (`hello` key); the two are structurally unambiguous.
 //! After a successful Hello the connection stays open: the client writes [`ClientFrame`]
@@ -14,7 +15,7 @@
 //!   that can't keep up is evicted with `Goodbye { reason: "slow_consumer" }`.
 //! - Reconnect rebuilds session state: re-Hello → re-Subscribe → fresh snapshots. There is
 //!   no unsolicited event replay. Stable-ID state-changing commands can join a retained owner
-//!   outcome, while `Status` and session-scoped `RunSearch` queries execute again.
+//!   outcome, while the read-only `Status` executes again.
 //! - A command's `Reply` is written before any same-turn `Event`s it caused.
 
 use serde::{Deserialize, Serialize};
@@ -41,19 +42,13 @@ pub struct HelloBody {
 }
 
 /// The server's answer to a [`HelloRequest`], and the session's capability surface.
-#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
-#[cfg_attr(
-    feature = "ts-export",
-    ts(export, export_to = "gui/src/generated/protocol/")
-)]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HelloAck {
     pub ok: bool,
     /// The version this session will speak.
     pub version: u8,
-    #[cfg_attr(feature = "ts-export", ts(type = "number"))]
     pub session_id: u64,
-    /// Live per-owner feature strings (docs/gui/02 §10); mirrors the instance descriptor.
+    /// Live per-owner feature strings; mirrors the instance descriptor.
     pub capabilities: Vec<String>,
     pub owner_mode: InstanceMode,
     /// On `!ok`: `"bad_token"` | `"bad_version"` | `"sessions_full"` | `"shutting_down"`.
@@ -63,7 +58,6 @@ pub struct HelloAck {
 
 /// One client line after Hello: a client-monotonic id plus the operation, flattened so
 /// the wire form is a single flat object (`{"id":1,"op":"subscribe","topics":[…]}`).
-/// (`Eq` gone with [`RemoteCommand`]'s — the GUI settings value is a JSON float.)
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClientFrame {
     /// Client-monotonic; echoed in [`ServerFrame::Reply`] / [`ServerFrame::Pong`].
@@ -71,7 +65,7 @@ pub struct ClientFrame {
     /// Stable command identity across response timeouts or reconnects to the same advertised
     /// owner within the current 60-second retention window. Never reuse a mutation identity after
     /// that window or after the descriptor token/owner changes. State-changing outcomes are
-    /// retained under this identity; read-only `Status` and `RunSearch` execute again for a fresh
+    /// retained under this identity; the read-only `Status` executes again for a fresh
     /// live-session result. Ignored for non-command operations and optional for shipped v8 clients.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub request_id: Option<String>,
@@ -126,27 +120,14 @@ pub enum ServerFrame {
     },
 }
 
-/// A domain channel a session subscribes to (docs/gui/02 §7).
-#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
-#[cfg_attr(
-    feature = "ts-export",
-    ts(export, export_to = "gui/src/generated/protocol/")
-)]
+/// A domain channel a session subscribes to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Topic {
     Player,
     Queue,
     Lyrics,
-    Artwork,
-    Library,
-    Playlists,
-    Search,
     Settings,
-    Ai,
-    Downloads,
-    Transfer,
-    Accounts,
     System,
 }
 
@@ -159,44 +140,23 @@ impl Topic {
             Topic::Player => "player",
             Topic::Queue => "queue",
             Topic::Lyrics => "lyrics",
-            Topic::Artwork => "artwork",
-            Topic::Library => "library",
-            Topic::Playlists => "playlists",
-            Topic::Search => "search",
             Topic::Settings => "settings",
-            Topic::Ai => "ai",
-            Topic::Downloads => "downloads",
-            Topic::Transfer => "transfer",
-            Topic::Accounts => "accounts",
             Topic::System => "system",
         }
     }
 
     /// Every topic, for "subscribe to everything" clients and exhaustiveness tests.
-    pub const ALL: [Topic; 13] = [
+    pub const ALL: [Topic; 5] = [
         Topic::Player,
         Topic::Queue,
         Topic::Lyrics,
-        Topic::Artwork,
-        Topic::Library,
-        Topic::Playlists,
-        Topic::Search,
         Topic::Settings,
-        Topic::Ai,
-        Topic::Downloads,
-        Topic::Transfer,
-        Topic::Accounts,
         Topic::System,
     ];
 }
 
 /// The payload of a push [`ServerFrame::Event`]. Internally tagged by `kind` so event
 /// kinds remain additive.
-#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
-#[cfg_attr(
-    feature = "ts-export",
-    ts(export, export_to = "gui/src/generated/protocol/")
-)]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum PushEvent {
@@ -211,24 +171,8 @@ pub enum PushEvent {
     OwnerChanged { mode: InstanceMode },
     /// `system` topic: the owner is shutting down; a `Goodbye` follows.
     ShuttingDown,
-    /// `search` topic: one completed [`RunSearch`](super::RemoteCommand::RunSearch),
-    /// grouped per concrete catalog. `ticket` echoes the request so the frontend can
-    /// drop stale replies; `source` echoes the requested scope (may be `all`).
-    SearchCompleted {
-        #[cfg_attr(feature = "ts-export", ts(type = "number"))]
-        ticket: u64,
-        // Echo the requesting WebView lifetime so a replacement page cannot consume it. This is
-        // deliberately not a field doc: ts-rs emits such docs after a comma-space, introducing
-        // trailing whitespace into the committed generated binding.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        #[cfg_attr(feature = "ts-export", ts(optional))]
-        page_id: Option<String>,
-        query: String,
-        source: crate::search_source::SearchSource,
-        groups: Vec<SearchGroup>,
-    },
     /// `settings` topic: the full settings projection — the initial snapshot and the
-    /// push after every accepted mutation (the GUI's pending overlay reconciles on it).
+    /// push after every accepted mutation (a client's pending overlay reconciles on it).
     /// Boxed like the player model: it dwarfs the unit variants.
     SettingsSnapshot {
         model: Box<super::model_settings::SettingsModelV8>,
@@ -241,64 +185,6 @@ pub enum PushEvent {
         video_id: Option<String>,
         lines: Vec<super::model::LyricLineModel>,
     },
-    /// `library` topic: a mutation invalidated the client's paged library cache.
-    LibraryInvalidated,
-    /// `playlists` topic: the retained full playlist summary list.
-    PlaylistsSnapshot {
-        items: Vec<super::model::PlaylistSummaryModel>,
-    },
-    /// `downloads` topic: the retained ordered projection of daemon-owned downloads.
-    DownloadsSnapshot {
-        items: Vec<super::model::DownloadStatusModel>,
-    },
-    /// `transfer` topic: retained daemon-side Spotify import state.
-    TransferState {
-        phase: super::model::TransferPhaseModel,
-        sources: Vec<super::model::SpotifyPlaylistModel>,
-        job: Option<super::model::TransferJobModel>,
-        report: Option<super::model::TransferReportModel>,
-        #[cfg_attr(feature = "ts-export", ts(type = "string | null"))]
-        error: Option<String>,
-    },
-    /// `ai` topic: retained daemon-side DJ Gem transcript and current turn state.
-    AiState {
-        messages: Vec<super::model::AiMessageModel>,
-        thinking: bool,
-        suggestions: Vec<super::model::TrackModel>,
-    },
-    /// `accounts` topic: the retained presence/toggles projection — secrets never
-    /// appear here (session keys and tokens stay config-side).
-    AccountsSnapshot {
-        lastfm: super::model::LastfmAccountModel,
-        listenbrainz: super::model::ListenBrainzAccountModel,
-        spotify: super::model::SpotifyAccountModel,
-        scrobble_local: bool,
-    },
-    /// `accounts` topic, connect half: the browser-approval URL for a just-started
-    /// auth flow. One-shot event — the GUI opens it via win:openUrl; never retained.
-    AccountsAuthUrl { service: String, url: String },
-    /// `accounts` topic: a started auth flow ended without connecting (denied, timed
-    /// out, or errored). One-shot like the URL — the GUI stops its waiting state.
-    AccountsAuthFailed { service: String, error: String },
-    /// `ai` topic sibling: which queue rows carry recorded DJ Gem / autoplay pick
-    /// provenance — the GUI shows its "why?" affordance exactly on these ids and pulls
-    /// the rationale on demand with `fetch_why_gem`.
-    WhyGemProvenance { video_ids: Vec<String> },
-}
-
-/// One catalog's slice of a completed search: a concrete source (never `all`), its
-/// result rows, and a per-source failure string surfaced as a chip (e.g. "jamendo:
-/// no client id") — `None` on success.
-#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
-#[cfg_attr(
-    feature = "ts-export",
-    ts(export, export_to = "gui/src/generated/protocol/")
-)]
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct SearchGroup {
-    pub source: crate::search_source::SearchSource,
-    pub tracks: Vec<super::model::TrackModel>,
-    pub error: Option<String>,
 }
 
 #[cfg(test)]
@@ -311,21 +197,7 @@ mod tests {
 
     #[test]
     fn topic_wire_strings_are_snake_case_and_exhaustive() {
-        let expect = [
-            "player",
-            "queue",
-            "lyrics",
-            "artwork",
-            "library",
-            "playlists",
-            "search",
-            "settings",
-            "ai",
-            "downloads",
-            "transfer",
-            "accounts",
-            "system",
-        ];
+        let expect = ["player", "queue", "lyrics", "settings", "system"];
         for (topic, want) in Topic::ALL.iter().zip(expect) {
             let got = serde_json::to_string(topic).unwrap();
             assert_eq!(got, format!("\"{want}\""));
@@ -350,7 +222,7 @@ mod tests {
             line,
             r#"{"version":8,"token":"tok","hello":{"client":"test","min_version":8}}"#
         );
-        // The discrimination contract (docs/gui/02 §4.3): a Hello line does not parse as
+        // The discrimination contract: a Hello line does not parse as
         // a one-shot request (missing `command`), and vice versa (missing `hello`).
         assert!(serde_json::from_str::<super::super::RemoteRequest>(&line).is_err());
         let one_shot = r#"{"version":7,"token":"tok","command":{"cmd":"status"}}"#;

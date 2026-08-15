@@ -232,15 +232,6 @@ fn runtime_event_policy_covers_leaf_event_classes() {
             lane: EventLane::WorkResult,
         },
     );
-    assert_policy(
-        RuntimeEvent::Api(ApiEvent::GuiSearchCompleted {
-            request_id: crate::api::GuiSearchRequestId::new(0, 9),
-            groups: Vec::new(),
-        }),
-        EventPolicy::MustDeliver {
-            lane: EventLane::WorkResult,
-        },
-    );
 
     assert_policy(
         RuntimeEvent::Artwork(crate::artwork::ArtworkEvent::Result {

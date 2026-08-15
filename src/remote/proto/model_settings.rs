@@ -1,4 +1,4 @@
-//! The v8 `settings` topic read model (docs/gui/05 §5.2).
+//! The v8 `settings` topic read model.
 //!
 //! A full-config projection pushed as `settings_snapshot` — on subscribe and after any
 //! mutation. Field names and value shapes are the contract the GUI settings store binds
@@ -17,11 +17,6 @@ use super::model_player::EqModel;
 
 /// Runtime state of the managed long-form seek controller. This is deliberately separate from
 /// the persisted requested mode in [`crate::config::LongFormSeekOptimization`].
-#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
-#[cfg_attr(
-    feature = "ts-export",
-    ts(export, export_to = "gui/src/generated/protocol/")
-)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LongFormSeekEffective {
@@ -38,11 +33,6 @@ pub enum LongFormSeekEffective {
 }
 
 /// Closed, machine-readable reason vocabulary for long-form seek decisions and fallbacks.
-#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
-#[cfg_attr(
-    feature = "ts-export",
-    ts(export, export_to = "gui/src/generated/protocol/")
-)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LongFormSeekReason {
@@ -78,15 +68,9 @@ pub enum LongFormSeekReason {
     MediaClosed,
 }
 
-#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
-#[cfg_attr(
-    feature = "ts-export",
-    ts(export, export_to = "gui/src/generated/protocol/")
-)]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SettingsModelV8 {
     /// Monotonic per-owner-run change counter; the GUI uses it only for staleness cues.
-    #[cfg_attr(feature = "ts-export", ts(type = "number"))]
     pub rev: u64,
     pub playback: PlaybackSettingsModel,
     pub eq: EqModel,
@@ -100,11 +84,6 @@ pub struct SettingsModelV8 {
     pub keymap: KeymapSettingsModel,
 }
 
-#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
-#[cfg_attr(
-    feature = "ts-export",
-    ts(export, export_to = "gui/src/generated/protocol/")
-)]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PlaybackSettingsModel {
     /// Playback speed in tenths: `10` = 1.0×, `15` = 1.5× (same unit the panel uses).
@@ -121,11 +100,6 @@ pub struct PlaybackSettingsModel {
     pub repeat: Repeat,
 }
 
-#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
-#[cfg_attr(
-    feature = "ts-export",
-    ts(export, export_to = "gui/src/generated/protocol/")
-)]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct StreamingSettingsModel {
     pub ai_enabled: bool,
@@ -139,11 +113,6 @@ pub struct StreamingSettingsModel {
     pub has_gemini_key: bool,
 }
 
-#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
-#[cfg_attr(
-    feature = "ts-export",
-    ts(export, export_to = "gui/src/generated/protocol/")
-)]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SearchSettingsModel {
     pub default_source: SearchSource,
@@ -156,11 +125,6 @@ pub struct SearchSettingsModel {
     pub jamendo_client_id: Option<String>,
 }
 
-#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
-#[cfg_attr(
-    feature = "ts-export",
-    ts(export, export_to = "gui/src/generated/protocol/")
-)]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct UiSettingsModel {
     /// BCP-47-ish short code the GUI i18n catalog keys off: `en` | `ko`.
@@ -170,11 +134,6 @@ pub struct UiSettingsModel {
     pub romanized_titles: bool,
 }
 
-#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
-#[cfg_attr(
-    feature = "ts-export",
-    ts(export, export_to = "gui/src/generated/protocol/")
-)]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct StorageSettingsModel {
     /// Display strings (paths), never validated shell-side.
@@ -183,11 +142,6 @@ pub struct StorageSettingsModel {
     pub download_concurrency: u32,
 }
 
-#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
-#[cfg_attr(
-    feature = "ts-export",
-    ts(export, export_to = "gui/src/generated/protocol/")
-)]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AudioSettingsModel {
     // Deliberately not field docs: ts-rs otherwise emits trailing whitespace before the JSDoc.
@@ -199,24 +153,16 @@ pub struct AudioSettingsModel {
     pub mpv_cache_back: String,
     // Present only when the owner advertises `long-form-seek-optimization-v1`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(feature = "ts-export", ts(optional))]
     pub long_form_seek_optimization: Option<crate::config::LongFormSeekOptimization>,
     // Read-only runtime state; capability presence makes all three long-form fields mandatory.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(feature = "ts-export", ts(optional))]
     pub long_form_seek_effective: Option<LongFormSeekEffective>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(feature = "ts-export", ts(optional))]
     pub long_form_seek_reason: Option<LongFormSeekReason>,
 }
 
 /// Mirrors [`crate::config::AnimationsConfig`] field-for-field (minus the TUI-only
 /// `radio_master` scope selector): master/behaviour knobs + the 40 effect flags.
-#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
-#[cfg_attr(
-    feature = "ts-export",
-    ts(export, export_to = "gui/src/generated/protocol/")
-)]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AnimationsModel {
     pub master: bool,
@@ -264,11 +210,6 @@ pub struct AnimationsModel {
     pub plasma: bool,
 }
 
-#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
-#[cfg_attr(
-    feature = "ts-export",
-    ts(export, export_to = "gui/src/generated/protocol/")
-)]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ThemeSettingsModel {
     pub preset: String,
@@ -282,11 +223,6 @@ pub struct ThemeSettingsModel {
     pub presets: Vec<ThemePresetModel>,
 }
 
-#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
-#[cfg_attr(
-    feature = "ts-export",
-    ts(export, export_to = "gui/src/generated/protocol/")
-)]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ThemePresetModel {
     /// Stable preset id used by setting-change commands.
@@ -296,23 +232,13 @@ pub struct ThemePresetModel {
     pub swatch: std::collections::BTreeMap<String, String>,
 }
 
-/// The live keymap and action catalog (docs/gui/05 §8).
-#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
-#[cfg_attr(
-    feature = "ts-export",
-    ts(export, export_to = "gui/src/generated/protocol/")
-)]
+/// The live keymap and action catalog.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct KeymapSettingsModel {
     pub bindings: std::collections::BTreeMap<String, String>,
     pub actions: Vec<ActionInfoModel>,
 }
 
-#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
-#[cfg_attr(
-    feature = "ts-export",
-    ts(export, export_to = "gui/src/generated/protocol/")
-)]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ActionInfoModel {
     pub context: String,

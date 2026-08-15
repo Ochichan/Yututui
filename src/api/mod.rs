@@ -4,7 +4,6 @@
 
 mod actor;
 mod domain;
-mod gui_search;
 mod protocol;
 pub mod ytmusic;
 
@@ -23,8 +22,6 @@ pub use domain::{
     sanitize_artist, sanitize_duration, sanitize_metadata_text, sanitize_provider_id,
     sanitize_title,
 };
-pub(crate) use gui_search::gui_search_row_id;
-pub use gui_search::{GUI_SEARCH_ROW_ID_MAX_BYTES, GuiSearchGroup, GuiSearchRequestId};
 pub use protocol::{
     ApiCmd, ApiCommandKind, ApiEnqueueError, ApiEvent, ApiHandle, ApiMode, ArtistIntent,
     PlaylistIntent,

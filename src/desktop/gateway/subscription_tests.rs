@@ -210,7 +210,7 @@ async fn missing_subscription_reply_times_out_without_losing_desired_state() {
     let (_command_tx, mut command_rx) = mpsc::channel(1);
     let desired = SubscriptionState {
         page_id: Some("page-delayed".to_owned()),
-        topics: vec![Topic::Search],
+        topics: vec![Topic::Player],
     };
     let (_subscription_tx, mut subscription_rx) = watch::channel(desired.clone());
     let online = AtomicBool::new(true);
@@ -234,14 +234,14 @@ async fn missing_subscription_reply_times_out_without_losing_desired_state() {
     assert_eq!(
         frame.op,
         ClientOp::Subscribe {
-            topics: vec![Topic::System, Topic::Search]
+            topics: vec![Topic::System, Topic::Player]
         }
     );
     let _ = std::fs::remove_file(&endpoint);
 }
 
 #[tokio::test]
-async fn replacement_search_waits_for_its_page_subscription_ack() {
+async fn replacement_command_waits_for_its_page_subscription_ack() {
     let endpoint = std::env::temp_dir()
         .join(format!("ytt-gw-page-search-{}.sock", std::process::id()))
         .to_string_lossy()
@@ -250,7 +250,7 @@ async fn replacement_search_waits_for_its_page_subscription_ack() {
     let conn = connect(&endpoint).await;
     let (initial_seen_tx, initial_seen_rx) = oneshot::channel();
     let (replacement_queued_tx, replacement_queued_rx) = oneshot::channel();
-    let (search_seen_tx, search_seen_rx) = oneshot::channel();
+    let (command_seen_tx, command_seen_rx) = oneshot::channel();
     let (shutdown_sent_tx, shutdown_sent_rx) = oneshot::channel();
     let server = tokio::spawn(async move {
         let peer = listener.accept().await.unwrap();
@@ -304,22 +304,22 @@ async fn replacement_search_waits_for_its_page_subscription_ack() {
 
         let mut line = String::new();
         reader.read_line(&mut line).await.unwrap();
-        let search: ClientFrame = serde_json::from_str(line.trim()).unwrap();
-        assert_eq!(search.page_id.as_deref(), Some("page-b"));
+        let command: ClientFrame = serde_json::from_str(line.trim()).unwrap();
+        assert_eq!(command.page_id.as_deref(), Some("page-b"));
         assert!(matches!(
-            search.op,
-            ClientOp::Command(RemoteCommand::RunSearch { ticket: 1, .. })
+            command.op,
+            ClientOp::Command(RemoteCommand::TogglePause)
         ));
         write_line(
             &peer,
             &ServerFrame::Reply {
-                id: search.id,
-                resp: RemoteResponse::ok("searching".to_string()),
+                id: command.id,
+                resp: RemoteResponse::ok("paused".to_string()),
             },
         )
         .await
         .unwrap();
-        let _ = search_seen_tx.send(());
+        let _ = command_seen_tx.send(());
         // Do not drop `peer` until the controller has published shutdown. Otherwise socket EOF
         // can win before the shutdown signal exists and make the session reason nondeterministic.
         let _ = shutdown_sent_rx.await;
@@ -330,13 +330,13 @@ async fn replacement_search_waits_for_its_page_subscription_ack() {
     let (command_tx, mut command_rx) = mpsc::channel(2);
     let (subscription_tx, mut subscription_rx) = watch::channel(SubscriptionState {
         page_id: Some("page-a".to_string()),
-        topics: vec![Topic::Search],
+        topics: vec![Topic::Player],
     });
     let controller = async move {
         initial_seen_rx.await.unwrap();
         subscription_tx.send_replace(SubscriptionState {
             page_id: Some("page-b".to_string()),
-            topics: vec![Topic::Search],
+            topics: vec![Topic::Player],
         });
         command_tx
             .send(OutEnvelope {
@@ -345,12 +345,8 @@ async fn replacement_search_waits_for_its_page_subscription_ack() {
                 page_id: Some("page-a".to_string()),
                 request_id: Some("gui:page-a:9".to_string()),
                 kind: OutKind::Cmd,
-                name: "run_search".to_string(),
-                payload: serde_json::json!({
-                    "ticket": 9,
-                    "query": "stale",
-                    "source": "all",
-                }),
+                name: "toggle_pause".to_string(),
+                payload: serde_json::json!({}),
             })
             .await
             .unwrap();
@@ -361,17 +357,13 @@ async fn replacement_search_waits_for_its_page_subscription_ack() {
                 page_id: Some("page-b".to_string()),
                 request_id: Some("gui:page-b:1".to_string()),
                 kind: OutKind::Cmd,
-                name: "run_search".to_string(),
-                payload: serde_json::json!({
-                    "ticket": 1,
-                    "query": "beta",
-                    "source": "all",
-                }),
+                name: "toggle_pause".to_string(),
+                payload: serde_json::json!({}),
             })
             .await
             .unwrap();
         let _ = replacement_queued_tx.send(());
-        search_seen_rx.await.unwrap();
+        command_seen_rx.await.unwrap();
         let _ = shutdown_tx.send(());
         let _ = shutdown_sent_tx.send(());
     };
