@@ -2,8 +2,8 @@ name: build
 
 # Release / packaging pipeline on GitHub-hosted runners (no cross-compilation): `ytt` for
 # every platform, plus the `yututray` tray companion on macOS and Windows only. Linux ships
-# the TUI binary only; its desktop integration lives in `ytt` via MPRIS. The full GUI app is
-# intentionally not a release artifact yet. native-tls means each OS uses its system TLS —
+# the TUI binary only; its desktop integration lives in `ytt` via MPRIS. native-tls means
+# each OS uses its system TLS —
 # Security.framework / SChannel / OpenSSL — so Windows needs no NASM/C-crypto toolchain and
 # Linux only needs libssl-dev. Every archive gets a SHA-256 sidecar; the release job folds
 # them into a single checksums.txt. On a v* tag, three publish jobs render the packaging/
