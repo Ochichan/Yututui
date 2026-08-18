@@ -531,6 +531,7 @@ fn media_snapshot_for_radio_stream_disables_track_specific_music_controls() {
 #[tokio::test]
 async fn remote_commands_cover_no_load_branches() {
     let mut engine = engine_with_queue(&[]);
+    engine.silence_remote_persistence_for_test();
 
     for command in [
         RemoteCommand::Next,
