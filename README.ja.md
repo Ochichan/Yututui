@@ -9,7 +9,7 @@
 
 ターミナルの中で楽しむ YouTube Music — 速くて、キーボードで操れて、RAM をじわじわ食うブラウザのタブも広告もありません。すべて3文字のコマンド一つで: `ytt`。Rust + ratatui。MIT。
 
-Public beta: 毎日使えるくらいには安定していますが、まだ速く動いている最中です。
+毎日使えるくらいには安定していますが、まだ速く動いている最中です。
 
 ### [▶ ライブデモ・機能ツアー → ochichan.github.io/Yututui](https://ochichan.github.io/Yututui/)
 
@@ -88,7 +88,9 @@ macOS と Windows のリリースには、メニューバー / 通知領域の�
 
 ログイン時の自動起動は任意です: `yututray --install-startup`。
 
-パッケージ版にはネイティブ Tray とミニプレイヤー (`yututray --mini`) が含まれます。
+`yututray` と `yututray --background` は Tray 専用で起動し、`--mini` はネイティブのミニプレイヤーを開きます。起動中にもう一度素のコマンドを実行すると、2 つ目の Tray アイコンを作らず、既存インスタンスにミニプレイヤーの表示を依頼します。Windows では左クリックがミニプレイヤーをトグルし、右クリックがメニューを開きます。macOS はステータス項目のネイティブメニューを維持し、**Show Mini Player** からミニプレイヤーを表示します。
+
+固定していないミニプレイヤーはポップオーバーのように振る舞い、フォーカスが離れると隠れます。固定すると常に表示・常に最前面になり、モニター基準の位置も復元されます。Tray 専用とミニ専用のモードはタスクバー/Dock とアプリスイッチャーに出ません。
 
 </details>
 
@@ -172,7 +174,7 @@ audio-output.png · retro.png · transfer.gif · help.png · onboarding.gif · c
 
 ### DJ Gem ストリーミング
 
-**`Ctrl+R`** で、今聴いている曲を軸にした果てしないステーションを作ります — **`w`** を押すと、それぞれの曲を選んだ理由をやさしい言葉で見せてくれます。
+**`Ctrl+R`** は、いま聴いている曲を軸にした果てしないステーションを作ります。おすすめ曲にはキューと Now Playing の横にクリック可能な **`?`** が付きます。キューを開いた状態で **`w`** を押すと選択中の行を、それ以外の場所では現在の曲を説明します。カードにはおすすめの出典が常に表示され、DJ Gem が提供した場合はその役割・平易な理由・確信度も加わります。モデル詳細なしで選ばれた曲は出典のみ表示されます。
 
 > 🖼️ *GIF は近日追加予定。*
 <!-- 📸 埋め方: docs/media/djgem.gif を追加し、上の「近日追加」行を消して、次の行のコメントを外してください:
@@ -319,7 +321,9 @@ audio-output.png · retro.png · transfer.gif · help.png · onboarding.gif · c
 | `Shift+B` | ドッキングされたコントロールボックスの折りたたみ / 展開 |
 | `←` / `→` · `Ctrl+←` / `Ctrl+→` | テキスト欄で一文字ずつ · 単語単位でカーソル移動 |
 | `Backspace` / `Ctrl+Backspace` | テキスト欄で一文字 / 前の単語を削除 |
+| `Ctrl+H` | プレイヤーに戻る（レガシーな曖昧ターミナルでは安全なテキスト編集 fallback が優先） |
 | `Ctrl+R` | DJ Gem ストリーミング |
+| `w` | 選択中のキューのおすすめ曲、または現在の曲を説明 |
 | `g` | DJ Gem アシスタント |
 | `o` | 設定 |
 | `Ctrl+Q` | 終了 |
@@ -357,6 +361,7 @@ audio-output.png · retro.png · transfer.gif · help.png · onboarding.gif · c
 | アルバムアートが出ない | 初期設定はオフ: 設定 → 全般 → **アルバムアート**をオンにして再起動。 |
 | ターミナルによってアルバムアート/拡大の挙動が違う | `ytt doctor terminal --json` を実行し、[terminal matrix](docs/terminal-compatibility.md) と照合してください。 |
 | terminal liveness エラーで TUI が終了する | `ytt doctor terminal --json` とエラーの failure class/stage を保存してください。EOF/HUP と確認済み multiplexer detach は即時終了します。曖昧な cursor 応答と owner-layer 照会は独立して二回確認します。liveness output-gate の競合中は probe を延期し、owner frame/control 出力には別の七秒の制限時間を適用します。ターミナルを閉じても再生を続けたい場合だけ `ytt daemon` を使います。 |
+| `Ctrl+Backspace` が `Ctrl+H` のように動く、またはプレイヤー内の移動が効かない | [キーボード入力モード](docs/terminal-compatibility.md#keyboard-input-modes) を参照。直接接続の最新ターミナルは対応していれば正確なプロトコルを交渉し、レガシー/マルチプレクサのセッションはそのバインディングが既定の間、曖昧な `^H` を安全な単語削除用に予約します。 |
 | VS Code / Apple Terminal でアルバムアートがカクカク | それらのターミナルには画像プロトコルがありません — halfblock が意図された fallback です。 |
 | 素の Linux コンソールや古い SSH で表示が崩れる | レトロモードをオンに（設定 → グラフィック）: すべてが CP437 安全に描き直され、アルバムアートは ASCII アートになります。 |
 | SSH / 素の TTY で `v`（MV）が反応しない | 動画オーバーレイは mpv の GUI ウィンドウです — デスクトップセッションが必要です。 |
@@ -447,15 +452,19 @@ ytt daemon stop             # デーモン停止 + mpv の後始末
 ytt auth spotify --client-id <YOUR-CLIENT-ID>   # 初回のみ PKCE ブラウザ接続
 ytt transfer import <spotify-url-or-id>          # → 新しい YTM プレイリスト
 ytt transfer import liked --to likes             # Spotify のいいね → YTM のいいね (順序保持)
+ytt transfer import <url> --media music-video    # → 別の公式系 MV プレイリスト
+ytt transfer import liked --media music-video    # Spotify のいいねも同じ MV モードで
 ytt transfer import <url> --policy strict        # より保守的なレビュー中心マッチング
-ytt transfer export ytm:<id> --to spotify        # 逆方向
+ytt transfer export ytm:<id> --to spotify        # Spotify に作成/追加（ライブ同期ではない）
+ytt transfer export ytm:<id> --to spotify:<22-character-playlist-id> --sync --dry-run
+                                                  # 既存プレイリストへの完全ミラーをプレビュー
 ytt transfer backup --dir ~/music-backup --csv   # 全 YTM プレイリスト → JSON (+CSV)
 ytt transfer resume <job-id>                     # レート制限/中断後の再開
 ```
 
-TUI の中でも: 設定 → **アカウント** → *Spotify からインポート…* — 音楽を流したままで。
+TUI の中でも: 設定 → **アカウント** → *Spotify からインポート…* — 音楽を流したままで。その 4 番目のモード **Music video playlist** は、Library → Playlists に別のミュージックビデオプレイリストを書き出します。
 
-**初回のみの設定（約5分）。** Development Mode の Spotify アプリは自分で許可リストに入れたアカウントしか受け付けないので、各自が自分の無料アプリを作ります。クライアント*シークレット*はありません — PKCE は使わないので。
+**初回のみの設定（約5分）。** Development Mode の Spotify アプリは自分で許可リストに入れたアカウントしか受け付けないので、各自が自分の個人用アプリを作ります。[Spotify の 2026 年 Dev-Mode ルール](https://developer.spotify.com/documentation/web-api/tutorials/february-2026-migration-guide)では、アプリ所有者に Premium が必要で、新規アプリは Client ID を 1 つだけ持ち、許可リストに入れたユーザーを最大 5 人まで扱えます。クライアント*シークレット*はありません — PKCE はシークレットを使いません。
 
 1. [developer.spotify.com/dashboard](https://developer.spotify.com/dashboard) にログインして **Create app** を押します。
 2. **App name** と **App description** は何でも（例: `yututui`）。
@@ -468,33 +477,14 @@ TUI の中でも: 設定 → **アカウント** → *Spotify からインポー
 
 マッチングはメタデータベースで（NFKC 正規化、CJK 安全）、Spotify インポートをキャッシュ優先・アルバム認識・YTM カタログ優先で解決してから、公開 YouTube 動画へ fallback します。CLI の既定は `--policy balanced`; 保守的なレビュー中心マッチングは `--policy strict`、レビュー行を減らすには `--policy aggressive`、一般の公開アップロードでも良い場合のみ `--allow-user-videos`。あいまいな曲は黙って当てずっぽうにせず、ジョブレポートに残ります — `--take-best` / `--min-score` で再実行するか、大きなプレイリストは `--dry-run` で確認してから `ytt transfer resume <job-id>` で書き込みを。
 
-</details>
+`--media music-video` は Spotify プレイリストと `liked` で使え、保存先の名前を指定しないかぎり `<元の名前> (Music Videos)` プレイリストを別に作ります。YouTube Music の OMV / OfficialSourceMusic 分類と、強く裏付けられた公式チャンネルを優先します。これは公式系の best-effort 判定であり 100% の保証ではありません。公開 API には決定的な「公式ミュージックビデオ」フラグがないためです。明確に拒否されたユーザーアップロードはレビューでも強制できず、未解決の候補はレポートに残ります。
 
-<details>
-<summary><b>個人データのポータブルエクスポート</b></summary>
+通常の `--to spotify` エクスポートは意図的に非破壊です。プレイリストを見つけるか Spotify の現行 `POST /me/playlists` API で作成し、足りない曲を追加します。Spotify にしかない曲の削除、重複位置の再現、並び替え、以降の編集の監視はしません。
 
-設定、ライブラリ、好みを一つのバージョン付き JSON ファイルにまとめられます。アプリ内では **設定（`o`）→ 全般（General）→ 個人データをエクスポート（Export personal data）**。既定では OS の **Downloads** フォルダに保存されます。
-
-ターミナルから行う場合:
-
-```sh
-ytt data export                         # OS の Downloads フォルダへ
-ytt data export --to ~/safe-existing-dir # 指定した保存先へ
-```
-
-`--to` には**すでに存在するディレクトリ**を指定してください。他のローカルアカウントが完成ファイルを差し替えられる保存先は拒否します。コマンドは保存先ディレクトリを作らず、既存ファイルも上書きせずに、現在のユーザーだけが読める一意な名前の新しい JSON ファイルを作ります。Downloads フォルダを検出できない場合、勝手にカレントディレクトリへ保存せず、`--to DIR` の指定を求めます。
-
-通常のアプリまたはデーモンが起動中なら、CLI はそのプライマリオーナーの最新メモリ状態をエクスポートします。`--new-instance` プレイヤーも起動中の場合、CLI の対象は広告されたプライマリだけです。各セカンダリの最新状態は、その設定画面から個別にエクスポートしてください。現行版の ytt オーナーが一つでも動作中なら、オフラインエクスポートはディスクストアを読みません。
-
-**含まれるもの:** 移行可能な設定、お気に入り、音楽の再生履歴、ラジオのお気に入りと履歴、プレイリスト、パスを含まないローカル曲メタデータ、安全な公開カタログ ID、推薦シグナルとステーションの好み。
-
-**含まれないもの:** Cookie、API キー、OAuth トークン、アカウント識別情報、ファイルシステムのパス、マシン固有のオーディオデバイス設定、再生・取得元・アートワーク・ラジオストリームの URL、実際のダウンロード曲と録音、ダウンロード manifest と sidecar、未送信 scrobble、転送ジョブとレポート、セッションキュー、AI 使用ログ、生成キャッシュ・アートワークキャッシュ・アプリログ、管理対象ツールのバイナリとパス、デスクトップのウィンドウ配置、復旧バックアップ。
-
-> **プライバシー上の注意:** 認証情報とメディア本体は除外されますが、**再生履歴を含む個人ファイル**です。ファイル自体は暗号化されません。安全な場所に保管し、共有するときは内容を確認してください。
-
-この JSON を戻す方法は、下のエクスポート・インポートの項を参照してください。
+破壊的な一回限りの完全ミラーは、`--to spotify:<22-character-playlist-id> --sync` でプレイリスト ID を明示してください。接続中のアカウントが所有するプレイリストのみ受け付けます。先に `--dry-run` を実行すると追加・削除・並び替えがプレビューされ、ソース行が 1 つでも未解決かソースが切り詰められていれば何も変更しません。実実行はソースの順序と重複を保持し、宛先にしかない曲を削除します。`--yes` がなければ置き換え前にプレビューして確認を求めます。`ytt transfer resume <job-id>` も新しいプレビューを作って再確認し、`resume <job-id> --yes` だけはその確認を意図的にスキップします。
 
 </details>
+
 
 <details>
 <summary><b>サインイン Cookie & ファイルの場所</b></summary>
@@ -506,6 +496,21 @@ ytt data export --to ~/safe-existing-dir # 指定した保存先へ
 - 設定: `~/Library/Application Support/yututui/config.json`（macOS）· `~/.config/yututui/config.json`（Linux）· `%APPDATA%\yututui\config.json`（Windows）— その隣に `playlists.json`、`scrobble-queue.jsonl`、`transfers/`。
 - ダウンロード: `~/Music/yututui` — **Download dir** 設定か `YTM_DOWNLOAD_DIR` で変更。
 - `GEMINI_API_KEY` と `YTM_DOWNLOAD_DIR` 環境変数は、起動時に保存済み設定より優先されます。
+
+**ポータブルな個人データのエクスポート。** アプリで **設定（`o`）→ 全般 → 個人データをエクスポート** を選ぶか、次を実行します:
+
+```sh
+ytt data export                         # OS の Downloads フォルダに保存
+ytt data export --to ~/existing-folder # 既存のディレクトリを指定
+```
+
+`--to` にはファイル名ではなくディレクトリを指定し、YuTuTui! がディレクトリを作ることはありません。他のローカルアカウントが完成ファイルを差し替えられる保存先は拒否します。結果は、既存ファイルを上書きしない所有者専用の新しいバージョン付き JSON ファイルです。機密情報を除いたポータブル設定、曲とラジオのお気に入り、再生・ラジオ履歴、プレイリスト、安全な曲メタデータと公開カタログ ID、推薦シグナル・アーティスト親和度・ステーション設定が含まれます。
+
+メインのアプリまたはデーモンが起動中なら、CLI はそのオーナーの現在のメモリ状態をエクスポートします。`--new-instance` プレイヤーが同時に起動していても、CLI がエクスポートするのは広告されたプライマリだけです。各セカンダリの最新状態は、それぞれの設定画面から個別にエクスポートしてください。現行版の ytt オーナーが 1 つでも動作中なら、オフラインエクスポートはディスクストアを読みません。
+
+認証 Cookie、API キー、OAuth トークンとアカウント識別子、すべてのファイルシステムパスとマシン固有のオーディオ設定、再生・取得元・アートワーク・ラジオストリームの URL、ダウンロード・録音メディアと manifest・sidecar、未送信スクロブル、転送ジョブ・レポートとセッションキュー、AI 使用ログ、生成キャッシュ・アートワークキャッシュ・アプリログ、管理対象ツールのバイナリとパス、デスクトップジオメトリと復旧バックアップは除外されます。
+
+この JSON は**暗号化されず**、個人の再生履歴が含まれるため、保管や共有の際は個人ファイルとして扱ってください。取り込み方は下のエクスポート・インポートの項を参照してください。
 
 </details>
 

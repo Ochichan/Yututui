@@ -9,7 +9,7 @@
 
 YouTube Music in your terminal — fast, keyboard-driven, no browser tab eating your RAM, no ads. All behind a three-letter command: `ytt`. Rust + ratatui. MIT.
 
-Public beta: stable enough for daily use, still moving fast.
+Stable enough for daily use, still moving fast.
 
 ### [▶ Live demo & the full feature tour → ochichan.github.io/Yututui](https://ochichan.github.io/Yututui/)
 

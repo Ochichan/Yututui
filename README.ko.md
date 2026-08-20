@@ -9,7 +9,7 @@
 
 터미널 안에서 즐기는 YouTube Music — 빠르고, 키보드로 다루고, 램을 야금야금 먹는 브라우저 탭도 광고도 없습니다. 전부 세 글자 명령 하나로: `ytt`. Rust + ratatui. MIT.
 
-Public beta: 매일 쓰기엔 충분히 안정적이지만, 아직 빠르게 움직이는 중입니다.
+매일 쓰기엔 충분히 안정적이지만, 아직 빠르게 움직이는 중입니다.
 
 ### [▶ 라이브 데모 · 기능 전체 둘러보기 → ochichan.github.io/Yututui](https://ochichan.github.io/Yututui/)
 
@@ -88,7 +88,9 @@ macOS와 Windows 릴리스에는 메뉴바/알림 영역 미니 플레이어인 
 
 로그인 시 자동 실행은 선택 사항입니다: `yututray --install-startup`.
 
-패키지 릴리스에는 네이티브 tray와 미니 플레이어(`yututray --mini`)가 포함됩니다.
+`yututray`와 `yututray --background`는 tray 전용으로 시작하고, `--mini`는 네이티브 미니 플레이어를 엽니다. 이미 실행 중일 때 bare 명령을 다시 실행하면 두 번째 tray 아이콘을 만들지 않고 기존 인스턴스에 미니 플레이어 표시를 요청합니다. Windows에서는 좌클릭이 미니 플레이어를 토글하고 우클릭이 메뉴를 열며, macOS는 상태 항목의 네이티브 메뉴를 유지하고 **Show Mini Player**로 미니 플레이어를 노출합니다.
+
+고정하지 않은 미니 플레이어는 popover처럼 동작하며 포커스가 떠나면 숨습니다. 고정하면 항상 보이고 맨 위에 유지되며 모니터 기준 위치를 복원합니다. tray 전용·미니 전용 모드는 작업 표시줄/Dock과 앱 전환기에 나타나지 않습니다.
 
 </details>
 
@@ -170,7 +172,7 @@ audio-output.png · retro.png · transfer.gif · help.png · onboarding.gif · c
 
 ### DJ Gem 스트리밍
 
-**`Ctrl+R`** 을 누르면 지금 듣는 곡을 중심으로 끝없는 스테이션을 만들어줍니다 — **`w`** 를 누르면 각 곡을 고른 이유를 쉬운 말로 보여줘요.
+**`Ctrl+R`**은 지금 듣는 곡을 중심으로 끝없는 스테이션을 만듭니다. 추천 곡에는 큐와 Now Playing 옆에 클릭 가능한 **`?`**가 붙습니다. 큐를 연 상태에서 **`w`**를 누르면 선택한 행을 설명하고, 그 외에는 현재 곡을 설명합니다. 카드에는 추천 출처가 항상 표시되고, DJ Gem이 제공한 경우 역할·쉬운 말 이유·신뢰도가 함께 나옵니다. 모델 상세 정보 없이 고른 곡은 출처만 표시됩니다.
 
 > 🖼️ *움짤 준비 중!*
 <!-- 📸 채우는 법: docs/media/djgem.gif 를 추가하고, 위의 "준비 중" 줄을 지운 뒤 아래 줄 주석을 해제하세요:
@@ -317,7 +319,9 @@ audio-output.png · retro.png · transfer.gif · help.png · onboarding.gif · c
 | `Shift+B` | 도킹된 컨트롤 박스 접기 / 펼치기 |
 | `←` / `→` · `Ctrl+←` / `Ctrl+→` | 텍스트 입력칸에서 한 글자씩 · 단어씩 커서 이동 |
 | `Backspace` / `Ctrl+Backspace` | 텍스트 입력칸에서 한 글자 / 이전 단어 삭제 |
+| `Ctrl+H` | 플레이어로 복귀 (레거시 모호 터미널에서는 안전한 텍스트 편집 fallback이 우선) |
 | `Ctrl+R` | DJ Gem 스트리밍 |
+| `w` | 선택한 큐 추천 곡 또는 현재 곡 설명 |
 | `g` | DJ Gem 어시스턴트 |
 | `o` | 설정 |
 | `Ctrl+Q` | 종료 |
@@ -355,6 +359,7 @@ audio-output.png · retro.png · transfer.gif · help.png · onboarding.gif · c
 | 앨범 아트가 안 보임 | 기본은 꺼짐: 설정 → 일반 → **앨범 아트** 켜고 재시작. |
 | 터미널마다 앨범 아트/확대 동작이 다름 | `ytt doctor terminal --json`을 실행하고 [terminal matrix](docs/terminal-compatibility.md)와 비교하세요. |
 | 터미널 liveness 오류로 TUI가 종료됨 | `ytt doctor terminal --json` 결과와 오류의 failure class/stage를 보관하세요. EOF/HUP 및 확인된 multiplexer detach는 즉시 종료합니다. 모호한 cursor 응답과 owner-layer 조회는 독립적으로 두 번 확인합니다. Liveness output-gate 경합 중에는 probe를 미루고, owner frame/control 출력에는 별도의 7초 제한 시간을 적용합니다. 터미널과 무관하게 재생하려는 경우에만 `ytt daemon`을 쓰세요. |
+| `Ctrl+Backspace`이 `Ctrl+H`처럼 동작하거나 플레이어 이동이 억제됨 | [키보드 입력 모드](docs/terminal-compatibility.md#keyboard-input-modes) 참고. 직접 연결된 최신 터미널은 지원 시 정확한 프로토콜을 협상하고, 레거시/multiplexer 세션은 해당 바인딩이 기본값인 동안 모호한 `^H`를 안전한 단어 삭제용으로 예약합니다. |
 | VS Code / Apple Terminal에서 앨범 아트가 각져 보임 | 그 터미널들엔 이미지 프로토콜이 없어요 — halfblock이 의도된 fallback입니다. |
 | 맨몸 리눅스 콘솔·오래된 SSH에서 화면이 깨짐 | 레트로 모드를 켜세요(설정 → 그래픽): 모든 것이 CP437 안전으로 다시 그려지고, 앨범 아트는 ASCII 아트가 됩니다. |
 | SSH / 맨몸 TTY에서 `v`(뮤직비디오)가 반응 없음 | 영상 오버레이는 mpv GUI 창입니다 — 데스크톱 세션이 필요해요. |

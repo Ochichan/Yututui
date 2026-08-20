@@ -12,7 +12,7 @@ severe). Please leave reasonable time for a fix before public disclosure.
 
 ## Supported versions
 
-YuTuTui! is a fast-moving public beta. Only the **latest release** receives security
+YuTuTui! is a fast-moving project. Only the **latest release** receives security
 fixes — older versions are not patched retroactively. Update paths for every install
 method are listed in the in-app update notice and the README.
 
