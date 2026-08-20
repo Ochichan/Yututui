@@ -1,6 +1,6 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use age::secrecy::{ExposeSecret as _, SecretString};
+use age::secrecy::SecretString;
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
 use super::playlist_catalog::merge_missing_playlist_recovery_rows;
