@@ -2,8 +2,6 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use futures::StreamExt as _;
-
 use super::*;
 
 const METADATA_ITEMS_PER_REFRESH: usize = 64;

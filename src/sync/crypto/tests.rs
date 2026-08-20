@@ -1,6 +1,6 @@
 use age::secrecy::ExposeSecret;
-use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
+
 use data_encoding::HEXLOWER;
 use ed25519_dalek::{Signer, SigningKey};
 use serde::{Deserialize, Serialize};
