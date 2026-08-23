@@ -710,11 +710,11 @@ pub(crate) fn atomic_replace(from: &Path, to: &Path) -> io::Result<()> {
 
     let from = wide_path(from)?;
     let to = wide_path(to)?;
-    // SAFETY: both UTF-16 buffers are NUL-terminated and live through the call. The temp and
-    // target are in the same private directory, and REPLACE_EXISTING gives Windows the atomic
-    // overwrite semantics that `std::fs::rename` does not provide there.
     const ATTEMPTS: u32 = 4;
     for attempt in 0..ATTEMPTS {
+        // SAFETY: both UTF-16 buffers are NUL-terminated and live through the call. The temp
+        // and target are in the same private directory, and REPLACE_EXISTING gives Windows the
+        // atomic overwrite semantics that `std::fs::rename` does not provide there.
         if unsafe {
             MoveFileExW(
                 from.as_ptr(),
