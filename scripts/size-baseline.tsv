@@ -3,6 +3,7 @@
 1357	src/app/local_import.rs
 1576	src/daemon/engine.rs
 1573	src/ui/anim/canvas.rs
+1540	src/util/safe_fs.rs
 1079	src/ui/control_box.rs
 1532	src/terminal_runtime/runner.rs
 1526	src/theme.rs
