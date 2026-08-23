@@ -703,6 +703,7 @@ fn wide_path(path: &Path) -> io::Result<Vec<u16>> {
 #[cfg(windows)]
 pub(crate) fn atomic_replace(from: &Path, to: &Path) -> io::Result<()> {
     ensure_process_mutation_allowed()?;
+    use windows_sys::Win32::Foundation::{ERROR_ACCESS_DENIED, ERROR_SHARING_VIOLATION};
     use windows_sys::Win32::Storage::FileSystem::{
         MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
     };
@@ -712,18 +713,35 @@ pub(crate) fn atomic_replace(from: &Path, to: &Path) -> io::Result<()> {
     // SAFETY: both UTF-16 buffers are NUL-terminated and live through the call. The temp and
     // target are in the same private directory, and REPLACE_EXISTING gives Windows the atomic
     // overwrite semantics that `std::fs::rename` does not provide there.
-    if unsafe {
-        MoveFileExW(
-            from.as_ptr(),
-            to.as_ptr(),
-            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
-        )
-    } == 0
-    {
-        Err(io::Error::last_os_error())
-    } else {
-        Ok(())
+    const ATTEMPTS: u32 = 4;
+    for attempt in 0..ATTEMPTS {
+        if unsafe {
+            MoveFileExW(
+                from.as_ptr(),
+                to.as_ptr(),
+                MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+            )
+        } != 0
+        {
+            return Ok(());
+        }
+        let error = io::Error::last_os_error();
+        // Windows Defender and other transient scanners can hold a just-written destination open
+        // for a few milliseconds, surfacing as ACCESS_DENIED / SHARING_VIOLATION even though no
+        // application handle is open (every safe_fs reader shares FILE_SHARE_DELETE). Retry
+        // briefly instead of failing a durable state write on a lock the process never holds.
+        let transient = matches!(
+            error.raw_os_error(),
+            Some(ERROR_ACCESS_DENIED as i32) | Some(ERROR_SHARING_VIOLATION as i32)
+        );
+        if !transient || attempt + 1 == ATTEMPTS {
+            return Err(error);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(
+            25 * u64::from(attempt + 1),
+        ));
     }
+    unreachable!("the retry loop returns on success or on its final attempt");
 }
 
 #[cfg(not(windows))]
