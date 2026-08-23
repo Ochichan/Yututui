@@ -730,10 +730,9 @@ pub(crate) fn atomic_replace(from: &Path, to: &Path) -> io::Result<()> {
         // for a few milliseconds, surfacing as ACCESS_DENIED / SHARING_VIOLATION even though no
         // application handle is open (every safe_fs reader shares FILE_SHARE_DELETE). Retry
         // briefly instead of failing a durable state write on a lock the process never holds.
-        let transient = matches!(
-            error.raw_os_error(),
-            Some(ERROR_ACCESS_DENIED as i32) | Some(ERROR_SHARING_VIOLATION as i32)
-        );
+        let raw = error.raw_os_error();
+        let transient =
+            raw == Some(ERROR_ACCESS_DENIED as i32) || raw == Some(ERROR_SHARING_VIOLATION as i32);
         if !transient || attempt + 1 == ATTEMPTS {
             return Err(error);
         }
