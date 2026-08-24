@@ -304,7 +304,7 @@ First aid, always: **`ytt doctor`** checks mpv, yt-dlp and ffmpeg and tells you 
 | Nothing plays, or it errors on play | mpv or yt-dlp missing — run `ytt doctor`. |
 | Sound goes to the wrong device | Settings → Playback → **Audio output** picks from the detected local outputs; **Audio backend** exposes the mpv options. |
 | Worked yesterday, not today | YouTube changed something — `ytt tools update`, then `ytt tools status --why`; if a managed update is bad, `ytt tools use system`. |
-| Several tracks fail with 403/429 or "YouTube rejected the stream" | Run `ytt doctor --verbose`, check the [cookies reference](#reference), and make sure a supported JS runtime is available; `ytt tools status --why` shows the active yt-dlp. |
+| Several tracks fail with 403/429 or "YouTube rejected the stream" | YouTube's bot protection. Run `ytt doctor --verbose` (it now reports PO-token/oauth readiness), check the [cookies reference](#reference), and make sure a supported JS runtime is available; `ytt tools status --why` shows the active yt-dlp. A [PO-token provider](https://github.com/yt-dlp/yt-dlp?tab=readme-ov-file#po-token-guide) or the [oauth plugin](https://github.com/coletdjnz/yt-dlp-youtube-oauth2) usually fixes it for good. |
 | A specific song won't play | It may need sign-in — see the cookies section in the [reference](#reference). |
 | The app runs a different yt-dlp than your shell | That's by design (managed copy vs `PATH`) — see *yt-dlp selection* in the [reference](#reference). |
 
@@ -450,6 +450,8 @@ For a destructive, one-shot exact mirror, use an explicit playlist ID with `--to
 
 <details>
 <summary><b>Sign-in cookies & file locations</b></summary>
+
+**PO tokens & oauth — beyond cookies.** When YouTube starts rejecting *public* streams too (HTTP 403/429 "YouTube rejected the stream"), the fix is usually a **PO-token provider**: install [`bgutil-ytdlp-pot-provider`](https://github.com/Brainicism/bgutil-ytdlp-pot-provider) and add the yt-dlp config line it prints. A more durable sign-in is the [`yt-dlp-youtube-oauth2`](https://github.com/coletdjnz/yt-dlp-youtube-oauth2) plugin (`yt-dlp --plugin-dirs ... --username oauth --password ''` once, then it refreshes itself). `ytt doctor --verbose` now reports which of these are ready on your machine.
 
 **Cookies (optional).** Public songs play anonymously — only members-only/region-locked tracks and account playlists need this. Export your YouTube Music cookies in **Netscape format** to `~/Music/yututui/cookies.txt` (Windows: `%USERPROFILE%\Music\yututui\cookies.txt`) and restart. **Treat that file like a password**, and export the *incognito way*: sign in inside a private window, export `cookies.txt` from that tab, then close the window — a session whose browser is gone never gets rotated or signed out. A good export has `SAPISID`/`SID` lines in it.
 

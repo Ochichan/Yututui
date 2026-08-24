@@ -466,6 +466,11 @@ ytt doctor
 
 補助プログラムをすべて点検し、何が足りず、どう入手すればいいかを正確に教えてくれます。それ以外のすべて — 再生できない曲、出ないアルバムアート、スクロブル、Spotify のエラー — は **[README のトラブルシューティング表](README.ja.md#トラブルシューティング)** に症状別でまとまっています。
 
+**YouTube が突然ストリームを拒否しますか（403/429）？** YouTube のボット対策です。確実に直す方法が 2 つあり、`ytt doctor --verbose` が準備状況を表示するようになりました:
+
+- **PO トークンプロバイダー**（[`bgutil-ytdlp-pot-provider`](https://github.com/Brainicism/bgutil-ytdlp-pot-provider)）— 導入後、その出力が示す yt-dlp 設定行を追加してください; または
+- **oauth プラグイン**（[`yt-dlp-youtube-oauth2`](https://github.com/coletdjnz/yt-dlp-youtube-oauth2)）— `yt-dlp --plugin-dirs … --username oauth --password ''` を一度実行すれば、サインインが維持されます。
+
 まだ困っていたら？ [issue を立てて](https://github.com/Ochichan/Yututui/issues)、見たままを書いてください — OS も添えて。
 
 ---

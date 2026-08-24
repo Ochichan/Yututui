@@ -546,6 +546,11 @@ fn run_inner(verbose: bool) -> i32 {
     }
     println!();
 
+    // 1d) YouTube bot-protection readiness (advisory; the 403/429 era). Read-only:
+    // never downloads or runs a provider — it only reports what is already installed.
+    print_potoken_readiness(&cfg, lang);
+    println!();
+
     // 2) Directories the app needs to write into.
     println!(
         "{}",
@@ -752,6 +757,96 @@ fn linux_wsl_detected() -> bool {
         || std::fs::read_to_string("/proc/sys/kernel/osrelease")
             .map(|s| s.to_ascii_lowercase().contains("microsoft"))
             .unwrap_or(false)
+}
+
+/// YouTube bot-protection readiness (advisory; the 403/429 era). Read-only: it never
+/// downloads or runs a provider — it reports the PO-token provider script, the oauth
+/// plugin, and the cookies file the app would actually use.
+fn print_potoken_readiness(cfg: &config::Config, lang: i18n::Language) {
+    println!(
+        "{}",
+        match lang {
+            i18n::Language::Korean => "YouTube 보안 / 로그인 준비 (권고)",
+            i18n::Language::Japanese => "YouTube 保護 / サインイン準備 (参考)",
+            _ => "YouTube bot protection / sign-in readiness (advisory)",
+        }
+    );
+
+    // The PO-token provider script: yt-dlp runs it via its config when configured.
+    let provider = deps::on_path("bgutil-ytdlp-pot-provider");
+    println!(
+        "  {}",
+        match lang {
+            i18n::Language::Korean => match provider {
+                true => "✓ PO 토큰 공급자 — bgutil-ytdlp-pot-provider 발견됨",
+                false =>
+                    "✗ PO 토큰 공급자 없음 — `bgutil-ytdlp-pot-provider`를 설치하면 403/429 차단을 우회하는 데 도움이 됩니다",
+            },
+            i18n::Language::Japanese => match provider {
+                true => "✓ POトークンプロバイダー — bgutil-ytdlp-pot-provider が見つかりました",
+                false =>
+                    "✗ POトークンプロバイダーなし — `bgutil-ytdlp-pot-provider` を導入すると 403/429 対策に役立ちます",
+            },
+            _ => match provider {
+                true => "✓ PO-token provider — bgutil-ytdlp-pot-provider found on PATH",
+                false =>
+                    "✗ no PO-token provider — installing `bgutil-ytdlp-pot-provider` helps when YouTube blocks streams (403/429)",
+            },
+        }
+    );
+
+    // The oauth plugin: `--list-plugins` is local; older yt-dlp without the flag reads
+    // as "not found" and the guidance line covers it.
+    let oauth = crate::tools::ytdlp_selection().is_some_and(|sel| {
+        command_stdout(&sel.path.to_string_lossy(), &["--list-plugins"])
+            .to_ascii_lowercase()
+            .contains("oauth")
+    });
+    println!(
+        "  {}",
+        match lang {
+            i18n::Language::Korean => match oauth {
+                true => "✓ yt-dlp oauth 플러그인 — youtube-oauth2 발견됨",
+                false =>
+                    "✗ yt-dlp oauth 플러그인 없음 — `yt-dlp-youtube-oauth2`를 설치하면 쿠키보다 오래가는 로그인을 제공합니다",
+            },
+            i18n::Language::Japanese => match oauth {
+                true => "✓ yt-dlp oauth プラグイン — youtube-oauth2 が見つかりました",
+                false =>
+                    "✗ yt-dlp oauth プラグインなし — `yt-dlp-youtube-oauth2` を導入すると Cookie より長持ちするサインインが得られます",
+            },
+            _ => match oauth {
+                true => "✓ yt-dlp oauth plugin — youtube-oauth2 detected",
+                false =>
+                    "✗ no yt-dlp oauth plugin — installing `yt-dlp-youtube-oauth2` gives a sign-in that outlives cookie exports",
+            },
+        }
+    );
+
+    // The cookies file the app resolves at startup (config path or the default location).
+    let cookies = cfg
+        .effective_cookies_file()
+        .is_some_and(|path| path.is_file());
+    println!(
+        "  {}",
+        match lang {
+            i18n::Language::Korean => match cookies {
+                true => "✓ 쿠키 파일 발견됨 — 멤버 전용/지역 제한 곡 재생에 사용됩니다",
+                false =>
+                    "— 쿠키 파일 없음 — 공개 곡은 그대로 재생되고, 제한 곡은 쿠키가 필요합니다",
+            },
+            i18n::Language::Japanese => match cookies {
+                true =>
+                    "✓ Cookie ファイルが見つかりました — メンバー限定/地域制限の曲の再生に使われます",
+                false =>
+                    "— Cookie ファイルなし — 公開曲はそのまま再生でき、制限曲には Cookie が必要です",
+            },
+            _ => match cookies {
+                true => "✓ cookies file found — used for members-only and region-locked tracks",
+                false => "— no cookies file — public tracks still play; gated tracks need one",
+            },
+        }
+    );
 }
 
 /// The "Managed yt-dlp" section: whether the app-managed copy is enabled/installed,

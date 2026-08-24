@@ -304,7 +304,7 @@ audio-output.png · retro.png · transfer.gif · help.png · onboarding.gif · c
 | 何も再生されない、再生でエラー | mpv か yt-dlp がありません — `ytt doctor` を実行。 |
 | 音が違うデバイスから出る | 設定 → 再生 → **オーディオ出力** で検出されたローカル出力から選択; **オーディオバックエンド** は mpv オプションを公開します。 |
 | 昨日は動いたのに今日は動かない | YouTube が何か変えました — `ytt tools update` の後、`ytt tools status --why`; 管理版更新が原因なら `ytt tools use system`。 |
-| 複数の曲が 403/429 や "YouTube rejected the stream" で失敗 | `ytt doctor --verbose` を実行し、[リファレンス](#リファレンス)の Cookie の項を確認し、対応する JS ランタイムがあるか確認を; アクティブな yt-dlp は `ytt tools status --why` で。 |
+| 複数の曲が 403/429 や "YouTube rejected the stream" で失敗 | YouTube のボット対策です。`ytt doctor --verbose` を実行し（PO トークン/oauth の準備状況も表示されるようになりました）、[リファレンス](#リファレンス)の Cookie の項と対応する JS ランタイムを確認してください; アクティブな yt-dlp は `ytt tools status --why` で。[PO トークンプロバイダー](https://github.com/yt-dlp/yt-dlp?tab=readme-ov-file#po-token-guide)または [oauth プラグイン](https://github.com/coletdjnz/yt-dlp-youtube-oauth2)でたいてい確実に直ります。 |
 | 特定の曲だけ再生できない | サインインが必要かも — [リファレンス](#リファレンス)の Cookie の項を参照。 |
 | アプリがシェルと違う yt-dlp を実行する | 仕様です（管理版コピー vs `PATH`）— [リファレンス](#リファレンス)の *yt-dlp の選択* を参照。 |
 
@@ -451,6 +451,8 @@ TUI の中でも: 設定 → **アカウント** → *Spotify からインポー
 
 <details>
 <summary><b>サインイン Cookie & ファイルの場所</b></summary>
+
+**PO トークン & oauth — Cookie を超えて。** YouTube が *公開* ストリームまで拒否し始めたら（HTTP 403/429 "YouTube rejected the stream"）、たいてい **PO トークンプロバイダー** が解決策です: [`bgutil-ytdlp-pot-provider`](https://github.com/Brainicism/bgutil-ytdlp-pot-provider) を導入し、その出力が示す yt-dlp 設定行を追加してください。より長持ちするサインインは [`yt-dlp-youtube-oauth2`](https://github.com/coletdjnz/yt-dlp-youtube-oauth2) プラグインです（`yt-dlp --plugin-dirs ... --username oauth --password ''` を一度実行すれば、あとは自動更新されます）。`ytt doctor --verbose` が両方の準備状況を表示するようになりました。
 
 **Cookie（任意）。** 公開曲は匿名で再生できます — メンバー限定/地域制限トラックとアカウントのプレイリストにだけ必要です。YouTube Music の Cookie を **Netscape 形式**で `~/Music/yututui/cookies.txt`（Windows: `%USERPROFILE%\Music\yututui\cookies.txt`）に書き出して再起動してください。**そのファイルはパスワードのように扱い**、*シークレットウィンドウ方式*で書き出すこと: プライベートウィンドウでサインインし、そのタブから `cookies.txt` を書き出して、ウィンドウを閉じます — ブラウザが消えたセッションはローテーションもサインアウトもされません。正しい書き出しには `SAPISID`/`SID` の行があります。
 

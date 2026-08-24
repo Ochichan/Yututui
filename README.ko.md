@@ -302,7 +302,7 @@ audio-output.png · retro.png · transfer.gif · help.png · onboarding.gif · c
 | 아무것도 재생되지 않거나 재생 시 오류 | mpv 또는 yt-dlp가 없습니다 — `ytt doctor` 실행. |
 | 소리가 엉뚱한 장치로 나감 | 설정 → 재생 → **오디오 출력** 에서 감지된 로컬 출력 중 선택; **오디오 백엔드** 는 mpv 옵션을 노출합니다. |
 | 어제는 됐는데 오늘은 안 됨 | YouTube가 뭔가 바꿨어요 — `ytt tools update` 후 `ytt tools status --why`; 관리형 업데이트가 문제면 `ytt tools use system`. |
-| 여러 곡이 403/429 또는 "YouTube rejected the stream"으로 실패 | `ytt doctor --verbose`를 실행하고, [참고 자료](#참고-자료)의 쿠키 항목을 확인하고, 지원되는 JS 런타임이 있는지 보세요; 활성 yt-dlp는 `ytt tools status --why`로 확인. |
+| 여러 곡이 403/429 또는 "YouTube rejected the stream"으로 실패 | YouTube 봇 차단입니다. `ytt doctor --verbose`를 실행하고(이제 PO 토큰/oauth 준비 상태를 알려줍니다), [참고 자료](#참고-자료)의 쿠키 항목과 지원되는 JS 런타임을 확인하세요; 활성 yt-dlp는 `ytt tools status --why`로 확인. [PO 토큰 공급자](https://github.com/yt-dlp/yt-dlp?tab=readme-ov-file#po-token-guide)나 [oauth 플러그인](https://github.com/coletdjnz/yt-dlp-youtube-oauth2)을 쓰면 보통 확실히 해결됩니다. |
 | 특정 곡만 재생 안 됨 | 로그인이 필요할 수 있어요 — [참고 자료](#참고-자료)의 쿠키 항목 참고. |
 | 앱이 셸과 다른 yt-dlp를 실행함 | 의도된 동작입니다(관리형 복사본 vs `PATH`) — [참고 자료](#참고-자료)의 *yt-dlp 선택* 참고. |
 
@@ -448,6 +448,8 @@ TUI 안에서도 됩니다: 설정 → **계정** → *Import from Spotify…* �
 
 <details>
 <summary><b>로그인 쿠키 & 파일 위치</b></summary>
+
+**PO 토큰 & oauth — 쿠키 너머의 해법.** YouTube가 *공개* 스트림까지 거부하기 시작하면(HTTP 403/429 "YouTube rejected the stream") 대개 **PO 토큰 공급자**가 해결책입니다: [`bgutil-ytdlp-pot-provider`](https://github.com/Brainicism/bgutil-ytdlp-pot-provider)를 설치하고 그 출력이 알려주는 yt-dlp 설정 줄을 추가하세요. 더 오래가는 로그인은 [`yt-dlp-youtube-oauth2`](https://github.com/coletdjnz/yt-dlp-youtube-oauth2) 플러그인입니다(`yt-dlp --plugin-dirs ... --username oauth --password ''`를 한 번 실행하면 이후 스스로 갱신합니다). `ytt doctor --verbose`가 이제 둘의 준비 상태를 알려줍니다.
 
 **쿠키 (선택).** 공개 곡은 익명으로 잘 재생됩니다 — 멤버 전용/지역 제한 트랙과 계정 플레이리스트에만 필요해요. YouTube Music 쿠키를 **Netscape 형식**으로 `~/Music/yututui/cookies.txt`(Windows: `%USERPROFILE%\Music\yututui\cookies.txt`)에 내보내고 재시작하세요. **그 파일은 비밀번호처럼 다루고**, *시크릿 창 방식*으로 내보내세요: 시크릿 창에서 로그인하고, 그 탭에서 `cookies.txt`를 내보낸 뒤, 창을 닫습니다 — 브라우저가 사라진 세션은 로테이션되거나 로그아웃되지 않아요. 제대로 된 내보내기에는 `SAPISID`/`SID` 줄이 있습니다.
 
