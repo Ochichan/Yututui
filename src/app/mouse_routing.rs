@@ -262,13 +262,13 @@ impl App {
             }
         }
         // The sleep-timer popup is modal the same way.
-        if self.sleep_popup.is_some() {
+        if self.sleep.popup.is_some() {
             match self.mouse_target_at(col, row) {
                 Some(t @ (MouseTarget::ConfirmSleepTimer | MouseTarget::CancelSleepTimer)) => {
                     return self.on_mouse_target(t);
                 }
                 _ => {
-                    self.sleep_popup = None;
+                    self.sleep.popup = None;
                     self.dirty = true;
                     return Vec::new();
                 }
@@ -915,7 +915,7 @@ impl App {
             // The sleep-timer popup buttons.
             MouseTarget::ConfirmSleepTimer => self.commit_sleep_popup(),
             MouseTarget::CancelSleepTimer => {
-                self.sleep_popup = None;
+                self.sleep.popup = None;
                 self.dirty = true;
                 Vec::new()
             }

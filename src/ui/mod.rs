@@ -206,7 +206,7 @@ pub fn render(frame: &mut Frame, app: &App) {
         views::onboarding::render_tool_setup(frame, app, area);
     }
     // The sleep-timer popup captures input wherever it opens.
-    if app.sleep_popup.is_some() {
+    if app.sleep.popup.is_some() {
         views::sleep_timer::render(frame, app, area);
     }
     // Sync setup and device lifecycle are Settings-owned but remain visible in Mini layout.

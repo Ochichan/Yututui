@@ -528,7 +528,8 @@ impl App {
             // The armed sleep timer's remaining whole seconds, so `ytt -r status --json`
             // and the daemon's watch feed can show the same countdown as the docked box.
             sleep_remaining_secs: self
-                .sleep_timer
+                .sleep
+                .timer
                 .and_then(|timer| timer.remaining_secs(std::time::Instant::now())),
             // Same current-track gate as the OS media snapshot (media_reducer): stale
             // art from the previous track never rides a status reply.

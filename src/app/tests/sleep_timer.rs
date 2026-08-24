@@ -38,7 +38,7 @@ fn player_intent_commands(cmds: &[Cmd]) -> Vec<(String, PlayerCmd)> {
 fn popup_opens_with_configured_preset_and_typing_arms() {
     let mut app = App::new(100);
     app.open_sleep_popup();
-    let popup = app.sleep_popup.as_ref().expect("popup open");
+    let popup = app.sleep.popup.as_ref().expect("popup open");
     assert_eq!(popup.input, "30");
     assert!(!popup.error);
 
@@ -48,11 +48,12 @@ fn popup_opens_with_configured_preset_and_typing_arms() {
     }
     app.on_key_sleep_popup(key(KeyCode::Char('5')));
     let cmds = app.on_key_sleep_popup(key(KeyCode::Enter));
-    assert!(app.sleep_popup.is_none(), "popup closes on commit");
+    assert!(app.sleep.popup.is_none(), "popup closes on commit");
     assert!(cmds.is_empty(), "arming emits no player intents");
-    assert!(app.sleep_timer.is_some(), "timer armed");
+    assert!(app.sleep.timer.is_some(), "timer armed");
     let remaining = app
-        .sleep_timer
+        .sleep
+        .timer
         .and_then(|timer| timer.remaining_secs(Instant::now()))
         .expect("armed timer counts down");
     assert!(
@@ -75,17 +76,18 @@ fn popup_rejects_garbage_and_reopens_with_error() {
     app.on_key_sleep_popup(key(KeyCode::Char('x')));
     // Non-digit characters never enter the buffer, so clear it and type letters via
     // direct state to exercise the parse error path.
-    app.sleep_popup.as_mut().expect("popup").input.clear();
-    app.sleep_popup
+    app.sleep.popup.as_mut().expect("popup").input.clear();
+    app.sleep
+        .popup
         .as_mut()
         .expect("popup")
         .input
         .push_str("abc");
     let cmds = app.on_key_sleep_popup(key(KeyCode::Enter));
     assert!(cmds.is_empty());
-    assert!(app.sleep_timer.is_none(), "no timer from garbage");
+    assert!(app.sleep.timer.is_none(), "no timer from garbage");
     assert!(
-        app.sleep_popup.as_ref().is_some_and(|popup| popup.error),
+        app.sleep.popup.as_ref().is_some_and(|popup| popup.error),
         "popup reopens with the error hint"
     );
 }
@@ -94,14 +96,14 @@ fn popup_rejects_garbage_and_reopens_with_error() {
 fn popup_off_cancels_an_armed_timer() {
     let mut app = App::new(100);
     app.arm_sleep_timer(30);
-    assert!(app.sleep_timer.is_some());
+    assert!(app.sleep.timer.is_some());
     app.open_sleep_popup();
     // Typing `off` from the untouched preset replaces it and cancels on Enter.
     for c in ['o', 'f', 'f'] {
         app.on_key_sleep_popup(key(KeyCode::Char(c)));
     }
     let cmds = app.on_key_sleep_popup(key(KeyCode::Enter));
-    assert!(app.sleep_timer.is_none(), "cancel clears the timer");
+    assert!(app.sleep.timer.is_none(), "cancel clears the timer");
     assert!(cmds.is_empty(), "cancel before the fade emits no intents");
     assert!(!app.status.text.is_empty());
 }
@@ -114,7 +116,8 @@ fn typed_digit_replaces_the_untouched_preset() {
     let cmds = app.on_key_sleep_popup(key(KeyCode::Enter));
     assert!(cmds.is_empty());
     let remaining = app
-        .sleep_timer
+        .sleep
+        .timer
         .and_then(|timer| timer.remaining_secs(Instant::now()))
         .expect("armed");
     assert!(
@@ -128,8 +131,8 @@ fn esc_closes_popup_without_arming() {
     let mut app = App::new(100);
     app.open_sleep_popup();
     let cmds = app.on_key_sleep_popup(key(KeyCode::Esc));
-    assert!(app.sleep_popup.is_none());
-    assert!(app.sleep_timer.is_none());
+    assert!(app.sleep.popup.is_none());
+    assert!(app.sleep.timer.is_none());
     assert!(cmds.is_empty());
 }
 
@@ -139,7 +142,7 @@ fn tick_fires_past_deadline_and_restores_pre_fade_volume() {
     app.playback.volume = 100;
     app.playback.paused = false;
     // A timer whose deadline already passed with a recorded pre-fade volume.
-    app.sleep_timer = Some(SleepTimer {
+    app.sleep.timer = Some(SleepTimer {
         deadline: Instant::now() - Duration::from_secs(1),
         fade: Duration::from_secs(30),
         pre_fade_volume: Some(64),
@@ -147,7 +150,7 @@ fn tick_fires_past_deadline_and_restores_pre_fade_volume() {
         last_sent: Some(0),
     });
     let cmds = app.handle_sleep_tick();
-    assert!(app.sleep_timer.is_none(), "fire clears the timer");
+    assert!(app.sleep.timer.is_none(), "fire clears the timer");
     let intents = player_intent_commands(&cmds);
     assert_eq!(
         intents.len(),
@@ -175,7 +178,7 @@ fn tick_fades_through_the_canonical_set_volume_path() {
     // Arm then move the deadline to 10 s from now: the fade window is exactly "now".
     let mut timer = SleepTimer::armed(Instant::now(), 1, 10);
     timer.deadline = Instant::now() + Duration::from_secs(10);
-    app.sleep_timer = Some(timer);
+    app.sleep.timer = Some(timer);
     // The fade window began: the first tick emits one volume step through player_intent.
     let cmds = app.handle_sleep_tick();
     let intents = player_intent_commands(&cmds);
@@ -188,7 +191,7 @@ fn tick_fades_through_the_canonical_set_volume_path() {
     assert_eq!(intents[0].0, "sleep_fade");
     assert!(matches!(intents[0].1, PlayerCmd::SetVolume(v) if v < 100));
     assert!(
-        app.sleep_timer.is_some(),
+        app.sleep.timer.is_some(),
         "timer stays armed during the fade"
     );
 }
@@ -237,7 +240,7 @@ fn chapter_tag_and_seekbar_ticks_render_for_chaptered_tracks() {
 #[test]
 fn sleep_countdown_renders_in_the_status_line() {
     let mut app = App::new(100);
-    app.sleep_timer = Some(SleepTimer::armed(Instant::now(), 30, 30));
+    app.sleep.timer = Some(SleepTimer::armed(Instant::now(), 30, 30));
     let buffer = render_app_buffer(&app, 90, 26);
     assert!(
         buffer_contains(&buffer, "⏾"),

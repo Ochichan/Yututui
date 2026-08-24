@@ -619,7 +619,7 @@ fn push_sleep_timer(parts: &mut StatusLineParts, app: &App, gap: &'static str, m
     if minimal {
         return;
     }
-    let Some(timer) = app.sleep_timer else {
+    let Some(timer) = app.sleep.timer else {
         return;
     };
     let Some(remaining) = timer.remaining_secs(Instant::now()) else {

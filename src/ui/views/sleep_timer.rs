@@ -25,7 +25,7 @@ fn centered_fixed(area: Rect, w: u16, h: u16) -> Rect {
 /// Render the sleep-timer popup while it is open. Geometry and styling mirror the
 /// create-playlist popup so both small modals read as one family.
 pub fn render(frame: &mut Frame, app: &App, area: Rect) {
-    let Some(state) = app.sleep_popup.as_ref() else {
+    let Some(state) = app.sleep.popup.as_ref() else {
         return;
     };
     let popup = centered_fixed(area, 46, 9);

@@ -8,6 +8,15 @@
 use super::*;
 use yututui_core::sleep_timer::{SLEEP_MAX_MINUTES, SleepStep, SleepTimer};
 
+/// Grouped sleep-timer state: the armed timer (the shared core machine) and its popup.
+/// Kept as one sub-struct so the flat `App` stays within the architecture gate's field
+/// budget; both halves belong to the same feature and reset together.
+#[derive(Debug, Default)]
+pub struct SleepState {
+    pub timer: Option<SleepTimer>,
+    pub popup: Option<SleepPopup>,
+}
+
 /// The open sleep-timer popup (minutes or `off`).
 #[derive(Debug, Default)]
 pub struct SleepPopup {
@@ -23,14 +32,14 @@ pub struct SleepPopup {
 impl App {
     /// Whether the terminal runner should arm the 1 Hz sleep tick.
     pub fn sleep_timer_active(&self) -> bool {
-        self.sleep_timer.is_some()
+        self.sleep.timer.is_some()
     }
 
     /// Open the popup pre-filled with the configured preset.
     pub(in crate::app) fn open_sleep_popup(&mut self) {
         let preset = self.config.sleep_timer.effective_default_minutes();
         let input = preset.to_string();
-        self.sleep_popup = Some(SleepPopup {
+        self.sleep.popup = Some(SleepPopup {
             cursor: TextCursor::at_end(&input),
             input,
             error: false,
@@ -43,7 +52,7 @@ impl App {
     /// Esc cancels. Mirrors the create-playlist popup's plain-char gate.
     pub(in crate::app) fn on_key_sleep_popup(&mut self, k: KeyEvent) -> Vec<Cmd> {
         if let Some(action) = self.keymap.text_edit_action(k.into()) {
-            if let Some(popup) = self.sleep_popup.as_mut()
+            if let Some(popup) = self.sleep.popup.as_mut()
                 && let Some(result) =
                     apply_text_edit_action(action, &mut popup.cursor, &mut popup.input)
                 && matches!(
@@ -58,7 +67,7 @@ impl App {
         }
         match k.code {
             KeyCode::Esc => {
-                self.sleep_popup = None;
+                self.sleep.popup = None;
                 self.dirty = true;
             }
             KeyCode::Enter => return self.commit_sleep_popup(),
@@ -67,7 +76,7 @@ impl App {
                     .modifiers
                     .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
             {
-                if let Some(popup) = self.sleep_popup.as_mut() {
+                if let Some(popup) = self.sleep.popup.as_mut() {
                     // The first typed character replaces the untouched preset, so both
                     // `1` (minutes) and `o` (the start of "off") read naturally.
                     if popup.untouched {
@@ -101,7 +110,8 @@ impl App {
     /// else reopens the popup with the error hint.
     pub(in crate::app) fn commit_sleep_popup(&mut self) -> Vec<Cmd> {
         let popup = self
-            .sleep_popup
+            .sleep
+            .popup
             .take()
             .expect("commit requires an open popup");
         self.dirty = true;
@@ -113,7 +123,7 @@ impl App {
             Ok(0) => self.cancel_sleep_timer(),
             Ok(minutes) => self.arm_sleep_timer(minutes),
             Err(_) => {
-                self.sleep_popup = Some(SleepPopup {
+                self.sleep.popup = Some(SleepPopup {
                     input: input.to_string(),
                     cursor: TextCursor::default(),
                     error: true,
@@ -128,7 +138,7 @@ impl App {
     pub(in crate::app) fn arm_sleep_timer(&mut self, minutes: u32) -> Vec<Cmd> {
         let minutes = minutes.clamp(1, SLEEP_MAX_MINUTES);
         let fade_secs = self.config.sleep_timer.effective_fade_secs();
-        self.sleep_timer = Some(SleepTimer::armed(Instant::now(), minutes, fade_secs));
+        self.sleep.timer = Some(SleepTimer::armed(Instant::now(), minutes, fade_secs));
         let label = t!(
             "Sleep timer set:",
             "수면 타이머 설정:",
@@ -144,7 +154,7 @@ impl App {
     /// the canonical SetVolume path.
     pub(in crate::app) fn cancel_sleep_timer(&mut self) -> Vec<Cmd> {
         let mut cmds = Vec::new();
-        if let Some(timer) = self.sleep_timer
+        if let Some(timer) = self.sleep.timer
             && timer.fading
             && let Some(pre) = timer.pre_fade_volume
             && self.playback.volume != pre
@@ -158,7 +168,7 @@ impl App {
                 },
             );
         }
-        self.sleep_timer = None;
+        self.sleep.timer = None;
         self.set_status_info(t!(
             "Sleep timer off",
             "수면 타이머 꺼짐",
@@ -170,18 +180,18 @@ impl App {
 
     /// One 1 Hz tick while a timer is armed: advance the fade, or fire at the deadline.
     pub(in crate::app) fn handle_sleep_tick(&mut self) -> Vec<Cmd> {
-        let Some(mut timer) = self.sleep_timer else {
+        let Some(mut timer) = self.sleep.timer else {
             return Vec::new();
         };
         let now = Instant::now();
         match timer.advance(now, self.playback.volume) {
             SleepStep::Idle => {
-                self.sleep_timer = Some(timer);
+                self.sleep.timer = Some(timer);
                 self.dirty = true;
                 Vec::new()
             }
             SleepStep::Volume(volume) => {
-                self.sleep_timer = Some(timer);
+                self.sleep.timer = Some(timer);
                 self.player_intent(
                     "sleep_fade",
                     PlayerCmd::SetVolume(volume),
@@ -193,7 +203,7 @@ impl App {
             }
             SleepStep::Fired => {
                 let restore = timer.pre_fade_volume;
-                self.sleep_timer = None;
+                self.sleep.timer = None;
                 let mut cmds = Vec::new();
                 if let Some(pre) = restore {
                     cmds.extend(self.player_intent(
@@ -230,7 +240,8 @@ impl App {
     /// The remote reply line for a successful arm: the remaining time in `mm:ss`.
     pub(in crate::app) fn sleep_timer_resp(&self) -> crate::remote::proto::RemoteResponse {
         let remaining = self
-            .sleep_timer
+            .sleep
+            .timer
             .and_then(|timer| timer.remaining_secs(Instant::now()))
             .unwrap_or(0);
         crate::remote::proto::RemoteResponse::ok(format!(

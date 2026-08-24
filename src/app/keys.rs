@@ -51,7 +51,7 @@ impl App {
             return self.on_key_server_playlist_create(k);
         }
         // The sleep-timer popup owns input (digits/Backspace/Enter/Esc) wherever it opens.
-        if self.sleep_popup.is_some() {
+        if self.sleep.popup.is_some() {
             return self.on_key_sleep_popup(k);
         }
         if self.server.library.playlist_recovery.is_some() {
