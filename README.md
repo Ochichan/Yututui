@@ -15,10 +15,8 @@ Stable enough for daily use, still moving fast.
 
 **📖 New to terminals?** The [friendly manual](MANUAL.md) walks through every mode — music, radio, the Local Deck, and the full Spotify move-in — step by step, no jargon. ([한국어](MANUAL.ko.md) · [日本語](MANUAL.ja.md))
 
-> 🖼️ *Demo GIF coming soon.*
-<!-- 📸 TO FILL: add docs/media/hero.gif, delete the "coming soon" line above, then uncomment:
-![Search, play, real album art and synced lyrics in one terminal](docs/media/hero.gif)
--->
+![YuTuTui! in action — search, album art, and the docked player](docs/media/hero.gif)
+
 
 ---
 
@@ -139,40 +137,30 @@ That's it. Music.
 
 Every feature below is shown live, in detail, on the **[feature tour](https://ochichan.github.io/Yututui/)**.
 
-<!-- 📸 FOR THE PERSON ADDING MEDIA: drop files into docs/media/ with these exact names:
-hero.gif · player.png · lyrics.gif · search.gif · sources.png · djgem.gif · assistant.gif ·
-video.gif · radio.png · radio-id.gif · library.png · queue.png · downloads.png ·
-localdeck.png · everywhere.png · tray.png · themes.gif · animations.gif · showpiece.gif · eq.png ·
-audio-output.png · retro.png · transfer.gif · help.png · onboarding.gif · context-menu.png
-The same files serve README.md, README.ko.md and README.ja.md. Every slot below has the
-same one-line instruction; extra shots are welcome — just copy a slot block. -->
+<!-- 📸 Media inventory: hero.gif, player.png, search.png, sources.png, radio.png,
+library.png, queue.png, localdeck.png, themes.png, settings.png, audio-output.png,
+retro.png, help.png, onboarding.png are live. Still needed: lyrics.gif, djgem.gif,
+assistant.gif, video.gif, radio-id.gif, downloads.png, everywhere.png, tray.png,
+animations.gif, showpiece.gif, eq.png, transfer.gif, context-menu.png
+(drop files into docs/media/; the same files serve all three READMEs). -->
 
 ### The player — real album art & time-synced lyrics
 
 Actual cover images drawn right in the terminal (Kitty/Sixel/iTerm2, auto-detected — pick Standard, High or Original quality in Settings); **`Shift+L`** scrolls the lyrics underneath. Click any visible lyric line to seek there, or use **`z`** / **`Shift+Z`** to show the lyrics 0.1 seconds earlier / later. When lyrics load, **`[ − 0.0s + ]`** appears for three seconds; after it folds to **`[±]`**, click the handle to reopen it for three seconds and use **`−/+`** for fine adjustment. The player controls dock to the bottom of every screen (collapse them with **`Shift+B`**; the classic top layout is one setting away), the art stays centered in whatever space is left, and shrinking the window below ~32×14 turns the whole app into a tiny miniplayer that springs back when the window grows.
 
-> 🖼️ *Screenshot coming soon.*
-<!-- 📸 TO FILL: add docs/media/player.png, delete the "coming soon" line above, then uncomment:
 ![The player with album art and synced lyrics](docs/media/player.png)
--->
+![Choosing the audio output device in Settings](docs/media/audio-output.png)
+> 🖼️ *GIF coming soon.*
 <!-- 📸 TO FILL: add docs/media/lyrics.gif, then uncomment:
 ![Time-synced lyrics scrolling under the player](docs/media/lyrics.gif)
 -->
-<!-- 📸 TO FILL: add docs/media/audio-output.png, then uncomment:
-![Choosing the audio output device in Settings](docs/media/audio-output.png)
--->
 
-### Six catalogs, one search box
+### Seven catalogs, one search box
 
-**`Tab`** in Search flips between YouTube Music, SoundCloud, Audius, Jamendo, Internet Archive and Radio Browser — or all at once, every result tagged `[SRC]`.
+**`Tab`** in Search flips between YouTube Music, SoundCloud, Audius, Jamendo, Internet Archive, Radio Browser and your OpenSubsonic music server — or all at once, every result tagged `[SRC]`.
 
-> 🖼️ *Screenshots coming soon.*
-<!-- 📸 TO FILL: add docs/media/search.gif, delete the "coming soon" line above, then uncomment:
-![Typing a search and playing a result](docs/media/search.gif)
--->
-<!-- 📸 TO FILL: add docs/media/sources.png, then uncomment:
-![Searching across six catalogs from one box](docs/media/sources.png)
--->
+![Searching across seven catalogs from one box](docs/media/sources.png)
+![Search results with album art in the terminal](docs/media/search.png)
 
 ### DJ Gem streaming
 
@@ -205,10 +193,8 @@ Actual cover images drawn right in the terminal (Kitty/Sixel/iTerm2, auto-detect
 
 **`Alt+Shift+R`** turns the whole app into an internet-radio tuner; press **`i`** and Gemini names what's playing on the live stream, **`f`** favorites it.
 
-> 🖼️ *Screenshots coming soon.*
-<!-- 📸 TO FILL: add docs/media/radio.png, delete the "coming soon" line above, then uncomment:
 ![Radio mode as an internet-radio tuner](docs/media/radio.png)
--->
+> 🖼️ *GIF coming soon.*
 <!-- 📸 TO FILL: add docs/media/radio-id.gif, then uncomment:
 ![Pressing i to identify the song playing on live radio](docs/media/radio-id.gif)
 -->
@@ -217,13 +203,9 @@ Actual cover images drawn right in the terminal (Kitty/Sixel/iTerm2, auto-detect
 
 Build playlists in the Library (or let DJ Gem build them), pop the queue with **`c`**, and **`d`** saves a tagged m4a with cover art — **`Shift+D`** grabs the whole list.
 
-> 🖼️ *Screenshots coming soon.*
-<!-- 📸 TO FILL: add docs/media/library.png, delete the "coming soon" line above, then uncomment:
 ![The Library with playlists, favorites and history](docs/media/library.png)
--->
-<!-- 📸 TO FILL: add docs/media/queue.png, then uncomment:
 ![The queue popup over the player](docs/media/queue.png)
--->
+> 🖼️ *Screenshot coming soon.*
 <!-- 📸 TO FILL: add docs/media/downloads.png, then uncomment:
 ![Downloads: tagged m4a files with cover art, played offline](docs/media/downloads.png)
 -->
@@ -234,10 +216,7 @@ Build playlists in the Library (or let DJ Gem build them), pop the queue with **
 
 Local playback and Find use only files already on your computer. Other opt-in integrations may still use the network, and the manual online-candidate search in **Import Sessions** explicitly asks before leaving the Local Deck. The Local Deck also remembers its own theme separately from normal and Radio modes: a fresh or older installation starts it with **Local Launch**, then restores whichever Local theme you save there. The [manual](MANUAL.md) has the full tour.
 
-> 🖼️ *Screenshot coming soon.*
-<!-- 📸 TO FILL: add docs/media/localdeck.png, delete the "coming soon" line above, then uncomment:
 ![The Local Deck browsing local albums](docs/media/localdeck.png)
--->
 
 ### Control from anywhere
 
@@ -255,16 +234,17 @@ Media keys, macOS Control Center, Windows SMTC + tray mini player, Linux MPRIS, 
 
 14 themes with all 34 color roles hex-editable, 40 animations — from shooting stars and a spinning ASCII donut up to full-canvas showpieces (fireworks, Game of Life, pipes, plasma) — a 10-band EQ with presets, your pick of audio-output device, plus loudness normalization. The UI itself speaks English, 한국어 and 日本語 — Settings → General → **Language** cycles through all three.
 
-> 🖼️ *GIFs coming soon.*
-<!-- 📸 TO FILL: add docs/media/themes.gif, delete the "coming soon" line above, then uncomment:
-![Cycling through the built-in themes](docs/media/themes.gif)
--->
+![The theme and color settings screen](docs/media/themes.png)
+![The Settings screen](docs/media/settings.png)
+> 🖼️ *GIF coming soon.*
 <!-- 📸 TO FILL: add docs/media/animations.gif, then uncomment:
 ![Animations, including the spinning ASCII donut](docs/media/animations.gif)
 -->
+> 🖼️ *GIF coming soon.*
 <!-- 📸 TO FILL: add docs/media/showpiece.gif, then uncomment:
 ![A full-canvas showpiece animation — fireworks, Game of Life, pipes or plasma](docs/media/showpiece.gif)
 -->
+> 🖼️ *Screenshot coming soon.*
 <!-- 📸 TO FILL: add docs/media/eq.png, then uncomment:
 ![The 10-band EQ with presets](docs/media/eq.png)
 -->
@@ -273,10 +253,7 @@ Media keys, macOS Control Center, Windows SMTC + tray mini player, Linux MPRIS, 
 
 One toggle makes everything CP437-safe for a bare Linux console or a crusty SSH session — album art included, as honest ASCII art. Retro also pins the UI language to English — CP437 has no CJK glyphs.
 
-> 🖼️ *Screenshot coming soon.*
-<!-- 📸 TO FILL: add docs/media/retro.png, delete the "coming soon" line above, then uncomment:
 ![Retro mode with ASCII album art](docs/media/retro.png)
--->
 
 ### Spotify moves in with one command
 
@@ -291,13 +268,9 @@ One toggle makes everything CP437-safe for a bare Linux console or a crusty SSH 
 
 **`?`** opens a live cheat sheet that reflects *your* bindings — app actions are rebindable, the whole UI is mouse-aware, and safety/modal keys stay fixed and dependable.
 
-> 🖼️ *Screenshot coming soon.*
-<!-- 📸 TO FILL: add docs/media/help.png, delete the "coming soon" line above, then uncomment:
 ![The live keybinding cheat sheet](docs/media/help.png)
--->
-<!-- 📸 TO FILL: add docs/media/onboarding.gif, then uncomment:
-![Beginner Mode's interactive walkthrough on first launch](docs/media/onboarding.gif)
--->
+![Beginner Mode's interactive walkthrough](docs/media/onboarding.png)
+> 🖼️ *Screenshot coming soon.*
 <!-- 📸 TO FILL: add docs/media/context-menu.png, then uncomment:
 ![Right-click context menu on a track row](docs/media/context-menu.png)
 -->

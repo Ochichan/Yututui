@@ -1,6 +1,6 @@
 # Terminal Compatibility
 
-Status: initial public-beta matrix, updated 2026-07-21. Entries marked
+Status: initial public-beta matrix, updated 2026-08-25. Entries marked
 `Expected` still need a dated ytm-tui smoke run before they are marketed as
 fully verified.
 
@@ -29,7 +29,7 @@ ytm-tui configuration.
 | Windows Terminal | Versioned: Sixel in v1.22+ | Expected | Versioned: v1.22 added grapheme cluster work and improved IME paths | Yes | Expected in a desktop session with mpv | Expected through the `WT_SESSION` DECDHL path; needs smoke evidence | Use Microsoft release notes, not stale Sixel trackers. |
 | cmd.exe inside Windows Terminal | Same as Windows Terminal | Same as Windows Terminal | Same as Windows Terminal | Yes | Same as Windows Terminal | Same as Windows Terminal | Shell is `cmd`; terminal capability is Windows Terminal. |
 | Legacy conhost / bare cmd.exe | Unknown / Versioned | Expected partial | Version-dependent | Yes | Expected only in a desktop session with mpv | Unknown | Do not promise without a Windows build and terminal version. |
-| Ghostty | Expected via Kitty graphics | Expected | Expected; grapheme clustering is documented | Yes | Expected on macOS/Linux with mpv | Unknown unless OSC 66 lands or DECDHL probe passes | Windows support must be verified separately. |
+| Ghostty | Expected via Kitty graphics | Expected | Expected; grapheme clustering is documented | Yes | Expected on macOS/Linux with mpv | Unknown unless OSC 66 lands or DECDHL probe passes | Windows support must be verified separately. Ghostty 1.3.1 (GTK) crashed on tmux attach during the 2026-08-25 capture session (unimplemented `.cell_size` action); direct TTY runs unaffected. |
 | foot | Expected via Sixel | Expected | Expected; package descriptions document IME through text-input-v3 | Yes | Expected on Linux GUI with mpv | Unknown | Wayland-only in normal use; verify on the target compositor. |
 | Konsole / Yakuake | Versioned: < 26.04 defaults to halfblocks; >= 26.04 is best-effort via capability-gated Sixel | Expected | Expected | Yes | Expected on Linux GUI with mpv | Unknown | Yakuake inherits KonsolePart's terminal behavior. Sixel is selected only when DA1 advertises it and a real cell size is obtained; Kitty is not recommended. |
 | mintty | Expected via Sixel | Expected | Expected | Yes | Expected on Windows desktop with mpv | Unknown | Probe longer, but Sixel is the first override to try. |
