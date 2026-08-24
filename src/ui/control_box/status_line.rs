@@ -5,6 +5,7 @@
 //! render order and must not change — every later segment's hit rect depends on it.
 
 use std::borrow::Cow;
+use std::time::Instant;
 
 use super::StatusLineParts;
 use super::beginner::{
@@ -67,6 +68,8 @@ pub(super) fn status_line_parts_with_labels_reusing(
     }
     push_streaming_mode(&mut parts, app, labels, gap, retro);
     push_download_tag(&mut parts, app, gap, minimal);
+    push_chapter_tag(&mut parts, app, gap, minimal);
+    push_sleep_timer(&mut parts, app, gap, minimal);
 
     parts
 }
@@ -594,4 +597,38 @@ fn push_download_tag(parts: &mut StatusLineParts, app: &App, gap: &'static str, 
         };
         parts.push((None, Cow::Owned(format!("{gap}{tag}"))));
     }
+}
+
+/// The current chapter's title while a chaptered track plays. Informational only — a plain
+/// label so it never shifts later hit rects; the width cap keeps a verbose chapter name
+/// from crowding out the clickable toggles on narrow terminals.
+fn push_chapter_tag(parts: &mut StatusLineParts, app: &App, gap: &'static str, minimal: bool) {
+    if minimal {
+        return;
+    }
+    let Some(name) = app.current_chapter_name() else {
+        return;
+    };
+    let name: String = name.chars().take(24).collect();
+    parts.push((None, Cow::Owned(format!("{gap}· {name}"))));
+}
+
+/// The sleep-timer countdown while a timer is armed. Plain text (no ambiguous-width
+/// symbols): retro mode spells the label out, every other mode uses the sleep glyph.
+fn push_sleep_timer(parts: &mut StatusLineParts, app: &App, gap: &'static str, minimal: bool) {
+    if minimal {
+        return;
+    }
+    let Some(timer) = app.sleep_timer else {
+        return;
+    };
+    let Some(remaining) = timer.remaining_secs(Instant::now()) else {
+        return;
+    };
+    let label = if app.retro_mode() {
+        format!("sleep {}:{:02}", remaining / 60, remaining % 60)
+    } else {
+        format!("⏾ {}:{:02}", remaining / 60, remaining % 60)
+    };
+    parts.push((None, Cow::Owned(format!("{gap}{label}"))));
 }

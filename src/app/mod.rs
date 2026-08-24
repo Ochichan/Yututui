@@ -129,6 +129,9 @@ mod reducer;
 mod scrub;
 mod session_restore;
 
+mod sleep_timer;
+pub use sleep_timer::SleepPopup;
+
 mod state;
 pub use state::*;
 
@@ -341,6 +344,11 @@ pub struct App {
     /// Live playback transport: position, duration, pause state, volume, and speed
     /// (mirrors mpv's current state, distinct from the persisted defaults in `config`).
     pub playback: Playback,
+    /// Armed sleep timer (session-scoped; never persisted). The state machine lives in
+    /// `yututui_core::sleep_timer` so App and daemon fade/fire identically.
+    pub sleep_timer: Option<yututui_core::sleep_timer::SleepTimer>,
+    /// The sleep-timer popup, which owns keyboard input while open.
+    pub sleep_popup: Option<SleepPopup>,
     /// Radio recorder (a Shortwave-style feature): the open segment, the bounded browser
     /// history, and the mpv-support probe. All volatile — only [`crate::config::RecordingConfig`]
     /// persists. See [`crate::recorder`].

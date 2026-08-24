@@ -856,6 +856,10 @@ pub async fn run(
     // ticks). Drives the max-duration force-split.
     let mut recording_tick = tokio::time::interval(Duration::from_secs(1));
     recording_tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
+    // 1 Hz while a sleep timer is armed; parked otherwise. Drives the countdown, fade steps,
+    // and the fire path.
+    let mut sleep_tick = tokio::time::interval(Duration::from_secs(1));
+    sleep_tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
     // A saturated scrobble lane can reject the final pause/stop after playback heartbeats cease.
     // Keep one parked retry clock so the current terminal snapshot is retried without requiring
     // another player event; the handle disables the guard immediately after admission.
@@ -1094,6 +1098,7 @@ pub async fn run(
                 _ = lyrics_tick.tick(), if app.lyrics_clock_active() => OwnerTurnInput::Local(Msg::LyricsTick),
                 _ = anim_tick.tick(), if app.animation_active() => OwnerTurnInput::Local(Msg::AnimTick),
                 _ = recording_tick.tick(), if app.recorder_active() => OwnerTurnInput::Local(Msg::RecordingTick),
+                _ = sleep_tick.tick(), if app.sleep_timer_active() => OwnerTurnInput::Local(Msg::SleepTick),
                 _ = scrobble_retry_tick.tick(), if handles.scrobble_retry_needed() => {
                     let snapshot = app.media_snapshot();
                     if let Err(error) = handles.scrobble_observe(&snapshot) {

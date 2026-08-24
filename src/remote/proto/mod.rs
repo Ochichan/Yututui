@@ -244,6 +244,10 @@ pub struct StatusSnapshot {
     /// included.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub personal_sync: Option<crate::sync::service::SyncStatusReport>,
+    /// Whole seconds until the armed sleep timer pauses playback; `None` when no timer is
+    /// armed. Additive (post-v8); skip-serialized so older shapes stay byte-identical.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sleep_remaining_secs: Option<u64>,
 }
 
 fn is_zero_u64(value: &u64) -> bool {
@@ -687,6 +691,7 @@ mod tests {
             position_epoch: 0,
             artwork: None,
             personal_sync: None,
+            sleep_remaining_secs: None,
         };
         let line = snap.human_line();
         assert!(line.contains("nothing playing"));
@@ -716,6 +721,7 @@ mod tests {
             position_epoch: 0,
             artwork: None,
             personal_sync: None,
+            sleep_remaining_secs: None,
         };
         let line = serde_json::to_string(&RemoteResponse::status(snap)).unwrap();
         assert!(line.contains("\"owner_mode\":\"daemon\""), "got {line}");

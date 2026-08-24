@@ -316,6 +316,8 @@ audio-output.png · retro.png · transfer.gif · help.png · onboarding.gif · c
 | `Shift+L` | 싱크 가사; 보이는 행 클릭으로 해당 시점 탐색 |
 | `z` / `Shift+Z` | 가사를 0.1초 앞당김 / 늦춤 (`[±]` 로 `−/+` 를 3초간 다시 열기) |
 | `v` | 뮤직비디오 오버레이 |
+| `!` / `@` | 이전 / 다음 챕터로 이동 (mpv 방식) |
+| `Shift+S` | 수면 타이머 — 분 입력(또는 `off`), 볼륨 페이드아웃 후 일시정지 |
 | `Shift+B` | 도킹된 컨트롤 박스 접기 / 펼치기 |
 | `←` / `→` · `Ctrl+←` / `Ctrl+→` | 텍스트 입력칸에서 한 글자씩 · 단어씩 커서 이동 |
 | `Backspace` / `Ctrl+Backspace` | 텍스트 입력칸에서 한 글자 / 이전 단어 삭제 |

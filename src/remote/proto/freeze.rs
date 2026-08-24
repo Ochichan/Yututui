@@ -268,6 +268,7 @@ fn golden_v7_status_response_is_byte_stable() {
         position_epoch: 0,
         artwork: None,
         personal_sync: None,
+        sleep_remaining_secs: None,
     };
     let line = serde_json::to_string(&RemoteResponse::status(snap)).unwrap();
     assert_eq!(
@@ -304,6 +305,7 @@ fn golden_v8_status_artwork_is_additive() {
         position_epoch: 0,
         artwork: None,
         personal_sync: None,
+        sleep_remaining_secs: None,
     };
     // Absent artwork never appears on the wire (v7 byte stability).
     let artless_line = serde_json::to_string(&artless).unwrap();

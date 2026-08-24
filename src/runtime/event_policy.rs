@@ -74,7 +74,8 @@ pub(super) fn app_msg_policy(msg: &Msg) -> EventPolicy {
         | Msg::AutomaticSyncTick
         | Msg::LyricsTick
         | Msg::AnimTick
-        | Msg::RecordingTick => EventPolicy::BestEffort {
+        | Msg::RecordingTick
+        | Msg::SleepTick => EventPolicy::BestEffort {
             reason: "loop-owned ticks and inert messages are redraw/status hints",
         },
         Msg::Key(_)
@@ -164,6 +165,10 @@ pub(super) fn player_msg_policy(msg: &PlayerMsg) -> EventPolicy {
         PlayerMsg::FileFormat(_) => EventPolicy::CoalesceLatest {
             lane: Lane::Telemetry,
             key: Key::PlayerFileFormat,
+        },
+        PlayerMsg::Chapters(_) => EventPolicy::CoalesceLatest {
+            lane: Lane::Telemetry,
+            key: Key::PlayerChapters,
         },
         PlayerMsg::AudioDeviceList(_) => EventPolicy::CoalesceLatest {
             lane: Lane::Telemetry,

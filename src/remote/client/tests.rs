@@ -273,6 +273,7 @@ async fn send_to_instance_round_trips_status_response() {
         position_epoch: 0,
         artwork: None,
         personal_sync: None,
+        sleep_remaining_secs: None,
     };
     let response = serde_json::to_string(&RemoteResponse::status(snapshot.clone())).unwrap();
     let server = tokio::spawn(serve_one_response(listener, response, PROTOCOL_VERSION));
@@ -760,6 +761,7 @@ fn snapshot(queue: Vec<crate::remote::proto::QueueItemSnapshot>) -> StatusSnapsh
         position_epoch: 0,
         artwork: None,
         personal_sync: None,
+        sleep_remaining_secs: None,
     }
 }
 

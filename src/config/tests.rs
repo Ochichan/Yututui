@@ -360,6 +360,7 @@ fn json_round_trips() {
             notify: false,
         },
         update_check_enabled: false,
+        sleep_timer: crate::config::SleepTimerConfig::default(),
     };
     let s = serde_json::to_string(&c).unwrap();
     let back: Config = serde_json::from_str(&s).unwrap();

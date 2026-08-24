@@ -46,6 +46,24 @@ pub enum SeekPrecision {
     Exact,
 }
 
+/// One chapter boundary from mpv's `chapter-list` property. `end_secs` is the next chapter's
+/// start (or the track duration), derived by the consumer, so the list stays a flat boundary
+/// set. Chapters exist only on media that ships them (long-form mixes, podcasts); every other
+/// track yields an empty list.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Chapter {
+    pub title: String,
+    pub start_secs: f64,
+}
+
+/// Chapter-list policy ceilings shared by the parser and its consumers.
+pub mod chapter_policy {
+    /// Most chapters kept from a hostile/spammy list; a real track has a handful.
+    pub const MAX_CHAPTERS: usize = 200;
+    /// Drop boundaries shorter than this so marker noise (intro/outro pairs) never fills the bar.
+    pub const MIN_CHAPTER_SECS: f64 = 1.0;
+}
+
 /// Owner-known source semantics which mpv cannot reliably infer from duration/seekability.
 ///
 /// This value travels with exactly one admitted load. In particular, a finite seekable radio or
@@ -304,6 +322,9 @@ pub enum PlayerEvent {
     /// mpv `file-format` (container) — a fallback / HLS signal for the recorder's extension
     /// choice. `None` when unavailable.
     FileFormat(Option<String>),
+    /// mpv `chapter-list` for the current file: title + start time per boundary, empty when
+    /// the media has none. Re-emitted per file, so the reducer replaces (never merges).
+    Chapters(Vec<Chapter>),
     /// Latest sanitized snapshot from mpv's cross-platform `audio-device-list` property.
     AudioDeviceList(Vec<AudioDevice>),
     /// A manual device-list refresh failed without changing playback state.

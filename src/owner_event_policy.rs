@@ -52,6 +52,10 @@ pub(crate) fn player_event_policy(event: &crate::player::PlayerEvent) -> EventPo
             lane: Lane::Telemetry,
             key: Key::PlayerFileFormat,
         },
+        crate::player::PlayerEvent::Chapters(_) => EventPolicy::CoalesceLatest {
+            lane: Lane::Telemetry,
+            key: Key::PlayerChapters,
+        },
         crate::player::PlayerEvent::AudioDeviceList(_) => EventPolicy::CoalesceLatest {
             lane: Lane::Telemetry,
             key: Key::PlayerAudioDeviceList,

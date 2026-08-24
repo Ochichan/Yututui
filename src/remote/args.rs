@@ -58,6 +58,7 @@ Commands:
   seek-to <seconds>       Seek to an absolute position in the current track
   streaming [on|off|toggle]
                           Toggle (or set) autoplay streaming
+  sleep [minutes|off]     Arm the sleep timer (no argument = the preset) or turn it off
   resume-session          Load and play the saved session
   status, st              Print the current track / state
   info                    Print non-secret owner metadata
@@ -166,6 +167,28 @@ pub fn parse(args: &[String]) -> Result<Parsed, ParseError> {
                 }
             };
             Invocation::Command(RemoteCommand::Streaming { state })
+        }
+        "sleep" => {
+            let minutes = match rest.as_slice() {
+                // No argument arms the configured preset; `off`/`0` cancels.
+                [] => None,
+                ["off" | "0"] => Some(0),
+                [value] => {
+                    let Some(minutes) = value.parse::<u32>().ok() else {
+                        return Err(ParseError::Invalid(format!(
+                            "{verb}: expected minutes or \"off\", got `{value}`"
+                        )));
+                    };
+                    Some(minutes)
+                }
+                _ => {
+                    return Err(ParseError::Invalid(format!(
+                        "{verb}: expected at most one argument (minutes or \"off\")"
+                    )));
+                }
+            };
+            // `None` on the wire = "arm the preset"; `Some(0)` = "off". The owner clamps.
+            Invocation::Command(RemoteCommand::Sleep { minutes })
         }
         "resume-session" | "load-session" => Invocation::Command(RemoteCommand::ResumeSession),
         "status" | "st" => Invocation::Command(RemoteCommand::Status),
@@ -322,6 +345,31 @@ mod tests {
         assert_eq!(cmd(&["load-session"]), RemoteCommand::ResumeSession);
         assert_eq!(cmd(&["status"]), RemoteCommand::Status);
         assert_eq!(cmd(&["quit"]), RemoteCommand::Quit);
+    }
+
+    #[test]
+    fn sleep_states() {
+        // No argument = arm the configured preset; `off`/`0` cancel; a number arms.
+        assert_eq!(cmd(&["sleep"]), RemoteCommand::Sleep { minutes: None });
+        assert_eq!(
+            cmd(&["sleep", "30"]),
+            RemoteCommand::Sleep { minutes: Some(30) }
+        );
+        assert_eq!(
+            cmd(&["sleep", "off"]),
+            RemoteCommand::Sleep { minutes: Some(0) }
+        );
+        assert_eq!(
+            cmd(&["sleep", "0"]),
+            RemoteCommand::Sleep { minutes: Some(0) }
+        );
+        let owned: Vec<String> = ["sleep", "abc"].iter().map(|s| s.to_string()).collect();
+        assert!(matches!(parse(&owned), Err(ParseError::Invalid(_))));
+        let owned: Vec<String> = ["sleep", "10", "20"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert!(matches!(parse(&owned), Err(ParseError::Invalid(_))));
     }
 
     #[test]

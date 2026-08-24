@@ -128,6 +128,12 @@ pub enum RemoteCommand {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         expected_rev: Option<u64>,
     },
+    /// Arm (Some minutes, 1..=720) or cancel (None) the sleep timer. Additive (post-v8);
+    /// an older owner rejects it as `bad_request` instead of misbehaving.
+    Sleep {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        minutes: Option<u32>,
+    },
 }
 
 impl RemoteCommand {
@@ -174,7 +180,8 @@ impl RemoteCommand {
             | RemoteCommand::SyncNow
             | RemoteCommand::SyncRevokeDevice { .. }
             | RemoteCommand::QueueMove { .. }
-            | RemoteCommand::QueueClearUpcoming { .. } => RequestRetryClass::RetainedOutcome,
+            | RemoteCommand::QueueClearUpcoming { .. }
+            | RemoteCommand::Sleep { .. } => RequestRetryClass::RetainedOutcome,
         }
     }
 
@@ -224,6 +231,11 @@ impl RemoteCommand {
                 if *from >= REMOTE_MAX_TRACK_IDS || *to >= REMOTE_MAX_TRACK_IDS =>
             {
                 Err(validation_error("bad_queue_position"))
+            }
+            RemoteCommand::Sleep {
+                minutes: Some(minutes),
+            } if *minutes > yututui_core::sleep_timer::SLEEP_MAX_MINUTES => {
+                Err(validation_error("bad_sleep_minutes"))
             }
             _ => Ok(()),
         }

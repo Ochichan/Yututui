@@ -65,6 +65,14 @@ impl DaemonEngine {
             RemoteCommand::VolumeUp => self.adjust_volume(VOLUME_STEP),
             RemoteCommand::VolumeDown => self.adjust_volume(-VOLUME_STEP),
             RemoteCommand::SetVolume { percent } => self.set_volume(percent),
+            RemoteCommand::Sleep { minutes } => match minutes {
+                Some(0) => self.cancel_sleep(),
+                Some(minutes) => self.arm_sleep(minutes),
+                None => {
+                    let preset = self.config.sleep_timer.effective_default_minutes();
+                    self.arm_sleep(preset)
+                }
+            },
             RemoteCommand::SeekBack => self.seek(-self.config.effective_seek_seconds()),
             RemoteCommand::SeekForward => self.seek(self.config.effective_seek_seconds()),
             RemoteCommand::SeekTo { ms } => self.seek_to(ms as f64 / 1000.0),

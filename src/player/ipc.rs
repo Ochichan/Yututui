@@ -19,8 +19,8 @@ use tokio::time::{Duration, sleep};
 
 use super::proto::{self, MpvIncoming};
 use super::{
-    EventSink, MediaSourceContext, PlayerCmd, PlayerEvent, RouteRevocationRegistry,
-    SharedLongFormSeekStatus, cache_runtime::CacheRuntime, pending,
+    Chapter, EventSink, MediaSourceContext, PlayerCmd, PlayerEvent, RouteRevocationRegistry,
+    SharedLongFormSeekStatus, cache_runtime::CacheRuntime, chapter_policy, pending,
 };
 use crate::player::long_form_seek::{CacheAction, CacheEffectiveState};
 
@@ -445,6 +445,9 @@ pub(super) async fn run_actor(input: ActorInput) {
         (17, "audio-device-list"),
         (18, "audio-device"),
         (19, "current-ao"),
+        // Chapter boundaries for the long-form player (`!`/`@` jumps + seekbar ticks). mpv
+        // re-emits this per file, so an empty list reliably clears the previous file's markers.
+        (20, "chapter-list"),
     ] {
         remember_pending_command(&mut state, id, format!("observe {prop}"));
         if let Err(error) = write_json(&conn, &proto::cmd_observe(id, prop)).await {

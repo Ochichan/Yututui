@@ -31,6 +31,11 @@ pub enum Action {
     ToggleNormalize,
     SpeedUp,
     SpeedDown,
+    /// Open the sleep-timer popup (set minutes or turn the timer off).
+    SleepTimer,
+    /// Jump to the previous/next chapter of the current long-form track.
+    ChapterPrev,
+    ChapterNext,
     OpenSettings,
     OpenAi,
     OpenSearch,
@@ -671,6 +676,27 @@ const ACTION_META: &[(Action, &str, &str, &str, &str)] = &[
         "Tell me more (DJ Gem)",
         "DJ Gem에게 더 알아보기",
         "DJ Gemに詳しく聞く",
+    ),
+    (
+        Action::SleepTimer,
+        "sleep_timer",
+        "Sleep timer",
+        "수면 타이머",
+        "スリープタイマー",
+    ),
+    (
+        Action::ChapterPrev,
+        "chapter_prev",
+        "Previous chapter",
+        "이전 챕터",
+        "前のチャプター",
+    ),
+    (
+        Action::ChapterNext,
+        "chapter_next",
+        "Next chapter",
+        "다음 챕터",
+        "次のチャプター",
     ),
     (
         Action::TextZoomIn,

@@ -99,6 +99,8 @@ the window grows again. Nothing to configure; it just follows the window.
 | `Shift+L` | Lyrics, synced to the music; click a visible line to seek there |
 | `z` / `Shift+Z` | Show lyrics 0.1s earlier / later |
 | `v` | Music video in a floating window |
+| `!` / `@` | Jump to the previous / next chapter (long mixes and podcasts) |
+| `Shift+S` | Sleep timer: type minutes (or `off`), the volume fades out, playback pauses |
 | `w` | Explain the selected queue recommendation, or the current track |
 | `Ctrl+Q` | Quit |
 

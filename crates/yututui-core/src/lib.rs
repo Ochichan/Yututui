@@ -7,6 +7,7 @@
 use serde::{Deserialize, Serialize};
 
 pub mod playback;
+pub mod sleep_timer;
 
 /// Repeat mode, cycled by the `r` key.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]

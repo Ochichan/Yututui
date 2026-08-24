@@ -26,6 +26,7 @@ use crate::station::StationStore;
 use crate::streaming::{StreamingConfig, StreamingMode};
 use crate::tools::PlaybackFailureClass;
 use crate::util::sanitize;
+use yututui_core::sleep_timer::{SLEEP_MAX_MINUTES, SleepStep, SleepTimer};
 
 mod delivery;
 mod media_session;
@@ -185,6 +186,9 @@ pub struct DaemonEngine {
     /// The media-session artwork cache's resolved file for a track, keyed by
     /// `video_id`; surfaced in [`Self::media_snapshot`] while the keys match.
     media_art: Option<crate::media::artwork::MediaArtworkReady>,
+    /// Armed sleep timer; the shared core state machine keeps App and daemon fade/fire
+    /// semantics identical. Ticked by the owner loop's 1 Hz sleep pump.
+    sleep_timer: Option<yututui_core::sleep_timer::SleepTimer>,
 }
 
 struct PlayerRuntime {
@@ -364,6 +368,7 @@ impl DaemonEngine {
             inactive_local_queue: None,
             session_events: VecDeque::new(),
             media_art: None,
+            sleep_timer: None,
         }
     }
 
@@ -498,6 +503,8 @@ impl DaemonEngine {
             PlayerEvent::CacheTime(_) => Vec::new(),
             // Recording is a TUI-only feature; the headless engine ignores container hints.
             PlayerEvent::AudioCodec(_) | PlayerEvent::FileFormat(_) => Vec::new(),
+            // Chapters drive the TUI seekbar only; the headless engine never renders them.
+            PlayerEvent::Chapters(_) => Vec::new(),
             // Audio-output discovery and picker acknowledgements belong to the interactive TUI.
             PlayerEvent::AudioDeviceList(_)
             | PlayerEvent::AudioDeviceRefreshFailed(_)
@@ -655,6 +662,9 @@ impl DaemonEngine {
                     })
             }),
             personal_sync: Some(self.personal_sync_status()),
+            sleep_remaining_secs: self
+                .sleep_timer
+                .and_then(|timer| timer.remaining_secs(Instant::now())),
         }
     }
 
@@ -963,6 +973,71 @@ impl DaemonEngine {
         }
         self.playback.volume = volume;
         RemoteResponse::status(self.status())
+    }
+
+    /// Arm the sleep timer through the shared core state machine (the App's
+    /// [`crate::app::App::arm_sleep_timer`] uses the same policy, so fade/fire never drift).
+    fn arm_sleep(&mut self, minutes: u32) -> RemoteResponse {
+        let minutes = minutes.clamp(1, SLEEP_MAX_MINUTES);
+        let fade_secs = self.config.sleep_timer.effective_fade_secs();
+        self.sleep_timer = Some(SleepTimer::armed(Instant::now(), minutes, fade_secs));
+        RemoteResponse::status(self.status())
+    }
+
+    /// Cancel the timer; a fade in progress restores its pre-fade volume.
+    fn cancel_sleep(&mut self) -> RemoteResponse {
+        if let Some(timer) = self.sleep_timer
+            && timer.fading
+            && let Some(pre) = timer.pre_fade_volume
+            && self.playback.volume != pre
+        {
+            let _ = self.send_player_command_if_active("sleep_restore", PlayerCmd::SetVolume(pre));
+            self.playback.volume = pre;
+        }
+        self.sleep_timer = None;
+        RemoteResponse::status(self.status())
+    }
+
+    /// Whether the owner loop should arm the 1 Hz sleep pump.
+    pub(crate) fn sleep_timer_active(&self) -> bool {
+        self.sleep_timer.is_some()
+    }
+
+    /// One owner-loop tick while a timer is armed: advance the fade or fire at the
+    /// deadline. Returns `true` when player-visible state changed (so the loop can
+    /// republish the watch feed).
+    pub(crate) fn sleep_tick(&mut self) -> bool {
+        let Some(mut timer) = self.sleep_timer else {
+            return false;
+        };
+        let now = Instant::now();
+        match timer.advance(now, self.playback.volume) {
+            SleepStep::Idle => {
+                self.sleep_timer = Some(timer);
+                false
+            }
+            SleepStep::Volume(volume) => {
+                self.sleep_timer = Some(timer);
+                let _ =
+                    self.send_player_command_if_active("sleep_fade", PlayerCmd::SetVolume(volume));
+                self.playback.volume = volume;
+                true
+            }
+            SleepStep::Fired => {
+                let restore = timer.pre_fade_volume;
+                self.sleep_timer = None;
+                if let Some(pre) = restore {
+                    let _ = self
+                        .send_player_command_if_active("sleep_restore", PlayerCmd::SetVolume(pre));
+                    self.playback.volume = pre;
+                }
+                if !self.playback.paused && !self.queue.is_empty() {
+                    let _ = self.send_player_command_if_active("sleep_fire", PlayerCmd::CyclePause);
+                    self.playback.paused = true;
+                }
+                true
+            }
+        }
     }
 
     fn seek(&mut self, seconds: f64) -> RemoteResponse {
