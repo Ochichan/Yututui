@@ -54,6 +54,7 @@ session
 settings
 should_quit
 signals
+sleep
 station
 status
 status_text_prev
