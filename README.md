@@ -138,10 +138,11 @@ That's it. Music.
 Every feature below is shown live, in detail, on the **[feature tour](https://ochichan.github.io/Yututui/)**.
 
 <!-- 📸 Media inventory: hero.gif, player.png, search.png, sources.png, radio.png,
-library.png, queue.png, localdeck.png, themes.png, settings.png, audio-output.png,
-retro.png, help.png, onboarding.png are live. Still needed: lyrics.gif, djgem.gif,
-assistant.gif, video.gif, radio-id.gif, downloads.png, everywhere.png, tray.png,
-animations.gif, showpiece.gif, eq.png, transfer.gif, context-menu.png
+library.png, queue.png, downloads.png, localdeck.png, themes.png, settings.png,
+audio-output.png, retro.png, help.png, onboarding.png, animations.gif,
+showpiece.gif, eq.png, context-menu.png are live. Still needed: lyrics.gif,
+djgem.gif, assistant.gif, video.gif, radio-id.gif, everywhere.png, tray.png,
+transfer.gif
 (drop files into docs/media/; the same files serve all three READMEs). -->
 
 ### The player — real album art & time-synced lyrics
@@ -205,10 +206,7 @@ Build playlists in the Library (or let DJ Gem build them), pop the queue with **
 
 ![The Library with playlists, favorites and history](docs/media/library.png)
 ![The queue popup over the player](docs/media/queue.png)
-> 🖼️ *Screenshot coming soon.*
-<!-- 📸 TO FILL: add docs/media/downloads.png, then uncomment:
 ![Downloads: tagged m4a files with cover art, played offline](docs/media/downloads.png)
--->
 
 ### Local Deck — an offline player for everything on disk
 
@@ -236,18 +234,9 @@ Media keys, macOS Control Center, Windows SMTC + tray mini player, Linux MPRIS, 
 
 ![The theme and color settings screen](docs/media/themes.png)
 ![The Settings screen](docs/media/settings.png)
-> 🖼️ *GIF coming soon.*
-<!-- 📸 TO FILL: add docs/media/animations.gif, then uncomment:
 ![Animations, including the spinning ASCII donut](docs/media/animations.gif)
--->
-> 🖼️ *GIF coming soon.*
-<!-- 📸 TO FILL: add docs/media/showpiece.gif, then uncomment:
 ![A full-canvas showpiece animation — fireworks, Game of Life, pipes or plasma](docs/media/showpiece.gif)
--->
-> 🖼️ *Screenshot coming soon.*
-<!-- 📸 TO FILL: add docs/media/eq.png, then uncomment:
 ![The 10-band EQ with presets](docs/media/eq.png)
--->
 
 ### Retro mode
 
@@ -270,10 +259,7 @@ One toggle makes everything CP437-safe for a bare Linux console or a crusty SSH 
 
 ![The live keybinding cheat sheet](docs/media/help.png)
 ![Beginner Mode's interactive walkthrough](docs/media/onboarding.png)
-> 🖼️ *Screenshot coming soon.*
-<!-- 📸 TO FILL: add docs/media/context-menu.png, then uncomment:
 ![Right-click context menu on a track row](docs/media/context-menu.png)
--->
 
 ## Essential keys
 

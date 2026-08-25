@@ -204,10 +204,7 @@ audio-output.png · retro.png · transfer.gif · help.png · onboarding.gif · c
 
 ![플레이리스트·즐겨찾기·기록이 있는 라이브러리](docs/media/library.png)
 ![플레이어 위에 뜬 큐 팝업](docs/media/queue.png)
-> 🖼️ *스크린샷 준비 중.*
-<!-- 📸 add docs/media/downloads.png:
 ![다운로드: 커버 아트와 태그가 박힌 m4a, 오프라인 재생](docs/media/downloads.png)
--->
 
 ### 로컬 덱 — 디스크 위 모든 음악의 오프라인 플레이어
 
@@ -235,18 +232,9 @@ audio-output.png · retro.png · transfer.gif · help.png · onboarding.gif · c
 
 ![테마 및 색상 설정 화면](docs/media/themes.png)
 ![설정 화면](docs/media/settings.png)
-> 🖼️ *GIF 준비 중.*
-<!-- 📸 add docs/media/animations.gif:
 ![도는 ASCII 도넛을 포함한 애니메이션들](docs/media/animations.gif)
--->
-> 🖼️ *GIF 준비 중.*
-<!-- 📸 add docs/media/showpiece.gif:
 ![풀캔버스 쇼피스 애니메이션 — 불꽃놀이, 라이프 게임, 파이프, 플라즈마](docs/media/showpiece.gif)
--->
-> 🖼️ *스크린샷 준비 중.*
-<!-- 📸 add docs/media/eq.png:
 ![프리셋이 있는 10밴드 EQ](docs/media/eq.png)
--->
 
 ### 레트로 모드
 
@@ -269,10 +257,7 @@ audio-output.png · retro.png · transfer.gif · help.png · onboarding.gif · c
 
 ![라이브 단축키 치트시트](docs/media/help.png)
 ![초보자 모드의 인터랙티브 둘러보기](docs/media/onboarding.png)
-> 🖼️ *스크린샷 준비 중.*
-<!-- 📸 add docs/media/context-menu.png:
 ![트랙 행의 우클릭 컨텍스트 메뉴](docs/media/context-menu.png)
--->
 
 ## 필수 키
 

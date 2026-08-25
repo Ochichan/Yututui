@@ -206,10 +206,7 @@ audio-output.png · retro.png · transfer.gif · help.png · onboarding.gif · c
 
 ![プレイリスト・お気に入り・履歴のあるライブラリ](docs/media/library.png)
 ![プレイヤーの上に出たキューのポップアップ](docs/media/queue.png)
-> 🖼️ *スクリーンショット 準備中.*
-<!-- 📸 add docs/media/downloads.png:
 ![ダウンロード: カバーアートとタグ入りの m4a、オフライン再生](docs/media/downloads.png)
--->
 
 ### ローカルデッキ — ディスク上のすべての音楽のオフラインプレイヤー
 
@@ -237,18 +234,9 @@ audio-output.png · retro.png · transfer.gif · help.png · onboarding.gif · c
 
 ![テーマとカラーの設定画面](docs/media/themes.png)
 ![設定画面](docs/media/settings.png)
-> 🖼️ *GIF 準備中.*
-<!-- 📸 add docs/media/animations.gif:
 ![回る ASCII ドーナツを含むアニメーション](docs/media/animations.gif)
--->
-> 🖼️ *GIF 準備中.*
-<!-- 📸 add docs/media/showpiece.gif:
 ![フルキャンバスのショーピースアニメーション — 花火、ライフゲーム、パイプ、プラズマ](docs/media/showpiece.gif)
--->
-> 🖼️ *スクリーンショット 準備中.*
-<!-- 📸 add docs/media/eq.png:
 ![プリセット付きの10バンド EQ](docs/media/eq.png)
--->
 
 ### レトロモード
 
@@ -271,10 +259,7 @@ audio-output.png · retro.png · transfer.gif · help.png · onboarding.gif · c
 
 ![ライブのキーバインドチートシート](docs/media/help.png)
 ![初心者モードのインタラクティブツアー](docs/media/onboarding.png)
-> 🖼️ *スクリーンショット 準備中.*
-<!-- 📸 add docs/media/context-menu.png:
 ![トラック行の右クリックコンテキストメニュー](docs/media/context-menu.png)
--->
 
 ## 基本のキー
 
