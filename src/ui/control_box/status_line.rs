@@ -632,3 +632,37 @@ fn push_sleep_timer(parts: &mut StatusLineParts, app: &App, gap: &'static str, m
     };
     parts.push((None, Cow::Owned(format!("{gap}{label}"))));
 }
+
+/// Chapter-boundary ticks drawn on top of the seekbar gauge so long-form tracks read
+/// at a glance. Informational only: drawn directly on the buffer, never part of the
+/// clickable gauge. Lives here so the pinned control_box.rs stays under its size cap.
+pub(super) fn render_chapter_ticks(
+    frame: &mut ratatui::Frame,
+    app: &App,
+    area: ratatui::layout::Rect,
+) {
+    if app.current_is_radio_stream()
+        || app.playback.chapters.is_empty()
+        || !app.playback.duration.is_some_and(|duration| duration > 0.0)
+    {
+        return;
+    }
+    let duration = app.playback.duration.expect("checked above");
+    let tick_style = ratatui::style::Style::default()
+        .fg(app.theme.color(crate::theme::ThemeRole::GaugeEmpty))
+        .bg(app.theme.color(crate::theme::ThemeRole::GaugeFilled))
+        .add_modifier(ratatui::style::Modifier::BOLD);
+    for chapter in &app.playback.chapters {
+        let chapter_ratio = (chapter.start_secs / duration).clamp(0.0, 1.0);
+        // The first/last boundaries sit under the gauge ends — no tick needed there.
+        if chapter_ratio <= 0.0 || chapter_ratio >= 1.0 {
+            continue;
+        }
+        let x = area
+            .x
+            .saturating_add(((area.width.saturating_sub(1)) as f64 * chapter_ratio).round() as u16);
+        if let Some(cell) = frame.buffer_mut().cell_mut((x, area.y)) {
+            cell.set_char('│').set_style(tick_style);
+        }
+    }
+}

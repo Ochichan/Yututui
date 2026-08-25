@@ -19,14 +19,15 @@ use tokio::time::{Duration, sleep};
 
 use super::proto::{self, MpvIncoming};
 use super::{
-    Chapter, EventSink, MediaSourceContext, PlayerCmd, PlayerEvent, RouteRevocationRegistry,
-    SharedLongFormSeekStatus, cache_runtime::CacheRuntime, chapter_policy, pending,
+    EventSink, MediaSourceContext, PlayerCmd, PlayerEvent, RouteRevocationRegistry,
+    SharedLongFormSeekStatus, cache_runtime::CacheRuntime, pending,
 };
 use crate::player::long_form_seek::{CacheAction, CacheEffectiveState};
 
 mod actor_exit;
 mod actor_handlers;
 mod audio_output;
+mod chapters;
 mod resume;
 mod wire;
 

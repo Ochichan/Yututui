@@ -24,6 +24,7 @@ use crate::theme::ThemeConfig;
 mod animation;
 mod audio;
 mod recovery;
+mod sleep_timer;
 mod spotify;
 mod storage;
 mod visual;
@@ -34,6 +35,7 @@ pub use audio::{
     MPV_CACHE_FORWARD_DEFAULT, MPV_CACHE_FORWARD_LEGACY_DEFAULT, MpvAudioConfig,
     MpvAudioRuntimeConfig,
 };
+pub use sleep_timer::SleepTimerConfig;
 pub use spotify::SpotifyImportMode;
 pub use storage::{
     default_cookies_file, default_download_dir, default_recording_dir, peek_saved_language,
@@ -450,42 +452,6 @@ pub struct Config {
 /// app-owned fallback, while these settings describe broader user-owned music folders.
 pub const LOCAL_IMPORT_PATH_TEMPLATE_DEFAULT: &str =
     "{album_artist}/{year} - {album}/{disc_track} - {title} [{youtube_id}]";
-
-/// Sleep-timer defaults read when the popup opens or a remote arm omits a value. Both values
-/// clamp through the shared core policy ([`yututui_core::sleep_timer`]) at arm time, so a
-/// hand-edited config cannot schedule a session-long timer or a fade that never lands.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(default)]
-pub struct SleepTimerConfig {
-    /// Minutes pre-filled in the sleep popup (also the preset used by remote arms that pass
-    /// no explicit minutes). Defaults to 30.
-    pub default_minutes: u32,
-    /// Fade-out length in seconds; `0` pauses immediately at the deadline. Defaults to 30.
-    pub fade_secs: u32,
-}
-
-impl Default for SleepTimerConfig {
-    fn default() -> Self {
-        Self {
-            default_minutes: yututui_core::sleep_timer::SLEEP_DEFAULT_MINUTES,
-            fade_secs: yututui_core::sleep_timer::SLEEP_DEFAULT_FADE_SECS,
-        }
-    }
-}
-
-impl SleepTimerConfig {
-    /// The popup preset, clamped to the shared ceiling.
-    pub fn effective_default_minutes(&self) -> u32 {
-        self.default_minutes
-            .clamp(1, yututui_core::sleep_timer::SLEEP_MAX_MINUTES)
-    }
-
-    /// The fade length, clamped to a sane band (a fade longer than the timer simply starts
-    /// immediately — see the core policy).
-    pub fn effective_fade_secs(&self) -> u32 {
-        self.fade_secs.min(600)
-    }
-}
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]

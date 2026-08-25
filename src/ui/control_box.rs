@@ -248,31 +248,9 @@ pub(in crate::ui) fn render_seekbar(frame: &mut Frame, app: &App, area: Rect, an
         .ratio(ratio)
         .label(label);
     frame.render_widget(seekbar, area);
-    // Chapter-boundary ticks sit on top of the gauge so long-form tracks read at a glance.
-    // Informational only: drawn directly on the buffer, never part of the clickable gauge.
-    if !app.current_is_radio_stream()
-        && !app.playback.chapters.is_empty()
-        && let Some(duration) = app.playback.duration
-        && duration > 0.0
-    {
-        let tick_style = Style::default()
-            .fg(app.theme.color(R::GaugeEmpty))
-            .bg(app.theme.color(R::GaugeFilled))
-            .add_modifier(Modifier::BOLD);
-        for chapter in &app.playback.chapters {
-            let chapter_ratio = (chapter.start_secs / duration).clamp(0.0, 1.0);
-            // The first/last boundaries sit under the gauge ends — no tick needed there.
-            if chapter_ratio <= 0.0 || chapter_ratio >= 1.0 {
-                continue;
-            }
-            let x = area.x.saturating_add(
-                ((area.width.saturating_sub(1)) as f64 * chapter_ratio).round() as u16,
-            );
-            if let Some(cell) = frame.buffer_mut().cell_mut((x, area.y)) {
-                cell.set_char('│').set_style(tick_style);
-            }
-        }
-    }
+    // Chapter-boundary ticks sit on top of the gauge so long-form tracks read at a
+    // glance; the drawing lives in the sibling status_line module (size cap).
+    status_line::render_chapter_ticks(frame, app, area);
     // A bright comet sweeps the filled portion when the seekbar animation is on (no-op
     // otherwise), a short ripple marks the head right after a seek, and sparks dance on
     // the playhead while the sparkle flag is on. Skipped in the static (off-Player)
