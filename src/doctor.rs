@@ -11,9 +11,7 @@
 use crate::deps::{self, Need};
 use crate::{config, i18n};
 use std::path::{Path, PathBuf};
-#[cfg(target_os = "linux")]
-use std::time::Duration;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 #[path = "doctor/audio_report.rs"]
 mod audio_report;
