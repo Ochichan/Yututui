@@ -708,7 +708,6 @@ fn print_path_probe(bin: &str) {
     }
 }
 
-#[cfg(target_os = "linux")]
 fn command_stdout(program: &str, args: &[&str]) -> String {
     if !deps::on_path(program) {
         return "missing".to_owned();
