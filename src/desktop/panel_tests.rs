@@ -39,6 +39,7 @@ fn playing_update() -> PollUpdate {
         position_epoch: 7,
         artwork: None,
         personal_sync: None,
+        sleep_remaining_secs: None,
     })
 }
 
@@ -191,6 +192,7 @@ fn idle_daemon_payload_enables_resume_and_stop() {
         position_epoch: 0,
         artwork: None,
         personal_sync: None,
+        sleep_remaining_secs: None,
     });
     let payload = english_payload(&update);
     assert_eq!(payload.title, "Nothing playing");
