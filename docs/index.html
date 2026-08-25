@@ -948,7 +948,7 @@ kbd {
       </div>
     </div><!-- /#screen-player -->
 
-    <!-- ===== SEARCH screen (source dropdown open — six catalogs) ===== -->
+    <!-- ===== SEARCH screen (source dropdown open — seven catalogs) ===== -->
     <div class="term__screen" id="screen-search" role="tabpanel" aria-labelledby="tab-search" data-screen="search" tabindex="0" hidden>
       <div class="scr">
         <div class="srch">
@@ -974,6 +974,7 @@ kbd {
           <div class="srcpop__row"><span class="code">JA</span> Jamendo</div>
           <div class="srcpop__row"><span class="code">IA</span> Internet Archive</div>
           <div class="srcpop__row"><span class="code">RAD</span> Radio Browser</div>
+          <div class="srcpop__row"><span class="code">SUB</span> OpenSubsonic</div>
           <div class="srcpop__row"><span class="code">ALL</span> <span data-i18n="search.all">All enabled</span></div>
         </div>
         <div class="scr-help"><kbd>?</kbd> <span data-i18n="hint.help">keybindings</span></div>
@@ -1093,8 +1094,8 @@ kbd {
 
     <article class="feature pin">
       <div class="feature__top"><kbd>Tab ▾</kbd></div>
-      <h3 class="display" data-i18n="f.sources.h">Six catalogs, one search box</h3>
-      <p data-i18n-html="f.sources.p">YouTube Music is home base, but the same box searches SoundCloud, Audius, Jamendo, Internet Archive and Radio Browser. Flip sources with <code>Tab</code>, or hit them all at once — every result tagged <code>[SRC]</code>.</p>
+      <h3 class="display" data-i18n="f.sources.h">Seven catalogs, one search box</h3>
+      <p data-i18n-html="f.sources.p">YouTube Music is home base, but the same box searches SoundCloud, Audius, Jamendo, Internet Archive, Radio Browser and your OpenSubsonic music server. Flip sources with <code>Tab</code>, or hit them all at once — every result tagged <code>[SRC]</code>.</p>
     </article>
 
     <article class="feature lov">
@@ -1141,7 +1142,7 @@ kbd {
   </div>
 
   <div class="stats reveal" aria-label="YuTuTui! by the numbers">
-    <div class="stat"><b class="display">6</b><span data-i18n="st.catalogs">catalogs, one search box</span></div>
+    <div class="stat"><b class="display">7</b><span data-i18n="st.catalogs">catalogs, one search box</span></div>
     <div class="stat"><b class="display">14</b><span data-i18n="st.themes">themes, yours to recolor</span></div>
     <div class="stat"><b class="display">34</b><span data-i18n="st.roles">hex-editable color roles</span></div>
     <div class="stat"><b class="display">40</b><span data-i18n="st.anims">animations, donut included</span></div>
@@ -1555,8 +1556,8 @@ var KO = {
   "f.streaming.p": "<code>Ctrl+R</code> 하나면 Gemini 기반 <em>큐 디렉터</em>가 분위기에 맞는 곡을 이어줍니다 — Focused, Balanced, Discovery 중에서. <code>w</code> 를 누르면 고른 이유를 쉬운 말로.",
   "f.art.h": "앨범 아트, 가사 — 그리고 뮤직비디오",
   "f.art.p": "터미널이 지원하면 Kitty, Sixel, iTerm2로 커버 이미지를 그리고, 아니면 halfblock 또는 retro fallback으로 내려갑니다. 그 아래로 싱크 가사가 흐르고, OS 세션이 지원하면 <code>v</code> 로 작은 mpv 영상 창도 띄웁니다. mpv 창에 포커스가 있을 때는 <code>Space</code>/<code>.</code>/<code>,</code>/<code>q</code>/<code>f</code>/<code>m</code>으로 재생, 다음/이전, 닫기, 전체 화면, 음소거를 조작하고, 이 키도 바꿀 수 있어요.",
-  "f.sources.h": "카탈로그 여섯, 검색창 하나",
-  "f.sources.p": "본진은 YouTube Music이지만, 같은 검색창이 SoundCloud, Audius, Jamendo, Internet Archive, Radio Browser까지 뒤집니다. <code>Tab</code> 으로 전환하거나 전부 한꺼번에 — 결과마다 <code>[SRC]</code> 태그.",
+  "f.sources.h": "카탈로그 일곱, 검색창 하나",
+  "f.sources.p": "본진은 YouTube Music이지만, 같은 검색창이 SoundCloud, Audius, Jamendo, Internet Archive, Radio Browser, 여러분의 OpenSubsonic 음악 서버까지 뒤집니다. <code>Tab</code> 으로 전환하거나 전부 한꺼번에 — 결과마다 <code>[SRC]</code> 태그.",
   "f.radio.h": "지금 나오는 곡까지 아는 라이브 라디오",
   "f.radio.p": "<code>Alt+Shift+R</code> 로 앱 전체가 인터넷 라디오 튜너로 — 라이브 엣지에 스스로 재동기화되는 진짜 생방송 스트림에, 라디오 전용 즐겨찾기·기록·테마까지. <code>i</code> 를 누르면 Gemini가 지금 나오는 곡의 이름을 알려주고, <code>f</code> 로 바로 즐겨찾기.",
   "f.scrobble.h": "모든 감상을 기록으로",
@@ -1724,8 +1725,8 @@ var JA = {
   "f.streaming.p": "<code>Ctrl+R</code> 一つで、Gemini 搭載の<em>キュー・ディレクター</em>が雰囲気に合う曲を並べます — Focused、Balanced、Discovery の中から。<code>w</code> でその理由をやさしい言葉で。",
   "f.art.h": "アルバムアート、歌詞 — そして MV",
   "f.art.p": "ターミナルが対応していれば Kitty、Sixel、iTerm2 でカバー画像を描き、そうでなければ halfblock または retro fallback に戻ります。その下を同期歌詞が流れ、OS セッションが対応していれば <code>v</code> で小さな mpv 動画ウィンドウも開けます。mpv にフォーカスがあるときは <code>Space</code>/<code>.</code>/<code>,</code>/<code>q</code>/<code>f</code>/<code>m</code> で再生、次/前、閉じる、全画面、ミュートを操作でき、このキーも再設定できます。",
-  "f.sources.h": "カタログは六つ、検索窓は一つ",
-  "f.sources.p": "ホームは YouTube Music。でも同じ検索窓で SoundCloud、Audius、Jamendo、Internet Archive、Radio Browser も探せます。<code>Tab</code> で切り替え、まとめて全部でも — 結果には <code>[SRC]</code> タグ付き。",
+  "f.sources.h": "カタログは七つ、検索窓は一つ",
+  "f.sources.p": "ホームは YouTube Music。でも同じ検索窓で SoundCloud、Audius、Jamendo、Internet Archive、Radio Browser、あなたの OpenSubsonic 音楽サーバーも探せます。<code>Tab</code> で切り替え、まとめて全部でも — 結果には <code>[SRC]</code> タグ付き。",
   "f.radio.h": "いま流れている曲まで分かるライブラジオ",
   "f.radio.p": "<code>Alt+Shift+R</code> でアプリ全体がインターネットラジオのチューナーに — ライブエッジへ自動で再同期する本物の生放送ストリームに、ラジオ専用のお気に入り・履歴・テーマまで。<code>i</code> を押せば Gemini がいま流れている曲名を教えてくれて、<code>f</code> でそのままお気に入りに。",
   "f.scrobble.h": "すべての再生を、記録に",
