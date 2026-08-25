@@ -118,6 +118,7 @@ pub(in crate::daemon) fn engine_with_queue(ids: &[&str]) -> DaemonEngine {
         inactive_local_queue: None,
         session_events: VecDeque::new(),
         media_art: None,
+        sleep_timer: None,
     }
 }
 

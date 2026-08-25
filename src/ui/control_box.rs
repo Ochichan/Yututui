@@ -148,11 +148,17 @@ pub(in crate::ui) fn render_title_row(
                 } else {
                     ""
                 };
+                let mut text = format!("{heart}{title} — {artist}");
+                // A chaptered long-form track names its current chapter on the title line;
+                // the marquee below scrolls the combined string when it overflows.
+                if let Some(chapter) = app.current_chapter_name() {
+                    text.push_str(" · ");
+                    text.push_str(chapter);
+                }
                 // Scroll an overflowing title so it stays readable in the mini player.
                 // `selected_marquee` is deliberately independent of the animation masters
                 // (like the radio card's title) and returns the text unchanged when it
                 // already fits, so the fits case stays byte-identical.
-                let text = format!("{heart}{title} — {artist}");
                 if marquee {
                     crate::ui::anim::selected_marquee(
                         app,
@@ -242,6 +248,9 @@ pub(in crate::ui) fn render_seekbar(frame: &mut Frame, app: &App, area: Rect, an
         .ratio(ratio)
         .label(label);
     frame.render_widget(seekbar, area);
+    // Chapter-boundary ticks sit on top of the gauge so long-form tracks read at a
+    // glance; the drawing lives in the sibling status_line module (size cap).
+    status_line::render_chapter_ticks(frame, app, area);
     // A bright comet sweeps the filled portion when the seekbar animation is on (no-op
     // otherwise), a short ripple marks the head right after a seek, and sparks dance on
     // the playhead while the sparkle flag is on. Skipped in the static (off-Player)

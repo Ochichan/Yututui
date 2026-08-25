@@ -343,6 +343,9 @@ async fn run_owner_loop(
     media_pump.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut scrobble_retry_tick = tokio::time::interval(Duration::from_millis(250));
     scrobble_retry_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    // 1 Hz while a sleep timer is armed (parked otherwise); drives the fade and the fire.
+    let mut sleep_pump = tokio::time::interval(Duration::from_secs(1));
+    sleep_pump.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     let mut effect_tasks = DaemonEffectTasks::new();
     let mut personal_export = personal_export::PersonalExport::default();
@@ -401,6 +404,14 @@ async fn run_owner_loop(
                 },
                 _ = scrobble_retry_tick.tick(), if scrobble.retry_needed() => {
                     let _ = scrobble.observe(&engine.media_snapshot());
+                    continue;
+                },
+                _ = sleep_pump.tick(), if engine.sleep_timer_active() => {
+                    if shutdown.is_triggered() {
+                        engine.suppress_transport_recovery_for_shutdown();
+                        break 'owner;
+                    }
+                    let _changed = engine.sleep_tick();
                     continue;
                 },
             }

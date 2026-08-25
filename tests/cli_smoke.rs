@@ -1485,6 +1485,7 @@ mod remote_owner {
             position_epoch: 0,
             artwork: None,
             personal_sync: None,
+            sleep_remaining_secs: None,
         }
     }
 

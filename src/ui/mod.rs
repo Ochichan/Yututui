@@ -205,6 +205,10 @@ pub fn render(frame: &mut Frame, app: &App) {
     if app.tool_setup.is_some() {
         views::onboarding::render_tool_setup(frame, app, area);
     }
+    // The sleep-timer popup captures input wherever it opens.
+    if app.sleep.popup.is_some() {
+        views::sleep_timer::render(frame, app, area);
+    }
     // Sync setup and device lifecycle are Settings-owned but remain visible in Mini layout.
     // Draw this move-only wizard at the top level so its fields and actions always win z-order.
     if app.personal_state.sync_ui.modal_open() {

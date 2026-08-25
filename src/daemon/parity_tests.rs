@@ -17,6 +17,7 @@
 mod harness;
 mod personal_sync;
 mod rating_recommendation;
+mod sleep_timer;
 
 use std::sync::Arc;
 
@@ -46,6 +47,15 @@ fn b0_script() -> Vec<RemoteCommand> {
         RemoteCommand::VolumeDown,
         RemoteCommand::SetVolume { percent: 100 }, // upper clamp behavior
         RemoteCommand::VolumeUp,
+        // Sleep timer: arm, cancel, ceiling clamp, preset arm, cancel again. Pure owner state —
+        // no queue/epoch interaction, which the sweep's epoch assertion pins for us.
+        RemoteCommand::Sleep { minutes: Some(15) },
+        RemoteCommand::Sleep { minutes: Some(0) },
+        RemoteCommand::Sleep {
+            minutes: Some(yututui_core::sleep_timer::SLEEP_MAX_MINUTES + 60),
+        },
+        RemoteCommand::Sleep { minutes: None },
+        RemoteCommand::Sleep { minutes: Some(0) },
         RemoteCommand::QueueRemove { position: 0 }, // before the cursor: no track load
         // Order surgery on the shared Queue methods (v8 GUI wires): reorder around the
         // cursor, out-of-range rejection, then trim everything upcoming — none of these

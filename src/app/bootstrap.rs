@@ -42,6 +42,7 @@ impl App {
                 speed: 1.0,
                 ..Default::default()
             },
+            sleep: SleepState::default(),
             recorder: crate::recorder::RecorderState::default(),
             media_art: None,
             queue: Queue::default(),

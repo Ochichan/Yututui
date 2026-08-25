@@ -257,6 +257,10 @@ impl App {
             PlayerMsg::FileFormat(format) => {
                 self.playback.file_format = format;
             }
+            PlayerMsg::Chapters(chapters) => {
+                self.playback.chapters = chapters;
+                self.dirty = true;
+            }
             PlayerMsg::AudioDeviceList(devices) => {
                 return self.on_audio_device_list(devices);
             }
@@ -1146,6 +1150,9 @@ impl App {
             Msg::Player(pm) => return self.handle_player(pm),
             Msg::RecordingTick => {
                 return self.recorder_on_tick();
+            }
+            Msg::SleepTick => {
+                return self.handle_sleep_tick();
             }
             Msg::Recorder(event) => {
                 return self.on_recorder_event(event);

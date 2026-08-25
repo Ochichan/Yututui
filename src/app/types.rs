@@ -182,6 +182,8 @@ pub enum Msg {
     Player(PlayerMsg),
     /// 1 Hz tick while a radio recording is in progress; drives the max-duration force-split.
     RecordingTick,
+    /// 1 Hz tick while a sleep timer is armed (countdown, fade, fire).
+    SleepTick,
     /// A radio recorder disk job finished (a track was saved, or saving failed).
     Recorder(crate::recorder::job::RecorderEvent),
     /// Search results, playlist-track fetches, and artist-page fetches.
@@ -845,6 +847,9 @@ pub enum MouseTarget {
     ConfirmPlaylistCreate,
     /// Cancel button on the "new playlist" popup.
     CancelPlaylistCreate,
+    /// Set / Cancel buttons on the sleep-timer popup.
+    ConfirmSleepTimer,
+    CancelSleepTimer,
     /// A row in the "add to playlist" picker: `0..len` choose a playlist, `len` is the
     /// trailing "New playlist…" row.
     PlaylistPickRow(usize),

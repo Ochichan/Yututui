@@ -104,6 +104,34 @@ impl App {
                     ),
                 )
             }
+            RemoteCommand::Sleep { minutes } => {
+                let (response, cmds) = match minutes {
+                    Some(0) => {
+                        let cmds = self.cancel_sleep_timer();
+                        (
+                            RemoteResponse::ok(
+                                t!(
+                                    "sleep timer off",
+                                    "수면 타이머 꺼짐",
+                                    "スリープタイマーをオフにしました"
+                                )
+                                .to_owned(),
+                            ),
+                            cmds,
+                        )
+                    }
+                    Some(minutes) => {
+                        let cmds = self.arm_sleep_timer(minutes);
+                        (self.sleep_timer_resp(), cmds)
+                    }
+                    None => {
+                        let preset = self.config.sleep_timer.effective_default_minutes();
+                        let cmds = self.arm_sleep_timer(preset);
+                        (self.sleep_timer_resp(), cmds)
+                    }
+                };
+                (response, cmds)
+            }
             RemoteCommand::SeekTo { ms } => {
                 if self.queue.current().is_none() {
                     return (RemoteResponse::err("queue_empty"), Vec::new());
@@ -497,6 +525,12 @@ impl App {
             queue_rev: Some(self.queue.rev()),
             track_id: cur.map(|song| crate::api::sanitize_provider_id(&song.video_id)),
             position_epoch: self.playback.position_epoch,
+            // The armed sleep timer's remaining whole seconds, so `ytt -r status --json`
+            // and the daemon's watch feed can show the same countdown as the docked box.
+            sleep_remaining_secs: self
+                .sleep
+                .timer
+                .and_then(|timer| timer.remaining_secs(std::time::Instant::now())),
             // Same current-track gate as the OS media snapshot (media_reducer): stale
             // art from the previous track never rides a status reply.
             artwork: cur.and_then(|song| {

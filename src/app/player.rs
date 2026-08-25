@@ -26,6 +26,9 @@ pub enum PlayerMsg {
     AudioCodec(Option<String>),
     /// mpv `file-format` (container) for the active stream (radio recorder container hint).
     FileFormat(Option<String>),
+    /// mpv `chapter-list` for the current file: title + start time per boundary, empty when
+    /// the media has none. Replaces (never merges) the stored list — mpv re-emits per file.
+    Chapters(Vec<crate::player::Chapter>),
     /// Latest cross-platform audio endpoint inventory reported by mpv.
     AudioDeviceList(Vec<crate::player::AudioDevice>),
     /// A manual device-list refresh failed without affecting playback.
@@ -96,6 +99,79 @@ pub(in crate::app) struct YidMemo {
 }
 
 impl App {
+    /// Jump to the previous/next chapter boundary of the current track. The seek rides the
+    /// canonical `player_intent` path, so `position_epoch` bumps centrally. A track without
+    /// chapters (or already at the first/last boundary) explains itself instead of seeking.
+    pub(in crate::app) fn jump_chapter(&mut self, next: bool) -> Vec<Cmd> {
+        if self.playback.chapters.is_empty() {
+            self.status.text = t!(
+                "No chapters on this track",
+                "이 트랙에는 챕터가 없어요",
+                "このトラックにはチャプターがありません"
+            )
+            .to_owned();
+            self.status.kind = StatusKind::Info;
+            self.dirty = true;
+            return Vec::new();
+        }
+        let pos = self.playback.time_pos.unwrap_or(0.0);
+        // A half-second hysteresis so a jump lands on the next/previous boundary instead of
+        // immediately re-selecting the boundary we're already sitting on.
+        let target = if next {
+            self.playback
+                .chapters
+                .iter()
+                .map(|chapter| chapter.start_secs)
+                .find(|&start| start > pos + 0.5)
+        } else {
+            self.playback
+                .chapters
+                .iter()
+                .rev()
+                .map(|chapter| chapter.start_secs)
+                .find(|&start| start < pos - 0.5)
+        };
+        match target {
+            Some(seconds) => self.player_intent(
+                "seek_chapter",
+                PlayerCmd::SeekAbsolute {
+                    seconds,
+                    precision: crate::player::SeekPrecision::InteractiveFast,
+                },
+                PlayerCommit::Seek {
+                    optimistic_position: Some(seconds),
+                },
+            ),
+            None => {
+                self.status.text = t!(
+                    "Already at the first/last chapter",
+                    "이미 첫/마지막 챕터에 있어요",
+                    "すでに最初/最後のチャプターです"
+                )
+                .to_owned();
+                self.status.kind = StatusKind::Info;
+                self.dirty = true;
+                Vec::new()
+            }
+        }
+    }
+
+    /// The title of the chapter the playhead currently sits in, when the loaded media has
+    /// chapters and a known position. Drives the title-line suffix and the status-line tag.
+    pub fn current_chapter_name(&self) -> Option<&str> {
+        let chapters = &self.playback.chapters;
+        if chapters.is_empty() {
+            return None;
+        }
+        let pos = self.playback.time_pos?;
+        let index = chapters
+            .iter()
+            .rposition(|chapter| chapter.start_secs <= pos + 0.5)
+            .unwrap_or(0);
+        let title = chapters[index].title.trim();
+        (!title.is_empty()).then_some(title)
+    }
+
     /// Show the shared music-mode rejection used when a local or media-session
     /// control tries to enable repeat while autoplay streaming is active.
     pub(in crate::app) fn show_repeat_streaming_conflict(&mut self) {
@@ -750,6 +826,13 @@ impl App {
             Action::ToggleNormalize => self.normalize_intent(!self.audio.normalize, false),
             Action::SpeedUp => self.adjust_speed(SPEED_STEP),
             Action::SpeedDown => self.adjust_speed(-SPEED_STEP),
+            // `Shift+S` (sleep timer popup) and mpv-style `!`/`@` (chapter jumps).
+            Action::SleepTimer => {
+                self.open_sleep_popup();
+                Vec::new()
+            }
+            Action::ChapterPrev => self.jump_chapter(false),
+            Action::ChapterNext => self.jump_chapter(true),
             Action::OpenSettings => {
                 self.open_settings();
                 Vec::new()

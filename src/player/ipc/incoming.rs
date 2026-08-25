@@ -788,6 +788,9 @@ fn dispatch_incoming(line: &str, emit: &EventSink, state: &mut DispatchState) {
                     PlayerEvent::FileFormat(value.as_str().map(str::to_owned)),
                 );
             }
+            "chapter-list" => {
+                emit_file_event(emit, state, PlayerEvent::Chapters(chapters::parse_chapter_list(&value)));
+            }
             property if audio_output::dispatch_property(property, &value, emit) => {}
             "playlist" => {
                 if let Some(selection) = playlist_selection(Some(&value)) {
@@ -1095,3 +1098,4 @@ fn dispatch_incoming(line: &str, emit: &EventSink, state: &mut DispatchState) {
         MpvIncoming::ClientMessage { .. } | MpvIncoming::Other => {}
     }
 }
+

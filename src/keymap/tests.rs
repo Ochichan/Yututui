@@ -359,7 +359,15 @@ fn defaults_resolve_to_actions() {
     );
     assert_eq!(
         km.action(KeyContext::Player, parse_chord("S").unwrap()),
-        None
+        Some(Action::SleepTimer)
+    );
+    assert_eq!(
+        km.action(KeyContext::Player, parse_chord("!").unwrap()),
+        Some(Action::ChapterPrev)
+    );
+    assert_eq!(
+        km.action(KeyContext::Player, parse_chord("@").unwrap()),
+        Some(Action::ChapterNext)
     );
     assert_eq!(
         km.action(KeyContext::Player, parse_chord("l").unwrap()),

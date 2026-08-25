@@ -261,6 +261,19 @@ impl App {
                 }
             }
         }
+        // The sleep-timer popup is modal the same way.
+        if self.sleep.popup.is_some() {
+            match self.mouse_target_at(col, row) {
+                Some(t @ (MouseTarget::ConfirmSleepTimer | MouseTarget::CancelSleepTimer)) => {
+                    return self.on_mouse_target(t);
+                }
+                _ => {
+                    self.sleep.popup = None;
+                    self.dirty = true;
+                    return Vec::new();
+                }
+            }
+        }
         if let Some(commands) = self.local_find_mouse_modal(col, row) {
             return commands;
         }
@@ -896,6 +909,13 @@ impl App {
             MouseTarget::ConfirmPlaylistCreate => self.playlist_create_commit(),
             MouseTarget::CancelPlaylistCreate => {
                 self.library_ui.create_input = None;
+                self.dirty = true;
+                Vec::new()
+            }
+            // The sleep-timer popup buttons.
+            MouseTarget::ConfirmSleepTimer => self.commit_sleep_popup(),
+            MouseTarget::CancelSleepTimer => {
+                self.sleep.popup = None;
                 self.dirty = true;
                 Vec::new()
             }

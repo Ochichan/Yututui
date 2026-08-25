@@ -66,6 +66,7 @@ pub(super) fn command_parity_class(command: &RemoteCommand) -> CommandParityClas
         | RemoteCommand::ToggleShuffle
         | RemoteCommand::CycleRepeat
         | RemoteCommand::Streaming { .. }
+        | RemoteCommand::Sleep { .. }
         | RemoteCommand::Status
         | RemoteCommand::QueueMove { .. }
         | RemoteCommand::QueueClearUpcoming { .. } => SharedStableEpoch,

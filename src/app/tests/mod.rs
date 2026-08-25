@@ -66,6 +66,7 @@ mod settings_cache_policy;
 mod settings_color_picker;
 mod settings_forms;
 mod settings_ui;
+mod sleep_timer;
 mod source_recovery;
 mod startup_playback;
 mod streaming_extend;

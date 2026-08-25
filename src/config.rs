@@ -24,6 +24,7 @@ use crate::theme::ThemeConfig;
 mod animation;
 mod audio;
 mod recovery;
+mod sleep_timer;
 mod spotify;
 mod storage;
 mod visual;
@@ -34,6 +35,7 @@ pub use audio::{
     MPV_CACHE_FORWARD_DEFAULT, MPV_CACHE_FORWARD_LEGACY_DEFAULT, MpvAudioConfig,
     MpvAudioRuntimeConfig,
 };
+pub use sleep_timer::SleepTimerConfig;
 pub use spotify::SpotifyImportMode;
 pub use storage::{
     default_cookies_file, default_download_dir, default_recording_dir, peek_saved_language,
@@ -441,6 +443,9 @@ pub struct Config {
     /// notice + nav-brand dot + one-time toast. Defaults to `true`; set `false` to make the
     /// app never contact GitHub for its own version. See [`crate::update`].
     pub update_check_enabled: bool,
+
+    /// Sleep-timer defaults: the popup preset and the fade-out length. See [`SleepTimerConfig`].
+    pub sleep_timer: SleepTimerConfig,
 }
 
 /// Local Deck library roots. Kept separate from `download_dir`: the download folder remains the
@@ -611,6 +616,7 @@ impl Default for Config {
             audio: AudioConfig::default(),
             recording: RecordingConfig::default(),
             update_check_enabled: true,
+            sleep_timer: SleepTimerConfig::default(),
         }
     }
 }

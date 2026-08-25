@@ -395,6 +395,9 @@ impl From<RuntimeEvent> for Msg {
                 crate::player::PlayerEvent::CacheTime(t) => Msg::Player(PlayerMsg::CacheTime(t)),
                 crate::player::PlayerEvent::AudioCodec(c) => Msg::Player(PlayerMsg::AudioCodec(c)),
                 crate::player::PlayerEvent::FileFormat(f) => Msg::Player(PlayerMsg::FileFormat(f)),
+                crate::player::PlayerEvent::Chapters(chapters) => {
+                    Msg::Player(PlayerMsg::Chapters(chapters))
+                }
                 crate::player::PlayerEvent::AudioDeviceList(devices) => {
                     Msg::Player(PlayerMsg::AudioDeviceList(devices))
                 }

@@ -980,6 +980,7 @@ mod tests {
                 position_epoch: 0,
                 artwork: None,
                 personal_sync: None,
+                sleep_remaining_secs: None,
             };
 
             let response = cache

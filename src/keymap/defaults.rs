@@ -44,6 +44,11 @@ pub fn default_bindings() -> Vec<(KeyContext, Action, Chord)> {
         // Playback speed on `[`/`]` to match mpv (frees `<`/`>`).
         (C::Player, A::SpeedUp, ch(']')),
         (C::Player, A::SpeedDown, ch('[')),
+        // Chapter jumps on mpv's own `!`/`@` chords, so muscle memory carries over.
+        (C::Player, A::ChapterPrev, ch('!')),
+        (C::Player, A::ChapterNext, ch('@')),
+        // `Shift+S` opens the sleep-timer popup (plain `s` is Search).
+        (C::Player, A::SleepTimer, ch('S')),
         (C::Player, A::OpenSettings, ch('o')),
         (C::Player, A::OpenAi, ch('g')),
         (C::Player, A::OpenSearch, ch('s')),

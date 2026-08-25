@@ -23,4 +23,5 @@ pub mod server_playlist_create;
 pub mod server_playlist_preview;
 pub mod server_playlist_recovery;
 pub mod settings;
+pub mod sleep_timer;
 pub mod why_ai;

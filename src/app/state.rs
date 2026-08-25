@@ -349,6 +349,9 @@ pub struct Playback {
     /// saturates, so the live-sync verdict treats an old report as unknown rather than
     /// trusting it (see `App::radio_behind_secs`).
     pub cache_time_at: Option<Instant>,
+    /// Chapter boundaries of the loaded media, from mpv's `chapter-list` (empty when the
+    /// media has none). Drives the seekbar markers and the `!`/`@` jumps.
+    pub chapters: Vec<crate::player::Chapter>,
 }
 
 /// Prefetch / load tracking: the pre-resolved stream-URL cache, whether the current track

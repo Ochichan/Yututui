@@ -5,6 +5,7 @@
 //! render order and must not change — every later segment's hit rect depends on it.
 
 use std::borrow::Cow;
+use std::time::Instant;
 
 use super::StatusLineParts;
 use super::beginner::{
@@ -67,6 +68,8 @@ pub(super) fn status_line_parts_with_labels_reusing(
     }
     push_streaming_mode(&mut parts, app, labels, gap, retro);
     push_download_tag(&mut parts, app, gap, minimal);
+    push_chapter_tag(&mut parts, app, gap, minimal);
+    push_sleep_timer(&mut parts, app, gap, minimal);
 
     parts
 }
@@ -593,5 +596,73 @@ fn push_download_tag(parts: &mut StatusLineParts, app: &App, gap: &'static str, 
             DownloadState::Failed => "⬇ ✗".to_owned(),
         };
         parts.push((None, Cow::Owned(format!("{gap}{tag}"))));
+    }
+}
+
+/// The current chapter's title while a chaptered track plays. Informational only — a plain
+/// label so it never shifts later hit rects; the width cap keeps a verbose chapter name
+/// from crowding out the clickable toggles on narrow terminals.
+fn push_chapter_tag(parts: &mut StatusLineParts, app: &App, gap: &'static str, minimal: bool) {
+    if minimal {
+        return;
+    }
+    let Some(name) = app.current_chapter_name() else {
+        return;
+    };
+    let name: String = name.chars().take(24).collect();
+    parts.push((None, Cow::Owned(format!("{gap}· {name}"))));
+}
+
+/// The sleep-timer countdown while a timer is armed. Plain text (no ambiguous-width
+/// symbols): retro mode spells the label out, every other mode uses the sleep glyph.
+fn push_sleep_timer(parts: &mut StatusLineParts, app: &App, gap: &'static str, minimal: bool) {
+    if minimal {
+        return;
+    }
+    let Some(timer) = app.sleep.timer else {
+        return;
+    };
+    let Some(remaining) = timer.remaining_secs(Instant::now()) else {
+        return;
+    };
+    let label = if app.retro_mode() {
+        format!("sleep {}:{:02}", remaining / 60, remaining % 60)
+    } else {
+        format!("⏾ {}:{:02}", remaining / 60, remaining % 60)
+    };
+    parts.push((None, Cow::Owned(format!("{gap}{label}"))));
+}
+
+/// Chapter-boundary ticks drawn on top of the seekbar gauge so long-form tracks read
+/// at a glance. Informational only: drawn directly on the buffer, never part of the
+/// clickable gauge. Lives here so the pinned control_box.rs stays under its size cap.
+pub(super) fn render_chapter_ticks(
+    frame: &mut ratatui::Frame,
+    app: &App,
+    area: ratatui::layout::Rect,
+) {
+    if app.current_is_radio_stream()
+        || app.playback.chapters.is_empty()
+        || !app.playback.duration.is_some_and(|duration| duration > 0.0)
+    {
+        return;
+    }
+    let duration = app.playback.duration.expect("checked above");
+    let tick_style = ratatui::style::Style::default()
+        .fg(app.theme.color(crate::theme::ThemeRole::GaugeEmpty))
+        .bg(app.theme.color(crate::theme::ThemeRole::GaugeFilled))
+        .add_modifier(ratatui::style::Modifier::BOLD);
+    for chapter in &app.playback.chapters {
+        let chapter_ratio = (chapter.start_secs / duration).clamp(0.0, 1.0);
+        // The first/last boundaries sit under the gauge ends — no tick needed there.
+        if chapter_ratio <= 0.0 || chapter_ratio >= 1.0 {
+            continue;
+        }
+        let x = area
+            .x
+            .saturating_add(((area.width.saturating_sub(1)) as f64 * chapter_ratio).round() as u16);
+        if let Some(cell) = frame.buffer_mut().cell_mut((x, area.y)) {
+            cell.set_char('│').set_style(tick_style);
+        }
     }
 }
