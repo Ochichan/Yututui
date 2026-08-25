@@ -147,28 +147,19 @@ audio-output.png · retro.png · transfer.gif · help.png · onboarding.gif · c
 
 실제 커버 이미지가 터미널에 그대로 그려집니다(Kitty/Sixel/iTerm2 자동 감지, 화질은 설정에서 Standard/High/Original 중 선택). **`Shift+L`** 로 그 아래에 시간 싱크 가사가 흐릅니다. 보이는 가사 행을 클릭하면 해당 시점으로 탐색하고, **`z`** / **`Shift+Z`** 로 가사를 0.1초씩 앞당기거나 늦출 수 있습니다. 가사가 로드되면 **`[ − 0.0s + ]`** 가 3초 동안 보이며, **`[±]`** 로 접힌 뒤에는 핸들을 눌러 다시 3초간 펼치고 **`−/+`** 로 미세 조정합니다. 플레이어 컨트롤은 모든 화면 하단에 도킹되고(**`Shift+B`** 로 접기, 클래식 상단 배치는 설정 하나로 복귀), 앨범 아트는 남은 공간 가운데에 자리잡으며, 창을 약 32×14 미만으로 줄이면 앱 전체가 작은 미니플레이어로 변했다가 창이 커지면 원래대로 돌아옵니다.
 
-> 🖼️ *스크린샷 준비 중!*
-<!-- 📸 채우는 법: docs/media/player.png 를 추가하고, 위의 "준비 중" 줄을 지운 뒤 아래 줄 주석을 해제하세요:
 ![앨범 아트와 싱크 가사가 있는 플레이어](docs/media/player.png)
--->
-<!-- 📸 채우는 법: docs/media/lyrics.gif 를 추가하고 주석 해제:
+![설정에서 오디오 출력 장치를 고르는 모습](docs/media/audio-output.png)
+> 🖼️ *GIF 준비 중.*
+<!-- 📸 add docs/media/lyrics.gif:
 ![플레이어 아래로 흐르는 시간 싱크 가사](docs/media/lyrics.gif)
 -->
-<!-- 📸 채우는 법: docs/media/audio-output.png 를 추가하고 주석 해제:
-![설정에서 오디오 출력 장치를 고르는 모습](docs/media/audio-output.png)
--->
 
-### 카탈로그 여섯, 검색창 하나
+### 카탈로그 일곱, 검색창 하나
 
-검색에서 **`Tab`** 을 누르면 YouTube Music, SoundCloud, Audius, Jamendo, Internet Archive, Radio Browser를 오갑니다 — 전부 한꺼번에도 가능하고, 결과마다 `[SRC]` 태그가 붙어요.
+검색에서 **`Tab`** 을 누르면 YouTube Music, SoundCloud, Audius, Jamendo, Internet Archive, Radio Browser, OpenSubsonic 음악 서버를 오갑니다 — 전부 한꺼번에도 가능하고, 결과마다 `[SRC]` 태그가 붙어요.
 
-> 🖼️ *스크린샷 준비 중!*
-<!-- 📸 채우는 법: docs/media/search.gif 를 추가하고, 위의 "준비 중" 줄을 지운 뒤 아래 줄 주석을 해제하세요:
-![검색어를 입력하고 결과를 재생하는 모습](docs/media/search.gif)
--->
-<!-- 📸 채우는 법: docs/media/sources.png 를 추가하고 주석 해제:
-![검색창 하나로 여섯 카탈로그를 검색](docs/media/sources.png)
--->
+![터미널에서 앨범 아트와 함께 보는 검색 결과](docs/media/search.png)
+![검색창 하나로 일곱 카탈로그를 검색](docs/media/sources.png)
 
 ### DJ Gem 스트리밍
 
@@ -201,11 +192,9 @@ audio-output.png · retro.png · transfer.gif · help.png · onboarding.gif · c
 
 **`Alt+Shift+R`** 은 앱 전체를 인터넷 라디오 튜너로 바꿉니다. **`i`** 를 누르면 Gemini가 생방송에서 지금 나오는 곡의 이름을 알려주고, **`f`** 로 바로 즐겨찾기.
 
-> 🖼️ *스크린샷 준비 중!*
-<!-- 📸 채우는 법: docs/media/radio.png 를 추가하고, 위의 "준비 중" 줄을 지운 뒤 아래 줄 주석을 해제하세요:
 ![인터넷 라디오 튜너가 된 라디오 모드](docs/media/radio.png)
--->
-<!-- 📸 채우는 법: docs/media/radio-id.gif 를 추가하고 주석 해제:
+> 🖼️ *GIF 준비 중.*
+<!-- 📸 add docs/media/radio-id.gif:
 ![i 를 눌러 라이브 라디오의 현재 곡을 식별하는 모습](docs/media/radio-id.gif)
 -->
 
@@ -213,16 +202,9 @@ audio-output.png · retro.png · transfer.gif · help.png · onboarding.gif · c
 
 라이브러리에서 바로 플레이리스트를 만들고(DJ Gem에게 시켜도 됩니다), **`c`** 로 큐를 띄우고, **`d`** 는 커버 아트·태그 박힌 m4a로 저장 — **`Shift+D`** 는 목록 통째로.
 
-> 🖼️ *스크린샷 준비 중!*
-<!-- 📸 채우는 법: docs/media/library.png 를 추가하고, 위의 "준비 중" 줄을 지운 뒤 아래 줄 주석을 해제하세요:
 ![플레이리스트·즐겨찾기·기록이 있는 라이브러리](docs/media/library.png)
--->
-<!-- 📸 채우는 법: docs/media/queue.png 를 추가하고 주석 해제:
 ![플레이어 위에 뜬 큐 팝업](docs/media/queue.png)
--->
-<!-- 📸 채우는 법: docs/media/downloads.png 를 추가하고 주석 해제:
 ![다운로드: 커버 아트와 태그가 박힌 m4a, 오프라인 재생](docs/media/downloads.png)
--->
 
 ### 로컬 덱 — 디스크 위 모든 음악의 오프라인 플레이어
 
@@ -230,10 +212,7 @@ audio-output.png · retro.png · transfer.gif · help.png · onboarding.gif · c
 
 로컬 재생과 찾기는 컴퓨터에 이미 있는 파일만 사용합니다. 별도로 켠 연동 기능은 네트워크를 쓸 수 있고, **가져오기 세션**의 수동 온라인 후보 검색은 로컬 덱을 나가기 전에 명시적으로 확인합니다. 로컬 덱 테마도 일반·라디오 모드와 따로 기억합니다. 새 설치와 기존 설정 모두 처음에는 **Local Launch**로 시작하고, 이후에는 로컬 덱에서 저장한 테마로 돌아옵니다. 자세한 안내는 [사용 설명서](MANUAL.ko.md)에.
 
-> 🖼️ *스크린샷 준비 중!*
-<!-- 📸 채우는 법: docs/media/localdeck.png 를 추가하고, 위의 "준비 중" 줄을 지운 뒤 아래 줄 주석을 해제하세요:
 ![로컬 앨범을 둘러보는 로컬 덱](docs/media/localdeck.png)
--->
 
 ### 어디서든 제어
 
@@ -251,28 +230,17 @@ audio-output.png · retro.png · transfer.gif · help.png · onboarding.gif · c
 
 테마 14종(색 역할 34개 전부 hex 편집), 애니메이션 40종 — 별똥별과 도는 ASCII 도넛부터 풀캔버스 쇼피스(불꽃놀이, 라이프 게임, 파이프, 플라즈마)까지 — 프리셋 있는 10밴드 EQ, 오디오 출력 장치 선택, 라우드니스 노멀라이즈까지. UI 자체도 English / 한국어 / 日本語 세 언어를 말합니다 — 설정 → 일반 → **언어**에서 차례로 전환돼요.
 
-> 🖼️ *움짤 준비 중!*
-<!-- 📸 채우는 법: docs/media/themes.gif 를 추가하고, 위의 "준비 중" 줄을 지운 뒤 아래 줄 주석을 해제하세요:
-![내장 테마를 하나씩 넘겨보기](docs/media/themes.gif)
--->
-<!-- 📸 채우는 법: docs/media/animations.gif 를 추가하고 주석 해제:
+![테마 및 색상 설정 화면](docs/media/themes.png)
+![설정 화면](docs/media/settings.png)
 ![도는 ASCII 도넛을 포함한 애니메이션들](docs/media/animations.gif)
--->
-<!-- 📸 채우는 법: docs/media/showpiece.gif 를 추가하고 주석 해제:
 ![풀캔버스 쇼피스 애니메이션 — 불꽃놀이, 라이프 게임, 파이프, 플라즈마](docs/media/showpiece.gif)
--->
-<!-- 📸 채우는 법: docs/media/eq.png 를 추가하고 주석 해제:
 ![프리셋이 있는 10밴드 EQ](docs/media/eq.png)
--->
 
 ### 레트로 모드
 
 토글 하나로 모든 것이 CP437 안전이 됩니다 — 맨몸 리눅스 콘솔이나 낡은 SSH 세션용, 앨범 아트도 정직한 ASCII 아트로. 레트로 모드에서는 UI 언어도 영어로 고정됩니다 — CP437에는 CJK 글리프가 없거든요.
 
-> 🖼️ *스크린샷 준비 중!*
-<!-- 📸 채우는 법: docs/media/retro.png 를 추가하고, 위의 "준비 중" 줄을 지운 뒤 아래 줄 주석을 해제하세요:
 ![ASCII 앨범 아트가 있는 레트로 모드](docs/media/retro.png)
--->
 
 ### Spotify가 명령 한 줄로 이사 옵니다
 
@@ -287,16 +255,9 @@ audio-output.png · retro.png · transfer.gif · help.png · onboarding.gif · c
 
 **`?`** 를 누르면 *내가 바꾼* 키 그대로 반영된 라이브 치트시트가 뜹니다 — 앱 동작 키는 재설정할 수 있고, UI 전체가 마우스를 지원하며, 안전·모달 키는 고정되어 있습니다.
 
-> 🖼️ *스크린샷 준비 중!*
-<!-- 📸 채우는 법: docs/media/help.png 를 추가하고, 위의 "준비 중" 줄을 지운 뒤 아래 줄 주석을 해제하세요:
 ![라이브 단축키 치트시트](docs/media/help.png)
--->
-<!-- 📸 채우는 법: docs/media/onboarding.gif 를 추가하고 주석 해제:
-![첫 실행 시 비기너 모드의 대화형 안내](docs/media/onboarding.gif)
--->
-<!-- 📸 채우는 법: docs/media/context-menu.png 를 추가하고 주석 해제:
+![초보자 모드의 인터랙티브 둘러보기](docs/media/onboarding.png)
 ![트랙 행의 우클릭 컨텍스트 메뉴](docs/media/context-menu.png)
--->
 
 ## 필수 키
 
@@ -341,7 +302,7 @@ audio-output.png · retro.png · transfer.gif · help.png · onboarding.gif · c
 | 아무것도 재생되지 않거나 재생 시 오류 | mpv 또는 yt-dlp가 없습니다 — `ytt doctor` 실행. |
 | 소리가 엉뚱한 장치로 나감 | 설정 → 재생 → **오디오 출력** 에서 감지된 로컬 출력 중 선택; **오디오 백엔드** 는 mpv 옵션을 노출합니다. |
 | 어제는 됐는데 오늘은 안 됨 | YouTube가 뭔가 바꿨어요 — `ytt tools update` 후 `ytt tools status --why`; 관리형 업데이트가 문제면 `ytt tools use system`. |
-| 여러 곡이 403/429 또는 "YouTube rejected the stream"으로 실패 | `ytt doctor --verbose`를 실행하고, [참고 자료](#참고-자료)의 쿠키 항목을 확인하고, 지원되는 JS 런타임이 있는지 보세요; 활성 yt-dlp는 `ytt tools status --why`로 확인. |
+| 여러 곡이 403/429 또는 "YouTube rejected the stream"으로 실패 | YouTube 봇 차단입니다. `ytt doctor --verbose`를 실행하고(이제 PO 토큰/oauth 준비 상태를 알려줍니다), [참고 자료](#참고-자료)의 쿠키 항목과 지원되는 JS 런타임을 확인하세요; 활성 yt-dlp는 `ytt tools status --why`로 확인. [PO 토큰 공급자](https://github.com/yt-dlp/yt-dlp?tab=readme-ov-file#po-token-guide)나 [oauth 플러그인](https://github.com/coletdjnz/yt-dlp-youtube-oauth2)을 쓰면 보통 확실히 해결됩니다. |
 | 특정 곡만 재생 안 됨 | 로그인이 필요할 수 있어요 — [참고 자료](#참고-자료)의 쿠키 항목 참고. |
 | 앱이 셸과 다른 yt-dlp를 실행함 | 의도된 동작입니다(관리형 복사본 vs `PATH`) — [참고 자료](#참고-자료)의 *yt-dlp 선택* 참고. |
 
@@ -487,6 +448,8 @@ TUI 안에서도 됩니다: 설정 → **계정** → *Import from Spotify…* �
 
 <details>
 <summary><b>로그인 쿠키 & 파일 위치</b></summary>
+
+**PO 토큰 & oauth — 쿠키 너머의 해법.** YouTube가 *공개* 스트림까지 거부하기 시작하면(HTTP 403/429 "YouTube rejected the stream") 대개 **PO 토큰 공급자**가 해결책입니다: [`bgutil-ytdlp-pot-provider`](https://github.com/Brainicism/bgutil-ytdlp-pot-provider)를 설치하고 그 출력이 알려주는 yt-dlp 설정 줄을 추가하세요. 더 오래가는 로그인은 [`yt-dlp-youtube-oauth2`](https://github.com/coletdjnz/yt-dlp-youtube-oauth2) 플러그인입니다(`yt-dlp --plugin-dirs ... --username oauth --password ''`를 한 번 실행하면 이후 스스로 갱신합니다). `ytt doctor --verbose`가 이제 둘의 준비 상태를 알려줍니다.
 
 **쿠키 (선택).** 공개 곡은 익명으로 잘 재생됩니다 — 멤버 전용/지역 제한 트랙과 계정 플레이리스트에만 필요해요. YouTube Music 쿠키를 **Netscape 형식**으로 `~/Music/yututui/cookies.txt`(Windows: `%USERPROFILE%\Music\yututui\cookies.txt`)에 내보내고 재시작하세요. **그 파일은 비밀번호처럼 다루고**, *시크릿 창 방식*으로 내보내세요: 시크릿 창에서 로그인하고, 그 탭에서 `cookies.txt`를 내보낸 뒤, 창을 닫습니다 — 브라우저가 사라진 세션은 로테이션되거나 로그아웃되지 않아요. 제대로 된 내보내기에는 `SAPISID`/`SID` 줄이 있습니다.
 

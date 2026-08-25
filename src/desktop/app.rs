@@ -503,6 +503,7 @@ impl DesktopApp {
             // This compatibility projection is reconstructed from player/settings session topics,
             // which do not carry the one-shot owner's optional personal-sync snapshot.
             personal_sync: None,
+            sleep_remaining_secs: None,
         })
     }
 }

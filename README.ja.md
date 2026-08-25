@@ -149,28 +149,19 @@ audio-output.png · retro.png · transfer.gif · help.png · onboarding.gif · c
 
 実際のカバー画像がターミナルにそのまま描かれます（Kitty/Sixel/iTerm2 自動検出、画質は設定で Standard/High/Original から選択）。**`Shift+L`** でその下を時間同期の歌詞が流れます。表示中の歌詞行をクリックすればその時点へシークでき、**`z`** / **`Shift+Z`** で歌詞を 0.1 秒ずつ早く / 遅くできます。歌詞が読み込まれると **`[ − 0.0s + ]`** が 3 秒間表示され、**`[±]`** に折りたたまれた後はハンドルをクリックして再び 3 秒間開き、**`−/+`** で微調整できます。プレイヤーのコントロールはすべての画面の下部にドッキングされ（**`Shift+B`** で折りたたみ、クラシックな上部レイアウトも設定ひとつで復帰）、アルバムアートは残りの空間の中央に配置されます。ウィンドウを約 32×14 未満まで縮めるとアプリ全体が小さなミニプレイヤーになり、広げれば元に戻ります。
 
-> 🖼️ *スクリーンショットは近日追加予定。*
-<!-- 📸 埋め方: docs/media/player.png を追加し、上の「近日追加」行を消して、次の行のコメントを外してください:
 ![アルバムアートと同期歌詞のあるプレイヤー](docs/media/player.png)
--->
-<!-- 📸 埋め方: docs/media/lyrics.gif を追加してコメントを外す:
+![設定でオーディオ出力デバイスを選ぶ様子](docs/media/audio-output.png)
+> 🖼️ *GIF 準備中.*
+<!-- 📸 add docs/media/lyrics.gif:
 ![プレイヤーの下を流れる時間同期の歌詞](docs/media/lyrics.gif)
 -->
-<!-- 📸 埋め方: docs/media/audio-output.png を追加してコメントを外す:
-![設定でオーディオ出力デバイスを選ぶ様子](docs/media/audio-output.png)
--->
 
-### カタログは六つ、検索窓は一つ
+### カタログは七つ、検索窓は一つ
 
-検索で **`Tab`** を押すと YouTube Music、SoundCloud、Audius、Jamendo、Internet Archive、Radio Browser を行き来できます — 全部まとめても可、結果には `[SRC]` タグ付き。
+検索で **`Tab`** を押すと YouTube Music、SoundCloud、Audius、Jamendo、Internet Archive、Radio Browser、そして OpenSubsonic 音楽サーバーを行き来できます — 全部まとめても可、結果には `[SRC]` タグ付き。
 
-> 🖼️ *スクリーンショットは近日追加予定。*
-<!-- 📸 埋め方: docs/media/search.gif を追加し、上の「近日追加」行を消して、次の行のコメントを外してください:
-![検索語を入力して結果を再生する様子](docs/media/search.gif)
--->
-<!-- 📸 埋め方: docs/media/sources.png を追加してコメントを外す:
-![一つの検索窓から六つのカタログを検索](docs/media/sources.png)
--->
+![端末でアルバムアートと一緒に見る検索結果](docs/media/search.png)
+![一つの検索窓から七つのカタログを検索](docs/media/sources.png)
 
 ### DJ Gem ストリーミング
 
@@ -203,11 +194,9 @@ audio-output.png · retro.png · transfer.gif · help.png · onboarding.gif · c
 
 **`Alt+Shift+R`** はアプリ全体をネットラジオのチューナーに変えます。**`i`** を押せば Gemini が生放送でいま流れている曲名を教えてくれて、**`f`** でそのままお気に入りに。
 
-> 🖼️ *スクリーンショットは近日追加予定。*
-<!-- 📸 埋め方: docs/media/radio.png を追加し、上の「近日追加」行を消して、次の行のコメントを外してください:
 ![ネットラジオのチューナーになったラジオモード](docs/media/radio.png)
--->
-<!-- 📸 埋め方: docs/media/radio-id.gif を追加してコメントを外す:
+> 🖼️ *GIF 準備中.*
+<!-- 📸 add docs/media/radio-id.gif:
 ![i を押してライブラジオの現在の曲を識別する様子](docs/media/radio-id.gif)
 -->
 
@@ -215,16 +204,9 @@ audio-output.png · retro.png · transfer.gif · help.png · onboarding.gif · c
 
 ライブラリでそのままプレイリストを作り（DJ Gem に頼んでも OK）、**`c`** でキューを開き、**`d`** はカバーアートとタグ入りの m4a に保存 — **`Shift+D`** はリスト丸ごと。
 
-> 🖼️ *スクリーンショットは近日追加予定。*
-<!-- 📸 埋め方: docs/media/library.png を追加し、上の「近日追加」行を消して、次の行のコメントを外してください:
 ![プレイリスト・お気に入り・履歴のあるライブラリ](docs/media/library.png)
--->
-<!-- 📸 埋め方: docs/media/queue.png を追加してコメントを外す:
 ![プレイヤーの上に出たキューのポップアップ](docs/media/queue.png)
--->
-<!-- 📸 埋め方: docs/media/downloads.png を追加してコメントを外す:
 ![ダウンロード: カバーアートとタグ入りの m4a、オフライン再生](docs/media/downloads.png)
--->
 
 ### ローカルデッキ — ディスク上のすべての音楽のオフラインプレイヤー
 
@@ -232,10 +214,7 @@ audio-output.png · retro.png · transfer.gif · help.png · onboarding.gif · c
 
 ローカル再生と Find が使うのは、すでにパソコンにあるファイルだけです。別途有効にした連携機能はネットワークを使う場合があり、**インポートセッション**の手動オンライン候補検索は、ローカルデッキを出る前に明示的に確認します。ローカルデッキのテーマも通常・ラジオモードとは別に記憶されます。新規インストールでも以前の設定でも、最初は **Local Launch** で始まり、その後はローカルデッキで保存したテーマに戻ります。詳しいツアーは[マニュアル](MANUAL.ja.md)へ。
 
-> 🖼️ *スクリーンショットは近日追加予定。*
-<!-- 📸 埋め方: docs/media/localdeck.png を追加し、上の「近日追加」行を消して、次の行のコメントを外してください:
 ![ローカルのアルバムを閲覧するローカルデッキ](docs/media/localdeck.png)
--->
 
 ### どこからでも操作
 
@@ -253,28 +232,17 @@ audio-output.png · retro.png · transfer.gif · help.png · onboarding.gif · c
 
 テーマ14種（34の色ロールすべて hex 編集可能）、アニメーション40種 — 流れ星や回る ASCII ドーナツからフルキャンバスのショーピース（花火、ライフゲーム、パイプ、プラズマ）まで — プリセット付き10バンド EQ、オーディオ出力デバイスの選択、ラウドネスノーマライズまで。UI そのものも English / 한국어 / 日本語 の3言語に対応しています — 設定 → 全般 → **言語** で順に切り替わります。
 
-> 🖼️ *GIF は近日追加予定。*
-<!-- 📸 埋め方: docs/media/themes.gif を追加し、上の「近日追加」行を消して、次の行のコメントを外してください:
-![内蔵テーマを順に切り替える様子](docs/media/themes.gif)
--->
-<!-- 📸 埋め方: docs/media/animations.gif を追加してコメントを外す:
+![テーマとカラーの設定画面](docs/media/themes.png)
+![設定画面](docs/media/settings.png)
 ![回る ASCII ドーナツを含むアニメーション](docs/media/animations.gif)
--->
-<!-- 📸 埋め方: docs/media/showpiece.gif を追加してコメントを外す:
 ![フルキャンバスのショーピースアニメーション — 花火、ライフゲーム、パイプ、プラズマ](docs/media/showpiece.gif)
--->
-<!-- 📸 埋め方: docs/media/eq.png を追加してコメントを外す:
 ![プリセット付きの10バンド EQ](docs/media/eq.png)
--->
 
 ### レトロモード
 
 トグル一つですべてが CP437 安全になります — 素の Linux コンソールや年季の入った SSH セッション向け。アルバムアートも正真正銘の ASCII アートに。レトロモードでは UI 言語も英語に固定されます — CP437 には CJK のグリフがないためです。
 
-> 🖼️ *スクリーンショットは近日追加予定。*
-<!-- 📸 埋め方: docs/media/retro.png を追加し、上の「近日追加」行を消して、次の行のコメントを外してください:
 ![ASCII アルバムアートのレトロモード](docs/media/retro.png)
--->
 
 ### Spotify はコマンド一行でお引っ越し
 
@@ -289,16 +257,9 @@ audio-output.png · retro.png · transfer.gif · help.png · onboarding.gif · c
 
 **`?`** を押すと、*あなたが変えた*キーがそのまま反映されたライブチートシートが出ます — アプリ操作は再設定でき、UI 全体がマウス対応。安全・モーダルキーは固定です。
 
-> 🖼️ *スクリーンショットは近日追加予定。*
-<!-- 📸 埋め方: docs/media/help.png を追加し、上の「近日追加」行を消して、次の行のコメントを外してください:
 ![ライブのキーバインドチートシート](docs/media/help.png)
--->
-<!-- 📸 埋め方: docs/media/onboarding.gif を追加してコメントを外す:
-![初回起動時のビギナーモードの対話型案内](docs/media/onboarding.gif)
--->
-<!-- 📸 埋め方: docs/media/context-menu.png を追加してコメントを外す:
+![初心者モードのインタラクティブツアー](docs/media/onboarding.png)
 ![トラック行の右クリックコンテキストメニュー](docs/media/context-menu.png)
--->
 
 ## 基本のキー
 
@@ -343,7 +304,7 @@ audio-output.png · retro.png · transfer.gif · help.png · onboarding.gif · c
 | 何も再生されない、再生でエラー | mpv か yt-dlp がありません — `ytt doctor` を実行。 |
 | 音が違うデバイスから出る | 設定 → 再生 → **オーディオ出力** で検出されたローカル出力から選択; **オーディオバックエンド** は mpv オプションを公開します。 |
 | 昨日は動いたのに今日は動かない | YouTube が何か変えました — `ytt tools update` の後、`ytt tools status --why`; 管理版更新が原因なら `ytt tools use system`。 |
-| 複数の曲が 403/429 や "YouTube rejected the stream" で失敗 | `ytt doctor --verbose` を実行し、[リファレンス](#リファレンス)の Cookie の項を確認し、対応する JS ランタイムがあるか確認を; アクティブな yt-dlp は `ytt tools status --why` で。 |
+| 複数の曲が 403/429 や "YouTube rejected the stream" で失敗 | YouTube のボット対策です。`ytt doctor --verbose` を実行し（PO トークン/oauth の準備状況も表示されるようになりました）、[リファレンス](#リファレンス)の Cookie の項と対応する JS ランタイムを確認してください; アクティブな yt-dlp は `ytt tools status --why` で。[PO トークンプロバイダー](https://github.com/yt-dlp/yt-dlp?tab=readme-ov-file#po-token-guide)または [oauth プラグイン](https://github.com/coletdjnz/yt-dlp-youtube-oauth2)でたいてい確実に直ります。 |
 | 特定の曲だけ再生できない | サインインが必要かも — [リファレンス](#リファレンス)の Cookie の項を参照。 |
 | アプリがシェルと違う yt-dlp を実行する | 仕様です（管理版コピー vs `PATH`）— [リファレンス](#リファレンス)の *yt-dlp の選択* を参照。 |
 
@@ -490,6 +451,8 @@ TUI の中でも: 設定 → **アカウント** → *Spotify からインポー
 
 <details>
 <summary><b>サインイン Cookie & ファイルの場所</b></summary>
+
+**PO トークン & oauth — Cookie を超えて。** YouTube が *公開* ストリームまで拒否し始めたら（HTTP 403/429 "YouTube rejected the stream"）、たいてい **PO トークンプロバイダー** が解決策です: [`bgutil-ytdlp-pot-provider`](https://github.com/Brainicism/bgutil-ytdlp-pot-provider) を導入し、その出力が示す yt-dlp 設定行を追加してください。より長持ちするサインインは [`yt-dlp-youtube-oauth2`](https://github.com/coletdjnz/yt-dlp-youtube-oauth2) プラグインです（`yt-dlp --plugin-dirs ... --username oauth --password ''` を一度実行すれば、あとは自動更新されます）。`ytt doctor --verbose` が両方の準備状況を表示するようになりました。
 
 **Cookie（任意）。** 公開曲は匿名で再生できます — メンバー限定/地域制限トラックとアカウントのプレイリストにだけ必要です。YouTube Music の Cookie を **Netscape 形式**で `~/Music/yututui/cookies.txt`（Windows: `%USERPROFILE%\Music\yututui\cookies.txt`）に書き出して再起動してください。**そのファイルはパスワードのように扱い**、*シークレットウィンドウ方式*で書き出すこと: プライベートウィンドウでサインインし、そのタブから `cookies.txt` を書き出して、ウィンドウを閉じます — ブラウザが消えたセッションはローテーションもサインアウトもされません。正しい書き出しには `SAPISID`/`SID` の行があります。
 

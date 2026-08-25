@@ -849,6 +849,7 @@ mod tests {
             position_epoch: 0,
             artwork: None,
             personal_sync: None,
+            sleep_remaining_secs: None,
         });
         assert_eq!(tooltip_for_state(&state), "Paused: Artist - Song");
         let idle_daemon = TrayState::Connected(StatusSnapshot {
@@ -872,6 +873,7 @@ mod tests {
             position_epoch: 0,
             artwork: None,
             personal_sync: None,
+            sleep_remaining_secs: None,
         });
         assert_eq!(tooltip_for_state(&idle_daemon), "YuTuTui! daemon idle");
         assert_eq!(
@@ -900,6 +902,7 @@ mod tests {
             position_epoch: 0,
             artwork: None,
             personal_sync: None,
+            sleep_remaining_secs: None,
         }));
         assert_eq!(long.chars().count(), 124);
         assert!(long.ends_with("..."));

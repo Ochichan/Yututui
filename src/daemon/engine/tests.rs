@@ -941,6 +941,6 @@ async fn non_extraction_error_skips_without_healing() {
         let last_error = engine.last_error.as_deref().unwrap_or_default();
         assert!(last_error.contains("YouTube rejected the stream"));
         assert!(last_error.contains("ytt doctor --verbose"));
-        assert!(last_error.contains("JS runtime"));
+        assert!(last_error.contains("PO token"));
     }
 }

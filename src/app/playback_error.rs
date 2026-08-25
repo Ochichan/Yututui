@@ -11,9 +11,9 @@ pub(in crate::app) fn skipped_status_for_failure(class: PlaybackFailureClass) ->
         )
         .to_owned(),
         PlaybackFailureClass::Http403 | PlaybackFailureClass::RateLimited => t!(
-            "⚠ YouTube rejected the stream — skipped; run `ytt doctor --verbose`",
-            "⚠ YouTube가 스트림을 거부함 — 건너뜀; `ytt doctor --verbose` 확인",
-            "⚠ YouTube がストリームを拒否 — スキップ; `ytt doctor --verbose` を確認"
+            "⚠ YouTube rejected the stream — skipped; run `ytt doctor --verbose` (PO token or oauth often fixes this)",
+            "⚠ YouTube가 스트림을 거부함 — 건너뜀; `ytt doctor --verbose` 확인 (PO 토큰 또는 oauth가 해결책인 경우가 많음)",
+            "⚠ YouTube がストリームを拒否 — スキップ; `ytt doctor --verbose` を確認 (PO トークンまたは oauth で直ることが多い)"
         )
         .to_owned(),
         PlaybackFailureClass::Network => t!(
@@ -40,9 +40,9 @@ pub(in crate::app) fn breaker_status_for_failure(class: PlaybackFailureClass) ->
         )
         .to_owned(),
         PlaybackFailureClass::Http403 | PlaybackFailureClass::RateLimited => t!(
-            "Several tracks failed — YouTube is rejecting streams. Run `ytt doctor --verbose`; check cookies and JS runtime.",
-            "여러 곡 재생 실패 — YouTube가 스트림을 거부합니다. `ytt doctor --verbose`를 실행하고 쿠키와 JS runtime을 확인하세요.",
-            "複数の曲の再生に失敗 — YouTube がストリームを拒否しています。`ytt doctor --verbose` を実行し、Cookie と JS runtime を確認してください。"
+            "Several tracks failed — YouTube is rejecting streams. Run `ytt doctor --verbose`; check cookies, JS runtime, and PO-token/oauth setup.",
+            "여러 곡 재생 실패 — YouTube가 스트림을 거부합니다. `ytt doctor --verbose`를 실행하고 쿠키, JS runtime, PO 토큰/oauth 설정을 확인하세요.",
+            "複数の曲の再生に失敗 — YouTube がストリームを拒否しています。`ytt doctor --verbose` を実行し、Cookie、JS runtime、PO トークン/oauth の設定を確認してください。"
         )
         .to_owned(),
         PlaybackFailureClass::Network => t!(
@@ -72,9 +72,9 @@ pub(in crate::app) fn playback_error_status_for_failure(
         )
         .to_owned(),
         PlaybackFailureClass::Http403 | PlaybackFailureClass::RateLimited => t!(
-            "Playback error: YouTube rejected the stream; run `ytt doctor --verbose`, check cookies and JS runtime",
-            "재생 오류: YouTube가 스트림을 거부함; `ytt doctor --verbose`를 실행하고 쿠키와 JS runtime을 확인하세요",
-            "再生エラー: YouTube がストリームを拒否; `ytt doctor --verbose` を実行し Cookie と JS runtime を確認してください"
+            "Playback error: YouTube rejected the stream; run `ytt doctor --verbose` — a PO token or the oauth plugin often fixes this",
+            "재생 오류: YouTube가 스트림을 거부함; `ytt doctor --verbose`를 실행하세요 — PO 토큰 또는 oauth 플러그인이 해결책인 경우가 많습니다",
+            "再生エラー: YouTube がストリームを拒否; `ytt doctor --verbose` を実行してください — PO トークンまたは oauth プラグインで直ることが多いです"
         )
         .to_owned(),
         PlaybackFailureClass::Network => t!(

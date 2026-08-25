@@ -446,6 +446,11 @@ ytt doctor
 
 보조 프로그램을 전부 점검하고, 뭐가 빠졌고 어떻게 구하는지 정확히 알려줍니다. 그 밖의 모든 것 — 재생 안 되는 곡, 안 보이는 앨범 아트, 스크로블, Spotify 오류 — 은 **[README 문제 해결 표](README.ko.md#문제-해결)** 에 증상별로 정리되어 있어요.
 
+**YouTube가 갑자기 스트림을 거부하나요(403/429)?** YouTube 봇 차단입니다. 확실한 해결책 두 가지가 있고, `ytt doctor --verbose`가 이제 준비 상태를 알려줍니다:
+
+- **PO 토큰 공급자**([`bgutil-ytdlp-pot-provider`](https://github.com/Brainicism/bgutil-ytdlp-pot-provider)) — 설치 후 그 출력이 알려주는 yt-dlp 설정 줄을 추가하세요; 또는
+- **oauth 플러그인**([`yt-dlp-youtube-oauth2`](https://github.com/coletdjnz/yt-dlp-youtube-oauth2)) — `yt-dlp --plugin-dirs … --username oauth --password ''`를 한 번 실행하면 로그인이 계속 유지됩니다.
+
 그래도 막히면? [이슈를 열고](https://github.com/Ochichan/Yututui/issues) 본 것을 그대로 적어주세요 — 운영체제도 함께요.
 
 ---

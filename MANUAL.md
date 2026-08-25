@@ -462,6 +462,11 @@ ytt doctor
 
 It checks all the helper programs and tells you exactly what's missing and how to get it. For everything else — songs that won't play, missing album art, scrobbles, Spotify errors — the **[README troubleshooting tables](README.md#troubleshooting)** cover the known cases, sorted by symptom.
 
+**YouTube suddenly rejects streams (403/429)?** That's YouTube's bot protection. Two things fix it for good, and `ytt doctor --verbose` now shows whether you have them:
+
+- a **PO-token provider** ([`bgutil-ytdlp-pot-provider`](https://github.com/Brainicism/bgutil-ytdlp-pot-provider)) — install it and add the yt-dlp config line it prints; or
+- the **oauth plugin** ([`yt-dlp-youtube-oauth2`](https://github.com/coletdjnz/yt-dlp-youtube-oauth2)) — run `yt-dlp --plugin-dirs … --username oauth --password ''` once and it keeps itself signed in.
+
 Still stuck? [Open an issue](https://github.com/Ochichan/Yututui/issues) and just describe what you saw — mention your operating system.
 
 ---
