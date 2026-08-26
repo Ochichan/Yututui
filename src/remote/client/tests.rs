@@ -447,7 +447,7 @@ async fn status_fresh_retry_takes_the_fresh_response_verbatim() {
 
 #[tokio::test]
 async fn status_accepts_a_fresh_retry_rejection_without_confirmation_semantics() {
-    let endpoint = test_endpoint("status-fresh-retry-rejected");
+    let endpoint = test_endpoint("status-fresh-retry-shutdown");
     let listener = bind_test_listener(&endpoint);
     let server = tokio::spawn(serve_eof_then_fresh_response(
         listener,
