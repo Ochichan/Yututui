@@ -44,10 +44,7 @@ async fn serve_hello(listener: Listener, ack: HelloAck) {
 
 #[tokio::test]
 async fn hello_handshake_succeeds() {
-    let endpoint = std::env::temp_dir()
-        .join(format!("ytt-gw-ok-{}.sock", std::process::id()))
-        .to_string_lossy()
-        .into_owned();
+    let endpoint = crate::test_util::isolated_socket_path("gw-ok");
     let listener = bind(&endpoint);
     let ack = HelloAck {
         ok: true,
@@ -68,10 +65,7 @@ async fn hello_handshake_succeeds() {
 
 #[tokio::test]
 async fn hello_rejection_surfaces_the_reason() {
-    let endpoint = std::env::temp_dir()
-        .join(format!("ytt-gw-bad-{}.sock", std::process::id()))
-        .to_string_lossy()
-        .into_owned();
+    let endpoint = crate::test_util::isolated_socket_path("gw-bad");
     let listener = bind(&endpoint);
     let ack = HelloAck {
         ok: false,
@@ -93,10 +87,7 @@ async fn hello_rejection_surfaces_the_reason() {
 #[tokio::test]
 async fn missing_core_is_reported() {
     let err = connect_and_hello(test_instance(
-        std::env::temp_dir()
-            .join("ytt-gw-nope.sock")
-            .to_string_lossy()
-            .into_owned(),
+        crate::test_util::isolated_socket_path("gw-nope"),
         "tok",
     ))
     .await
@@ -120,10 +111,7 @@ async fn connect(endpoint: &str) -> Stream {
 
 #[tokio::test]
 async fn forward_cmd_translates_and_rewrites_the_id() {
-    let endpoint = std::env::temp_dir()
-        .join(format!("ytt-gw-fwd-{}.sock", std::process::id()))
-        .to_string_lossy()
-        .into_owned();
+    let endpoint = crate::test_util::isolated_socket_path("gw-fwd");
     let listener = bind(&endpoint);
     let server = tokio::spawn(accept_one_line(listener));
     let conn = connect(&endpoint).await;
@@ -182,10 +170,7 @@ async fn forward_cmd_translates_and_rewrites_the_id() {
 
 #[tokio::test]
 async fn forward_req_records_the_reply_correlation() {
-    let endpoint = std::env::temp_dir()
-        .join(format!("ytt-gw-req-{}.sock", std::process::id()))
-        .to_string_lossy()
-        .into_owned();
+    let endpoint = crate::test_util::isolated_socket_path("gw-req");
     let listener = bind(&endpoint);
     let server = tokio::spawn(accept_one_line(listener));
     let conn = connect(&endpoint).await;

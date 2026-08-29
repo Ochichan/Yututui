@@ -675,14 +675,12 @@ pub fn signal_activation(intent: ActivationIntent) -> io::Result<()> {
 #[cfg(all(test, unix))]
 mod tests {
     use std::os::unix::io::AsRawFd;
-    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::atomic::Ordering;
     use std::sync::{Arc, Mutex};
 
     use tokio::io::AsyncWriteExt;
 
     use super::*;
-
-    static NEXT_ENDPOINT: AtomicU64 = AtomicU64::new(1);
 
     #[test]
     fn activation_intents_round_trip_and_reject_unknown_values() {
@@ -799,12 +797,7 @@ mod tests {
 
     #[tokio::test]
     async fn owned_listener_accepts_fragmented_intent_and_joins_on_stop() {
-        let serial = NEXT_ENDPOINT.fetch_add(1, Ordering::Relaxed);
-        let path = std::env::temp_dir().join(format!(
-            "ytt-si-transport-{}-{serial}.sock",
-            std::process::id()
-        ));
-        let endpoint = path.to_string_lossy().into_owned();
+        let endpoint = crate::test_util::isolated_socket_path("si-transport");
         let seen = Arc::new(Mutex::new(Vec::new()));
         let seen_in_callback = Arc::clone(&seen);
         let listener = spawn_activation_listener_at(endpoint.clone(), move |intent| {
@@ -839,17 +832,15 @@ mod tests {
                 .unwrap_or_else(std::sync::PoisonError::into_inner),
             vec![ActivationIntent::ShowMini]
         );
-        assert!(!path.exists(), "listener shutdown should remove its socket");
+        assert!(
+            !std::path::Path::new(&endpoint).exists(),
+            "listener shutdown should remove its socket"
+        );
     }
 
     #[tokio::test]
     async fn slow_connection_does_not_block_a_valid_second_activation() {
-        let serial = NEXT_ENDPOINT.fetch_add(1, Ordering::Relaxed);
-        let path = std::env::temp_dir().join(format!(
-            "ytt-si-concurrent-{}-{serial}.sock",
-            std::process::id()
-        ));
-        let endpoint = path.to_string_lossy().into_owned();
+        let endpoint = crate::test_util::isolated_socket_path("si-concurrent");
         let seen = Arc::new(Mutex::new(Vec::new()));
         let seen_in_callback = Arc::clone(&seen);
         let listener = spawn_activation_listener_at(endpoint.clone(), move |intent| {
@@ -898,17 +889,15 @@ mod tests {
                 .unwrap_or_else(std::sync::PoisonError::into_inner),
             vec![ActivationIntent::ShowMini]
         );
-        assert!(!path.exists(), "listener shutdown should remove its socket");
+        assert!(
+            !std::path::Path::new(&endpoint).exists(),
+            "listener shutdown should remove its socket"
+        );
     }
 
     #[tokio::test]
     async fn ten_concurrent_secondaries_each_receive_one_acknowledgement() {
-        let serial = NEXT_ENDPOINT.fetch_add(1, Ordering::Relaxed);
-        let path = std::env::temp_dir().join(format!(
-            "ytt-si-ten-secondaries-{}-{serial}.sock",
-            std::process::id()
-        ));
-        let endpoint = path.to_string_lossy().into_owned();
+        let endpoint = crate::test_util::isolated_socket_path("si-ten-secondaries");
         let seen = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let seen_in_callback = Arc::clone(&seen);
         let listener = spawn_activation_listener_at(endpoint.clone(), move |intent| {
@@ -949,7 +938,10 @@ mod tests {
 
         listener.stop();
         assert_eq!(seen.load(Ordering::Acquire), 10);
-        assert!(!path.exists(), "listener shutdown should remove its socket");
+        assert!(
+            !std::path::Path::new(&endpoint).exists(),
+            "listener shutdown should remove its socket"
+        );
     }
 
     #[test]

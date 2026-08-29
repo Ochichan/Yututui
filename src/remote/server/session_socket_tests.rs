@@ -9,21 +9,13 @@ pub(super) fn test_endpoint(tag: &str) -> String {
     #[cfg(windows)]
     {
         format!(
-            r"\\.\pipe\yututui-session-test-{}-{tag}",
-            std::process::id()
+            r"\\.\pipe\yututui-session-test-{}",
+            crate::test_util::unique_socket_tag(tag)
         )
     }
     #[cfg(unix)]
     {
-        let ep = std::env::temp_dir()
-            .join(format!(
-                "yututui-session-test-{}-{tag}.sock",
-                std::process::id()
-            ))
-            .to_string_lossy()
-            .into_owned();
-        let _ = std::fs::remove_file(&ep);
-        ep
+        crate::test_util::isolated_socket_path(tag)
     }
 }
 

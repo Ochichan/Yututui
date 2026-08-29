@@ -7,17 +7,7 @@ use super::{GatewayHandle, OutEnvelope, SubscriptionState};
 
 #[cfg(unix)]
 fn socket_endpoint(label: &str) -> String {
-    let nonce = std::time::SystemTime::now()
-        .duration_since(std::time::SystemTime::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    std::env::temp_dir()
-        .join(format!(
-            "ytt-gw-{label}-{}-{nonce}.sock",
-            std::process::id()
-        ))
-        .to_string_lossy()
-        .into_owned()
+    crate::test_util::isolated_socket_path(label)
 }
 
 fn handle_with_worker(

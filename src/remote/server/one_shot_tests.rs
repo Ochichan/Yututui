@@ -182,14 +182,7 @@ async fn one_shot_reports_server_busy_when_retained_request_cache_is_saturated()
 
 #[tokio::test]
 async fn one_shot_personal_sync_replays_one_retained_same_id_outcome() {
-    let path = std::env::temp_dir()
-        .join(format!(
-            "yututui-remote-replay-proof-test-{}.sock",
-            std::process::id()
-        ))
-        .to_string_lossy()
-        .into_owned();
-    let _ = std::fs::remove_file(&path);
+    let path = crate::test_util::isolated_socket_path("remote-replay-proof");
     let listener = bind(&path).unwrap();
 
     let executions = Arc::new(AtomicUsize::new(0));
@@ -264,11 +257,7 @@ async fn one_shot_response_write_is_deadline_bounded() {
 
 #[tokio::test]
 async fn server_round_trips_request_through_the_reducer() {
-    let path = std::env::temp_dir()
-        .join(format!("yututui-remote-test-{}.sock", std::process::id()))
-        .to_string_lossy()
-        .into_owned();
-    let _ = std::fs::remove_file(&path);
+    let path = crate::test_util::isolated_socket_path("remote-roundtrip");
     let listener = bind(&path).unwrap();
 
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<RemoteEvent>();
@@ -354,14 +343,7 @@ async fn server_round_trips_request_through_the_reducer() {
 
 #[tokio::test]
 async fn oversized_request_is_rejected_before_reducer() {
-    let path = std::env::temp_dir()
-        .join(format!(
-            "yututui-remote-oversized-test-{}.sock",
-            std::process::id()
-        ))
-        .to_string_lossy()
-        .into_owned();
-    let _ = std::fs::remove_file(&path);
+    let path = crate::test_util::isolated_socket_path("remote-oversized");
     let listener = bind(&path).unwrap();
 
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<RemoteEvent>();

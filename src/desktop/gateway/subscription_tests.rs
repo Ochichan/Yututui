@@ -24,10 +24,7 @@ async fn connect(endpoint: &str) -> Stream {
 
 #[tokio::test]
 async fn live_session_reconciles_the_latest_topic_set_without_command_queue_capacity() {
-    let endpoint = std::env::temp_dir()
-        .join(format!("ytt-gw-sub-{}.sock", std::process::id()))
-        .to_string_lossy()
-        .into_owned();
+    let endpoint = crate::test_util::isolated_socket_path("gw-sub");
     let listener = bind(&endpoint);
     let conn = connect(&endpoint).await;
     let (initial_seen_tx, initial_seen_rx) = oneshot::channel();
@@ -131,10 +128,7 @@ async fn live_session_reconciles_the_latest_topic_set_without_command_queue_capa
 
 #[tokio::test]
 async fn busy_subscription_reply_ends_the_session_for_reconnect_without_losing_desired_state() {
-    let endpoint = std::env::temp_dir()
-        .join(format!("ytt-gw-sub-busy-{}.sock", std::process::id()))
-        .to_string_lossy()
-        .into_owned();
+    let endpoint = crate::test_util::isolated_socket_path("gw-sub-busy");
     let listener = bind(&endpoint);
     let conn = connect(&endpoint).await;
     let server = tokio::spawn(async move {
@@ -189,10 +183,7 @@ async fn busy_subscription_reply_ends_the_session_for_reconnect_without_losing_d
 
 #[tokio::test]
 async fn missing_subscription_reply_times_out_without_losing_desired_state() {
-    let endpoint = std::env::temp_dir()
-        .join(format!("ytt-gw-sub-timeout-{}.sock", std::process::id()))
-        .to_string_lossy()
-        .into_owned();
+    let endpoint = crate::test_util::isolated_socket_path("gw-sub-timeout");
     let listener = bind(&endpoint);
     let conn = connect(&endpoint).await;
     let (release_tx, release_rx) = oneshot::channel();
@@ -242,10 +233,7 @@ async fn missing_subscription_reply_times_out_without_losing_desired_state() {
 
 #[tokio::test]
 async fn replacement_command_waits_for_its_page_subscription_ack() {
-    let endpoint = std::env::temp_dir()
-        .join(format!("ytt-gw-page-search-{}.sock", std::process::id()))
-        .to_string_lossy()
-        .into_owned();
+    let endpoint = crate::test_util::isolated_socket_path("gw-page-search");
     let listener = bind(&endpoint);
     let conn = connect(&endpoint).await;
     let (initial_seen_tx, initial_seen_rx) = oneshot::channel();
