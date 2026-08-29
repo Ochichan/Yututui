@@ -43,6 +43,63 @@ fn isolated_dir_pair(label: &str) -> (std::path::PathBuf, std::path::PathBuf) {
     (data, cache)
 }
 
+/// Longest path `isolated_socket_path` will spend: under the shortest platform cap for
+/// `sun_path` (104 on macOS, 108 on Linux) with room to spare for the trailing NUL.
+#[cfg(test)]
+const MAX_SOCKET_PATH_LEN: usize = 100;
+
+/// A filesystem endpoint for a test that binds a local socket, unique on every call.
+///
+/// Uniqueness comes from the counter, never from `label`: two tests that happen to pick the same
+/// label still get separate paths. Hand-picked labels were the only thing keeping these apart
+/// before, and when two of them collided the pair raced on bind and one panicked with
+/// `AddrInUse` — a failure that only reproduces under the parallel suite, so it read as CI
+/// flakiness rather than as a name clash.
+///
+/// `label` is truncated to whatever room is left, because a Unix socket path is capped at 104
+/// bytes by `sun_path` and the per-user temp dir on macOS already spends 48 of them. The pid and
+/// the counter are what make the path unique, so they are never the part that gives way.
+#[cfg(test)]
+pub fn isolated_socket_path(label: &str) -> String {
+    const PREFIX: &str = "ytt-";
+
+    let dir = std::env::temp_dir();
+    let suffix = format!("-{}.sock", unique_socket_tag(""));
+    let room =
+        MAX_SOCKET_PATH_LEN.saturating_sub(dir.as_os_str().len() + 1 + PREFIX.len() + suffix.len());
+    // Bytes, not chars: `room` is a byte budget, and taking `room` characters of a multi-byte
+    // label would spend up to four times it. Cut on a char boundary so the result stays valid.
+    let label: String = label
+        .char_indices()
+        .take_while(|(offset, ch)| offset + ch.len_utf8() <= room)
+        .map(|(_, ch)| ch)
+        .collect();
+
+    let path = dir.join(format!("{PREFIX}{label}{suffix}"));
+    // A recycled pid can leave a previous run's file here, and bind fails on a stale one.
+    let _ = std::fs::remove_file(&path);
+    path.to_string_lossy().into_owned()
+}
+
+/// The unique part of a test socket name, for endpoints that are not filesystem paths.
+///
+/// Windows named pipes have no `sun_path` budget to stay under, so they take the tag directly
+/// instead of going through [`isolated_socket_path`]. Both share one counter so a process cannot
+/// hand out the same tag twice.
+#[cfg(test)]
+pub fn unique_socket_tag(label: &str) -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let sequence = NEXT.fetch_add(1, Ordering::Relaxed);
+    let pid = std::process::id();
+    if label.is_empty() {
+        format!("{pid}-{sequence}")
+    } else {
+        format!("{label}-{pid}-{sequence}")
+    }
+}
+
 /// Drives `future` to completion with isolated data and cache directories installed.
 ///
 /// The env overrides and the thread-scoped flag that exposes them both live on one thread, so the
@@ -119,6 +176,53 @@ mod tests {
             Some(shared),
             "the override must not outlive its scope"
         );
+    }
+
+    /// The whole point of the helper is that a duplicate label stops being a collision, so assert
+    /// the duplicate case rather than the easy one where the labels already differ.
+    #[test]
+    fn isolated_socket_paths_differ_even_for_one_repeated_label() {
+        let first = isolated_socket_path("selftest-socket");
+        let second = isolated_socket_path("selftest-socket");
+        assert_ne!(first, second, "two calls must not share a socket path");
+    }
+
+    /// A path over `sun_path` fails at bind, not here, so a silent overflow would only surface as
+    /// an unrelated-looking macOS failure. Asserts the budget the code promises, not the platform
+    /// cap it sits under, so shrinking headroom cannot pass unnoticed. The non-ASCII label is the
+    /// case that catches spending a byte budget a character at a time.
+    #[test]
+    fn isolated_socket_path_spends_no_more_than_its_budget() {
+        // With nothing left to truncate the helper cannot get under the budget on a temp dir long
+        // enough to blow it unaided, so that length is the honest floor to compare against.
+        let floor = isolated_socket_path("").len();
+
+        for label in ["x".repeat(200), "재생큐".repeat(60)] {
+            let path = isolated_socket_path(&label);
+            assert!(
+                path.len() <= MAX_SOCKET_PATH_LEN.max(floor),
+                "truncation overshot the {MAX_SOCKET_PATH_LEN}-byte budget: {} bytes for {path}",
+                path.len()
+            );
+        }
+    }
+
+    /// Truncation may eat the label, but never the counter that makes the path unique.
+    #[test]
+    fn isolated_socket_path_keeps_the_counter_when_the_label_is_truncated() {
+        let first = isolated_socket_path(&"x".repeat(200));
+        let second = isolated_socket_path(&"x".repeat(200));
+        assert_ne!(
+            first, second,
+            "truncation dropped the unique part instead of the label"
+        );
+    }
+
+    #[test]
+    fn unique_socket_tags_never_repeat() {
+        let tags: std::collections::HashSet<String> =
+            (0..64).map(|_| unique_socket_tag("selftest")).collect();
+        assert_eq!(tags.len(), 64, "the shared counter handed out a duplicate");
     }
 
     #[test]

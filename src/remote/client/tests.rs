@@ -8,10 +8,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::io::AsyncBufReadExt;
 
 fn test_endpoint(name: &str) -> String {
-    std::env::temp_dir()
-        .join(format!("yututui-client-{name}-{}.sock", std::process::id()))
-        .to_string_lossy()
-        .into_owned()
+    crate::test_util::isolated_socket_path(name)
 }
 
 fn test_instance(endpoint: String) -> InstanceFile {

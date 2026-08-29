@@ -421,11 +421,7 @@ mod socket_tests {
 
     #[tokio::test]
     async fn common_window_replacement_cycles_topics_for_full_resnapshot() {
-        let nonce = crate::remote::requests::fresh_request_id();
-        let endpoint = std::env::temp_dir()
-            .join(format!("ygp-{}-{}.sock", std::process::id(), &nonce[..8]))
-            .to_string_lossy()
-            .into_owned();
+        let endpoint = crate::test_util::isolated_socket_path("gw-page-lifetime");
         let name = endpoint.as_str().to_fs_name::<GenericFilePath>().unwrap();
         let listener: Listener = ListenerOptions::new().name(name).create_tokio().unwrap();
         let name = endpoint.as_str().to_fs_name::<GenericFilePath>().unwrap();
