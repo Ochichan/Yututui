@@ -497,8 +497,9 @@ impl Session {
         }
     }
 
-    /// Apply one logical event completely before the next snapshot is installed.
-    /// The facet/timeline/timer order mirrors `origin/main`'s `apply_inner`.
+    /// Apply one logical event completely before the next snapshot is installed: facets,
+    /// then the timeline, then the timer, so the timeline is always pushed against the facets
+    /// it belongs to and the timer decision reads fully installed state.
     fn apply_event(&mut self, changes: MediaChanges) -> windows::core::Result<()> {
         self.apply_facets(changes)?;
         if changes.track || changes.position || changes.status || changes.options {

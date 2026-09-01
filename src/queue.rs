@@ -18,7 +18,7 @@ pub(crate) mod mutation;
 pub(crate) use mutation::{QueueMutationPlan, QueueRemovalPlayback, QueueReplacementDraft};
 
 /// Hard cap on queued tracks (priority #1: bounded memory).
-const MAX: usize = 999;
+const MAX_QUEUE_LEN: usize = 999;
 
 /// Owner-global queue revision source. One counter per process —
 /// deliberately NOT per-`Queue`: radio mode and `--resume` swap whole queues through
@@ -113,11 +113,11 @@ impl Queue {
     }
 
     pub(crate) fn remaining_capacity(&self) -> usize {
-        MAX.saturating_sub(self.songs.len())
+        MAX_QUEUE_LEN.saturating_sub(self.songs.len())
     }
 
     pub(crate) const fn max_len() -> usize {
-        MAX
+        MAX_QUEUE_LEN
     }
 
     /// The membership/order revision. Equal revs ⇒ identical contents and play order
@@ -170,10 +170,10 @@ impl Queue {
 
     fn restore_snapshot_without_revision(&mut self, snapshot: QueueSnapshot) {
         self.songs = snapshot.songs;
-        // Enforce the same MAX cap every other mutation applies, so a corrupt/tampered session
-        // snapshot can't inject an unbounded queue. Over-cap truncation drops the tail; the
+        // Enforce the same MAX_QUEUE_LEN cap every other mutation applies, so a corrupt/tampered
+        // session snapshot can't inject an unbounded queue. Over-cap truncation drops the tail; the
         // permutation check below then rebuilds a clean play order for the trimmed songs.
-        self.songs.truncate(MAX);
+        self.songs.truncate(MAX_QUEUE_LEN);
         self.order = snapshot.order;
         self.shuffle = snapshot.shuffle;
         self.repeat = snapshot.repeat;
@@ -353,7 +353,7 @@ impl Queue {
         self.order.len().saturating_sub(self.cursor + 1)
     }
 
-    /// Append `more` tracks to the end of the queue, respecting the [`MAX`] cap. Returns
+    /// Append `more` tracks to the end of the queue, respecting the [`MAX_QUEUE_LEN`] cap. Returns
     /// the number actually added — fewer than requested (or zero) when near the cap, so
     /// the caller can report the *real* count rather than what was asked for. The new
     /// tracks are made reachable from the current cursor; with shuffle on they're
@@ -367,7 +367,7 @@ impl Queue {
     }
 
     fn extend_without_revision(&mut self, more: Vec<Song>) -> usize {
-        let free = MAX.saturating_sub(self.songs.len());
+        let free = MAX_QUEUE_LEN.saturating_sub(self.songs.len());
         if free == 0 {
             return 0;
         }
@@ -395,7 +395,7 @@ impl Queue {
     /// Shuffle-agnostic: the inserted block stays directly after the current track so the
     /// "next" promise holds even while shuffle is enabled.
     pub fn insert_next_many(&mut self, more: Vec<Song>) -> usize {
-        let free = MAX.saturating_sub(self.songs.len());
+        let free = MAX_QUEUE_LEN.saturating_sub(self.songs.len());
         if free == 0 {
             return 0;
         }
@@ -419,19 +419,18 @@ impl Queue {
         self.bump_rev();
         added
     }
-
-    /// Insert `song` immediately after the current track in the play order and make it the
-    /// new current — "play this now" without disturbing the rest of the queue, which resumes
-    /// after this track ends. Into an empty queue it simply becomes the sole track. Returns
-    /// `false` (nothing inserted) when the queue is already at the [`MAX`] cap, so the caller
-    /// can report it; `true` otherwise. Shuffle-agnostic: it always lands right after the
-    /// cursor in play order, so the "now playing next" promise holds either way.
+    /// Insert `song` immediately after the current track in the play order and make it the new
+    /// current — "play this now" without disturbing the rest of the queue, which resumes after
+    /// this track ends. Into an empty queue it simply becomes the sole track. Returns `false`
+    /// (nothing inserted) when the queue is already at the [`MAX_QUEUE_LEN`] cap, so the caller
+    /// can report it; `true` otherwise. Shuffle-agnostic: it always lands right after the cursor
+    /// in play order, so the "now playing next" promise holds either way.
     pub fn play_now(&mut self, song: Song) -> bool {
         self.play_now_many(vec![song]) == 1
     }
 
     /// Insert `more` immediately after the current track and make the first inserted track
-    /// current. Returns the number actually inserted, bounded by [`MAX`].
+    /// current. Returns the number actually inserted, bounded by [`MAX_QUEUE_LEN`].
     pub fn play_now_many(&mut self, more: Vec<Song>) -> usize {
         let added = self.play_now_many_without_revision(more);
         if added > 0 {
@@ -441,7 +440,7 @@ impl Queue {
     }
 
     fn play_now_many_without_revision(&mut self, more: Vec<Song>) -> usize {
-        let free = MAX.saturating_sub(self.songs.len());
+        let free = MAX_QUEUE_LEN.saturating_sub(self.songs.len());
         if free == 0 {
             return 0;
         }
@@ -674,7 +673,7 @@ impl Queue {
     }
 
     fn replace_without_revision(&mut self, mut songs: Vec<Song>, start: usize) {
-        songs.truncate(MAX);
+        songs.truncate(MAX_QUEUE_LEN);
         let start = start.min(songs.len().saturating_sub(1));
         self.songs = songs;
         self.rebuild_order(start);
@@ -875,18 +874,21 @@ mod tests {
     fn replacement_plan_caps_clamps_and_handles_empty_input() {
         let mut q = Queue::default();
         let plan = q.prepare_replacement(QueueReplacementDraft::new(
-            songs(MAX + 50),
+            songs(MAX_QUEUE_LEN + 50),
             usize::MAX,
             None,
         ));
-        assert_eq!(plan.len(), MAX);
-        assert_eq!(plan.cursor_pos(), MAX - 1);
-        assert_eq!(plan.current().unwrap().video_id, (MAX - 1).to_string());
-        assert_eq!(plan.ordered_iter().count(), MAX);
+        assert_eq!(plan.len(), MAX_QUEUE_LEN);
+        assert_eq!(plan.cursor_pos(), MAX_QUEUE_LEN - 1);
+        assert_eq!(
+            plan.current().unwrap().video_id,
+            (MAX_QUEUE_LEN - 1).to_string()
+        );
+        assert_eq!(plan.ordered_iter().count(), MAX_QUEUE_LEN);
         q.commit_mutation(plan);
-        assert_eq!(q.len(), MAX);
-        assert_eq!(q.cursor_pos(), MAX - 1);
-        assert_eq!(id(&q), (MAX - 1).to_string());
+        assert_eq!(q.len(), MAX_QUEUE_LEN);
+        assert_eq!(q.cursor_pos(), MAX_QUEUE_LEN - 1);
+        assert_eq!(id(&q), (MAX_QUEUE_LEN - 1).to_string());
 
         let plan = q.prepare_replacement(QueueReplacementDraft::new(
             Vec::new(),
@@ -908,7 +910,7 @@ mod tests {
     fn play_now_preparation_is_pure_matches_eager_and_commits_one_revision() {
         let make_base = || {
             let mut q = Queue::default();
-            q.set(songs(MAX - 1), 17);
+            q.set(songs(MAX_QUEUE_LEN - 1), 17);
             q.seed_rng(0x51de);
             q.set_shuffle(true);
             q.repeat = Repeat::All;
@@ -1055,16 +1057,16 @@ mod tests {
     #[test]
     fn set_truncates_to_cap() {
         let mut q = Queue::default();
-        q.set(songs(MAX + 50), 0);
-        assert_eq!(q.len(), MAX);
+        q.set(songs(MAX_QUEUE_LEN + 50), 0);
+        assert_eq!(q.len(), MAX_QUEUE_LEN);
     }
 
     #[test]
     fn restore_snapshot_enforces_the_cap() {
-        // A corrupt/tampered session snapshot with more than MAX songs must be trimmed on
+        // A corrupt/tampered session snapshot with more than MAX_QUEUE_LEN songs must be trimmed on
         // restore, matching the cap every other mutation applies (set/extend/insert) — so a
         // hostile session cache can't inject an unbounded queue.
-        let over = MAX + 50;
+        let over = MAX_QUEUE_LEN + 50;
         let snapshot = QueueSnapshot {
             songs: songs(over),
             order: (0..over).collect(),
@@ -1074,7 +1076,11 @@ mod tests {
         };
         let mut q = Queue::default();
         q.restore_snapshot(snapshot);
-        assert_eq!(q.len(), MAX, "restore must enforce the MAX cap");
+        assert_eq!(
+            q.len(),
+            MAX_QUEUE_LEN,
+            "restore must enforce the MAX_QUEUE_LEN cap"
+        );
         // A clean play order was rebuilt for the trimmed songs; the cursor stays in-bounds.
         assert!(q.current().is_some());
     }
@@ -1105,13 +1111,13 @@ mod tests {
     #[test]
     fn extend_respects_the_cap_and_reports_real_count() {
         let mut q = Queue::default();
-        q.set(songs(MAX - 2), 0);
+        q.set(songs(MAX_QUEUE_LEN - 2), 0);
         let added = q.extend(songs(10)); // only 2 slots free
         assert_eq!(added, 2);
-        assert_eq!(q.len(), MAX);
+        assert_eq!(q.len(), MAX_QUEUE_LEN);
         // Full queue: further extend adds nothing.
         assert_eq!(q.extend(songs(5)), 0);
-        assert_eq!(q.len(), MAX);
+        assert_eq!(q.len(), MAX_QUEUE_LEN);
     }
 
     #[test]
@@ -1358,9 +1364,9 @@ mod tests {
     #[test]
     fn play_now_respects_the_cap() {
         let mut q = Queue::default();
-        q.set(songs(MAX), 0);
+        q.set(songs(MAX_QUEUE_LEN), 0);
         assert!(!q.play_now(song("overflow"))); // full → rejected
-        assert_eq!(q.len(), MAX);
+        assert_eq!(q.len(), MAX_QUEUE_LEN);
     }
 
     #[test]
@@ -1413,11 +1419,11 @@ mod tests {
 
         // No-op mutations don't bump either.
         let mut full = Queue::default();
-        full.set(songs(MAX), 0);
+        full.set(songs(MAX_QUEUE_LEN), 0);
         let at_cap = full.rev();
         assert_eq!(full.extend(songs(3)), 0);
         assert_eq!(full.rev(), at_cap, "capped extend added nothing");
-        assert_eq!(full.remove_at(MAX + 5), None);
+        assert_eq!(full.remove_at(MAX_QUEUE_LEN + 5), None);
         assert_eq!(full.rev(), at_cap, "out-of-range remove changed nothing");
     }
 

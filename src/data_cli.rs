@@ -572,7 +572,7 @@ fn parse_export_args(args: &[String]) -> Result<ParseExport, String> {
 
     Ok(ParseExport::Request(ExportRequest {
         destination,
-        schema: schema.unwrap_or(2),
+        schema: schema.unwrap_or(crate::remote::proto::DEFAULT_EXPORT_SCHEMA),
     }))
 }
 

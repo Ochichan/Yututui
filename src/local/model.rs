@@ -86,9 +86,10 @@ impl AudioFormat {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "kind")]
 pub enum FileFingerprint {
-    /// Phase-3 fallback identity: stable for the same path/mtime/size, but not
-    /// intended to survive renames. Scanner phases can upgrade this when they
-    /// can read platform file identity cheaply.
+    /// The only variant the scanner currently produces: stable for the same
+    /// path/mtime/size, but not intended to survive renames. The platform-id
+    /// variants below are reserved wire shapes for scanners that can read file
+    /// identity cheaply.
     PathMtimeSize {
         path_hash: u64,
         mtime: i64,

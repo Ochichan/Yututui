@@ -260,6 +260,10 @@ fn validate_query(query: &str) -> Result<(), RemoteCommandValidationError> {
     Ok(())
 }
 
+/// Export schema used when a remote `ExportPersonalData` command omits the field: the newest
+/// personal-state export schema, so older clients keep receiving current exports.
+pub const DEFAULT_EXPORT_SCHEMA: u32 = 2;
+
 fn validate_export_directory(directory: &str) -> Result<(), RemoteCommandValidationError> {
     if directory.is_empty() {
         return Err(validation_error("empty_export_directory"));

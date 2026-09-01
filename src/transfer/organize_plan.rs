@@ -380,6 +380,10 @@ fn format_disc_track(disc: Option<u32>, track: Option<u32>) -> String {
     }
 }
 
+/// Make one metadata-derived path component safe to place under the organize root:
+/// separators, Windows-reserved characters and control characters become `_`, repeated
+/// spaces collapse, `..` runs collapse so a tag value can never climb out of its directory,
+/// and leading/trailing dots and spaces are trimmed because Windows rejects them.
 fn sanitize_component(raw: &str) -> String {
     let mut out = String::new();
     for ch in raw.trim().chars() {

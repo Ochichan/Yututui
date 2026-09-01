@@ -1,10 +1,11 @@
 //! CLI review actions for persisted import sessions.
 
-use anyhow::{anyhow, bail};
-
 use super::checkpoint::{Checkpoint, ReviewDecision};
 use super::cli::{EXIT_FAILED, EXIT_OK, EXIT_USAGE};
 use super::matching::{MatchOutcome, MatchScoreBreakdown};
+use super::review_action::{
+    SelectedCandidate, candidates_from_outcome, ensure_not_written, ensure_review_candidate_allowed,
+};
 use super::session::{
     ImportRecordGuard, ImportSession, ImportSessionRow, ImportSessionRowStatus,
     ensure_review_row_mutable_unlocked,
@@ -333,14 +334,6 @@ fn row_decision_label(decision: Option<&ReviewDecision>) -> &'static str {
     }
 }
 
-#[derive(Debug, Clone)]
-struct SelectedCandidate {
-    key: String,
-    score: f32,
-    display: String,
-    score_breakdown: Option<MatchScoreBreakdown>,
-}
-
 fn selected_candidate(
     outcome: &Option<MatchOutcome>,
     selector: Option<&str>,
@@ -361,33 +354,6 @@ fn selected_candidate(
         let label = selector.unwrap_or("first candidate");
         format!("candidate `{label}` was not found on that row")
     })
-}
-
-fn candidates_from_outcome(outcome: &Option<MatchOutcome>) -> Vec<SelectedCandidate> {
-    match outcome {
-        Some(MatchOutcome::Matched {
-            key,
-            score,
-            display,
-            score_breakdown,
-            ..
-        }) => vec![SelectedCandidate {
-            key: key.clone(),
-            score: *score,
-            display: display.clone(),
-            score_breakdown: score_breakdown.as_deref().cloned(),
-        }],
-        Some(MatchOutcome::Ambiguous { candidates }) => candidates
-            .iter()
-            .map(|candidate| SelectedCandidate {
-                key: candidate.key.clone(),
-                score: candidate.score,
-                display: candidate.display.clone(),
-                score_breakdown: candidate.score_breakdown.clone(),
-            })
-            .collect(),
-        _ => Vec::new(),
-    }
 }
 
 fn resolve_row_index(cp: &Checkpoint, row_ref: &str) -> Result<usize, String> {
@@ -419,10 +385,7 @@ fn apply_accept(
     selected: SelectedCandidate,
 ) -> anyhow::Result<String> {
     ensure_not_written(cp, index)?;
-    super::review_action::ensure_review_candidate_allowed(
-        &cp.spec,
-        selected.score_breakdown.as_ref(),
-    )?;
+    ensure_review_candidate_allowed(&cp.spec, selected.score_breakdown.as_ref())?;
     cp.tracks[index].outcome = Some(MatchOutcome::Matched {
         key: selected.key.clone(),
         score: selected.score,
@@ -458,20 +421,6 @@ fn apply_terminal_decision(
         decision.label().to_ascii_uppercase(),
         index + 1
     ))
-}
-
-fn ensure_not_written(cp: &Checkpoint, index: usize) -> anyhow::Result<()> {
-    let entry = cp
-        .tracks
-        .get(index)
-        .ok_or_else(|| anyhow!("row {} is out of range", index + 1))?;
-    if entry.written {
-        bail!(
-            "row {} is already written; review cannot change it",
-            index + 1
-        );
-    }
-    Ok(())
 }
 
 #[cfg(test)]

@@ -431,7 +431,10 @@ async fn run_owner_loop(
             DaemonEvent::Remote(RemoteEvent::Command(command, reply)) => match command {
                 RemoteCommand::ExportPersonalData { directory, schema } => {
                     personal_export.start_engine(
-                        personal_export::Target::new(directory, schema.unwrap_or(2)),
+                        personal_export::Target::new(
+                            directory,
+                            schema.unwrap_or(crate::remote::proto::DEFAULT_EXPORT_SCHEMA),
+                        ),
                         reply,
                         &engine,
                         &event_tx,
@@ -474,7 +477,10 @@ async fn run_owner_loop(
             }) => match command {
                 RemoteCommand::ExportPersonalData { directory, schema } => {
                     personal_export.start_engine(
-                        personal_export::Target::new(directory, schema.unwrap_or(2)),
+                        personal_export::Target::new(
+                            directory,
+                            schema.unwrap_or(crate::remote::proto::DEFAULT_EXPORT_SCHEMA),
+                        ),
                         reply,
                         &engine,
                         &event_tx,
@@ -672,8 +678,9 @@ async fn run_owner_loop(
             break;
         }
 
-        // Preserve origin/main's platform-clock correction cadence on progress turns without
-        // rebuilding the owned media projection.
+        // Progress turns only rebase the platform clock: Linux/Windows backends interpolate their
+        // own position and need every time-pos sample to correct it, while rebuilding the owned
+        // media projection for a scalar update would allocate on the hottest turn.
         let media_progress_publish_due = media_position_turn
             && engine
                 .media_position_update()
@@ -714,8 +721,9 @@ async fn run_owner_loop(
                 break;
             }
         }
-        // Preserve origin's baseline-refresh/event ordering on every dispatched daemon event.
-        // The view is borrowed and unchanged topics do not allocate or serialize models.
+        // Observe after every dispatched event, in dispatch order, so remote subscribers see
+        // baseline refreshes and events in the sequence the engine applied them. The view is
+        // borrowed and unchanged topics do not allocate or serialize models.
         let view = engine.core_view();
         publisher.observe(&view);
         lyrics_host.observe(&mut publisher, view.queue.current());

@@ -146,7 +146,6 @@ pub fn classify_pool(
     let recent: HashSet<&str> = st.recent_track_ids.iter().map(String::as_str).collect();
     let mut verdicts = Vec::with_capacity(pool.len());
 
-    // Phase 1: hard filter.
     let mut survivors: Vec<&Candidate> = Vec::new();
     for c in pool {
         match reject_reason(c, st, sig, cfg, &recent) {
@@ -155,7 +154,7 @@ pub fn classify_pool(
         }
     }
 
-    // Phase 2: gimmick reject (only when in force and not pool-starving — mirrors `block_gimmicks`).
+    // Gimmick rejection only when in force and not pool-starving — mirrors `block_gimmicks`.
     if gimmick_block_active(survivors.len(), st, cfg)
         && survivors
             .iter()
@@ -171,7 +170,8 @@ pub fn classify_pool(
         survivors = kept_survivors;
     }
 
-    // Phase 3: dedup by canonical key.
+    // Dedup runs after the filters so a rejected first occurrence never shadows a surviving
+    // duplicate of the same canonical key.
     let mut seen: HashSet<&str> = HashSet::new();
     for c in survivors {
         if seen.insert(&c.canonical_key) {

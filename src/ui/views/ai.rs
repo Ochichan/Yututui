@@ -490,7 +490,7 @@ fn fixture_messages_match(cached: &TranscriptCache, app: &App) -> bool {
 
 /// Wrap one styled message under its role tag. The tag renders as a reversed-video chip
 /// (its trailing padding stays plain) so who-said-what reads at a glance; continuation
-/// lines hang-indent under the message body exactly as before.
+/// lines hang-indent under the message body.
 fn push_wrapped_styled(
     out: &mut Vec<TranscriptLine>,
     prefix: &str,

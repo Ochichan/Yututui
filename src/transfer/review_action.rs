@@ -41,11 +41,11 @@ pub struct ReviewReadyPlan {
 }
 
 #[derive(Debug, Clone)]
-struct SelectedCandidate {
-    key: String,
-    score: f32,
-    display: String,
-    score_breakdown: Option<MatchScoreBreakdown>,
+pub(super) struct SelectedCandidate {
+    pub(super) key: String,
+    pub(super) score: f32,
+    pub(super) display: String,
+    pub(super) score_breakdown: Option<MatchScoreBreakdown>,
 }
 
 pub fn accept_first_candidate(
@@ -272,7 +272,7 @@ fn row_order_to_index(cp: &Checkpoint, source_order: u32) -> anyhow::Result<usiz
     Ok(index)
 }
 
-fn ensure_not_written(cp: &Checkpoint, index: usize) -> anyhow::Result<()> {
+pub(super) fn ensure_not_written(cp: &Checkpoint, index: usize) -> anyhow::Result<()> {
     let entry = cp
         .tracks
         .get(index)
@@ -286,7 +286,7 @@ fn ensure_not_written(cp: &Checkpoint, index: usize) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn candidates_from_outcome(outcome: &Option<MatchOutcome>) -> Vec<SelectedCandidate> {
+pub(super) fn candidates_from_outcome(outcome: &Option<MatchOutcome>) -> Vec<SelectedCandidate> {
     match outcome {
         Some(MatchOutcome::Matched {
             key,
