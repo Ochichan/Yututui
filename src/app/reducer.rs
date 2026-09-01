@@ -5,7 +5,6 @@ use std::time::Instant;
 use super::*;
 
 impl App {
-    /// The reducer: apply one message, returning effects for the run loop to dispatch.
     /// Reducer entry point. Wraps [`Self::dispatch`] to centrally track when a transient
     /// `status` notification is set or cleared (any of the ~40 `self.status.text = …` sites), so
     /// the main loop can expire it after [`STATUS_TTL`] and bring the song title back —
@@ -129,7 +128,7 @@ impl App {
         if let crate::remote::proto::RemoteCommand::ExportPersonalData { directory, schema } = cmd {
             return self.start_personal_export(
                 PathBuf::from(directory),
-                schema.unwrap_or(2),
+                schema.unwrap_or(crate::remote::proto::DEFAULT_EXPORT_SCHEMA),
                 Some(reply),
             );
         }

@@ -1045,8 +1045,9 @@ impl Actor {
             || self.pending_compaction.is_some()
     }
 
-    /// Drain the queue: compact, deliver per healthy service in ≤50 chunks (compacting
-    /// after every successful chunk), and reschedule while anything stays pending.
+    /// Drain the queue: compact, deliver per healthy service in chunks of at most
+    /// [`SCROBBLE_BATCH_MAX`] (compacting after every successful chunk), and reschedule while
+    /// anything stays pending.
     async fn flush(&mut self) -> Result<(), DeliveryError> {
         self.next_flush = None;
         if self.pending_compaction.is_some() {
@@ -1309,9 +1310,9 @@ impl Actor {
     }
 }
 
-/// Deliver everything `kind` still owes, oldest first, ≤50 per call; strip the marker
-/// (and rewrite the file) after each successful chunk so a crash re-sends at most one
-/// chunk. Content rejections count as delivered.
+/// Deliver everything `kind` still owes, oldest first, in chunks of [`SCROBBLE_BATCH_MAX`]
+/// until nothing is pending; strip the marker (and rewrite the file) after each successful
+/// chunk so a crash re-sends at most one chunk. Content rejections count as delivered.
 async fn flush_service<S: ScrobbleService>(
     service: &S,
     entries: &mut Vec<QueueEntry>,

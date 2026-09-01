@@ -1,10 +1,27 @@
+//! Private import inbox under the download root:
+//! `<root>/.yututui-inbox/<session>/{incoming,complete,failed}`.
+//!
+//! The download root is user-writable and may be shared with other tools, so nothing here
+//! trusts a path it did not just verify: every directory component is re-checked as a real
+//! (non-link, non-reparse) directory that still resolves under the root, and files are opened
+//! without following symlinks. The checks are repeated at each boundary (prepare, validate,
+//! reclaim) rather than cached, because the tree can change between calls.
+//!
+//! Admission is bounded before a new import starts so a stalled or hostile inbox cannot grow
+//! without limit: retained artifacts are capped by count and bytes, and the inventory walk
+//! itself is capped by entries and depth so a deep or wide tree fails closed instead of hanging.
+
 use std::collections::VecDeque;
 use std::path::{Component, Path, PathBuf};
 
 use anyhow::{Context as _, Result, bail};
 
+const INBOX_DIR_NAME: &str = ".yututui-inbox";
+/// Raw downloads retained after commit for explicit recovery. Past either cap, new imports are
+/// refused until the user reviews the retained work.
 const RETAINED_FILE_CAP: usize = 512;
 const RETAINED_SOURCE_BYTES_CAP: u64 = 8 * 1024 * 1024 * 1024;
+/// Bounds on the inventory walk itself, so admission stays cheap even for a tampered tree.
 const RETAINED_SCAN_ENTRY_CAP: usize = 2_048;
 const RETAINED_SCAN_DEPTH_CAP: usize = 3;
 
@@ -31,7 +48,7 @@ pub(super) fn ensure_retained_import_capacity(root: &Path) -> Result<()> {
 }
 
 pub(super) fn retained_import_inventory(root: &Path) -> Result<RetainedImportInventory> {
-    let base = root.join(".yututui-inbox");
+    let base = root.join(INBOX_DIR_NAME);
     let metadata = match std::fs::symlink_metadata(&base) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -94,7 +111,7 @@ pub(super) fn reclaim_import_file(
     path: &Path,
     expected: crate::util::safe_fs::FileObjectId,
 ) -> Result<bool> {
-    let base = std::fs::canonicalize(root.join(".yututui-inbox"))?;
+    let base = std::fs::canonicalize(root.join(INBOX_DIR_NAME))?;
     let parent_path = path
         .parent()
         .context("retained import file has no parent")?;
@@ -127,7 +144,7 @@ pub(super) struct ImportInboxDirs {
 
 pub(super) fn import_inbox_dirs(root: &Path, session_id: &str) -> Result<ImportInboxDirs> {
     let session = safe_import_session_component(session_id)?;
-    let base = root.join(".yututui-inbox").join(session);
+    let base = root.join(INBOX_DIR_NAME).join(session);
     Ok(ImportInboxDirs {
         incoming: base.join("incoming"),
         complete: base.join("complete"),
@@ -139,7 +156,7 @@ pub(super) fn prepare_import_inbox_dirs(root: &Path, session_id: &str) -> Result
     let dirs = import_inbox_dirs(root, session_id)?;
     crate::util::safe_fs::ensure_dir_durable(root)
         .with_context(|| format!("create download root {}", root.display()))?;
-    let private_base = root.join(".yututui-inbox");
+    let private_base = root.join(INBOX_DIR_NAME);
     crate::util::safe_fs::ensure_private_dir_durable(&private_base)
         .with_context(|| format!("create private import root {}", private_base.display()))?;
     ensure_private_ignore_file(&private_base)?;
@@ -157,6 +174,10 @@ pub(super) fn prepare_import_inbox_dirs(root: &Path, session_id: &str) -> Result
     Ok(dirs)
 }
 
+/// Keep an empty `.ignore` marker in the private root as an ownership canary: it is created
+/// mode 0600 by this user and re-validated (empty, regular, owner-only on Unix) on every
+/// prepare, so a private root created or tampered with by someone else fails inbox
+/// preparation instead of being reused.
 fn ensure_private_ignore_file(private_base: &Path) -> Result<()> {
     let pinned =
         crate::util::safe_fs::PinnedDir::open_private_existing(private_base, Path::new(""))
@@ -282,7 +303,7 @@ pub(super) fn find_retryable_audio(directory: &Path, video_id: &str) -> Result<O
 }
 
 fn validate_import_inbox_dirs(root: &Path, dirs: &ImportInboxDirs) -> Result<()> {
-    let base = root.join(".yututui-inbox");
+    let base = root.join(INBOX_DIR_NAME);
     let canonical_base = std::fs::canonicalize(&base)
         .with_context(|| format!("canonicalize private import root {}", base.display()))?;
     for directory in [&dirs.incoming, &dirs.complete, &dirs.failed] {
@@ -352,7 +373,10 @@ fn is_link_or_reparse(metadata: &std::fs::Metadata) -> bool {
     #[cfg(windows)]
     {
         use std::os::windows::fs::MetadataExt as _;
-        metadata.file_type().is_symlink() || metadata.file_attributes() & 0x0000_0400 != 0
+        // Junctions and mount points are reparse points without being symlinks to `file_type()`.
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0000_0400;
+        metadata.file_type().is_symlink()
+            || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
     }
     #[cfg(not(windows))]
     {

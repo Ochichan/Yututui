@@ -84,11 +84,16 @@ pub(super) enum EvidenceField {
     ExplicitMetadata,
 }
 
+/// Confidence tiers for [`VersionEvidence::confidence`].
+pub(super) const EVIDENCE_EXPLICIT: u8 = 100;
+pub(super) const EVIDENCE_STRONG_PHRASE: u8 = 70;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct VersionEvidence {
     pub marker: &'static str,
     pub field: EvidenceField,
-    /// 100 = explicit structured/annotation evidence, 70 = strong phrase, lower values
+    /// [`EVIDENCE_EXPLICIT`] = explicit structured/annotation evidence,
+    /// [`EVIDENCE_STRONG_PHRASE`] = strong phrase, lower values
     /// are corroboration only and must not independently reject a candidate.
     pub confidence: u8,
 }
@@ -141,7 +146,7 @@ pub(super) fn parse_version_profile(
                 "clean_metadata"
             },
             field: EvidenceField::ExplicitMetadata,
-            confidence: 100,
+            confidence: EVIDENCE_EXPLICIT,
         });
     }
 
@@ -281,28 +286,28 @@ fn parse_title_markers(title: &TitleContext, profile: &mut VersionProfile) {
         "伴奏",
     ]) {
         profile.vocal = VocalKind::Instrumental;
-        push_evidence(profile, "instrumental", field, 100);
+        push_evidence(profile, "instrumental", field, EVIDENCE_EXPLICIT);
     } else if let Some(field) = title.version_context("inst") {
         // `inst` is intentionally annotation/suffix-only so `Instinct` and artists
         // containing those letters never trigger it.
         profile.vocal = VocalKind::Instrumental;
-        push_evidence(profile, "instrumental", field, 100);
+        push_evidence(profile, "instrumental", field, EVIDENCE_EXPLICIT);
     }
     if let Some(field) = first_context(&["karaoke", "노래방", "カラオケ"]) {
         profile.vocal = VocalKind::Karaoke;
-        push_evidence(profile, "karaoke", field, 100);
+        push_evidence(profile, "karaoke", field, EVIDENCE_EXPLICIT);
     }
     if let Some(field) = first_context(&["backing track", "accompaniment", "mr version"]) {
         profile.vocal = VocalKind::BackingTrack;
-        push_evidence(profile, "backing_track", field, 100);
+        push_evidence(profile, "backing_track", field, EVIDENCE_EXPLICIT);
     }
     if let Some(field) = first_context(&["acapella", "a cappella"]) {
         profile.vocal = VocalKind::Acapella;
-        push_evidence(profile, "acapella", field, 100);
+        push_evidence(profile, "acapella", field, EVIDENCE_EXPLICIT);
     }
     if let Some(field) = first_context(&["vocal removed", "vocal remover", "no vocals"]) {
         profile.vocal = VocalKind::VocalRemoved;
-        push_evidence(profile, "vocal_removed", field, 100);
+        push_evidence(profile, "vocal_removed", field, EVIDENCE_EXPLICIT);
     }
 
     // A lone "live" is only a recording marker in annotation/suffix form. Longer
@@ -314,61 +319,68 @@ fn parse_title_markers(title: &TitleContext, profile: &mut VersionProfile) {
     });
     if let Some(field) = live_field {
         profile.performance = PerformanceKind::Live;
-        push_evidence(profile, "live", field, 100);
+        push_evidence(profile, "live", field, EVIDENCE_EXPLICIT);
     }
     if let Some(field) = first_context(&["acoustic", "어쿠스틱", "アコースティック"]) {
         profile.performance = PerformanceKind::Acoustic;
-        push_evidence(profile, "acoustic", field, 100);
+        push_evidence(profile, "acoustic", field, EVIDENCE_EXPLICIT);
     }
     if let Some(field) = title.version_context("demo") {
         profile.performance = PerformanceKind::Demo;
-        push_evidence(profile, "demo", field, 100);
+        push_evidence(profile, "demo", field, EVIDENCE_EXPLICIT);
     }
     if let Some(field) = first_context(&["rehearsal", "practice recording"]) {
         profile.performance = PerformanceKind::Rehearsal;
-        push_evidence(profile, "rehearsal", field, 100);
+        push_evidence(profile, "rehearsal", field, EVIDENCE_EXPLICIT);
     }
 
+    // Mix markers form one exclusive chain, most specific first, so a compound marker such as
+    // "slowed reverb" is never filed under its plain prefix further down.
     if let Some(field) = first_context(&["slowed reverb", "slowed and reverb"]) {
         profile.mix = MixKind::SlowedReverb;
-        push_evidence(profile, "slowed_reverb", field, 100);
+        push_evidence(profile, "slowed_reverb", field, EVIDENCE_EXPLICIT);
     } else if title.raw_lower.contains("slowed + reverb")
         || title.raw_lower.contains("slowed+reverb")
     {
         profile.mix = MixKind::SlowedReverb;
-        push_evidence(profile, "slowed_reverb", EvidenceField::TitlePhrase, 100);
+        push_evidence(
+            profile,
+            "slowed_reverb",
+            EvidenceField::TitlePhrase,
+            EVIDENCE_EXPLICIT,
+        );
     } else if let Some(field) = first_context(&["sped up", "speed up", "spedup"]) {
         profile.mix = MixKind::SpedUp;
-        push_evidence(profile, "sped_up", field, 100);
+        push_evidence(profile, "sped_up", field, EVIDENCE_EXPLICIT);
     } else if let Some(field) = first_context(&["nightcore"]) {
         profile.mix = MixKind::Nightcore;
-        push_evidence(profile, "nightcore", field, 100);
+        push_evidence(profile, "nightcore", field, EVIDENCE_EXPLICIT);
     } else if let Some(field) = first_context(&["8d audio", "8d version"]) {
         profile.mix = MixKind::EightD;
-        push_evidence(profile, "8d", field, 100);
+        push_evidence(profile, "8d", field, EVIDENCE_EXPLICIT);
     } else if let Some(field) = title.version_context("8d") {
         profile.mix = MixKind::EightD;
-        push_evidence(profile, "8d", field, 100);
+        push_evidence(profile, "8d", field, EVIDENCE_EXPLICIT);
     } else if let Some(field) = first_context(&["bass boosted", "bass boost"]) {
         profile.mix = MixKind::BassBoosted;
-        push_evidence(profile, "bass_boosted", field, 100);
+        push_evidence(profile, "bass_boosted", field, EVIDENCE_EXPLICIT);
     } else if let Some(field) = title.version_context("lofi") {
         profile.mix = MixKind::Lofi;
-        push_evidence(profile, "lofi", field, 100);
+        push_evidence(profile, "lofi", field, EVIDENCE_EXPLICIT);
     } else if let Some(field) = title.version_context("slowed") {
         profile.mix = MixKind::Slowed;
-        push_evidence(profile, "slowed", field, 100);
+        push_evidence(profile, "slowed", field, EVIDENCE_EXPLICIT);
     } else if let Some(field) = first_context(&["radio edit", "radio version"]) {
         profile.mix = MixKind::RadioEdit;
         profile.edition.radio_edit = true;
-        push_evidence(profile, "radio_edit", field, 100);
+        push_evidence(profile, "radio_edit", field, EVIDENCE_EXPLICIT);
     } else if let Some(field) = first_context(&["extended mix", "extended version"]) {
         profile.mix = MixKind::Extended;
         profile.edition.extended = true;
-        push_evidence(profile, "extended", field, 100);
+        push_evidence(profile, "extended", field, EVIDENCE_EXPLICIT);
     } else if let Some(field) = first_context(&["remix", "리믹스", "リミックス"]) {
         profile.mix = MixKind::Remix;
-        push_evidence(profile, "remix", field, 100);
+        push_evidence(profile, "remix", field, EVIDENCE_EXPLICIT);
     }
 
     let cover_field = ["covered by", "cover by", "tribute to", "ai cover"]
@@ -383,27 +395,37 @@ fn parse_title_markers(title: &TitleContext, profile: &mut VersionProfile) {
         } else {
             AuthorshipKind::Cover
         };
-        push_evidence(profile, "cover", field, 100);
+        push_evidence(profile, "cover", field, EVIDENCE_EXPLICIT);
     } else if title.raw_lower.contains("歌ってみた") || title.raw_lower.contains("커버") {
         profile.authorship = AuthorshipKind::Cover;
-        push_evidence(profile, "cover", EvidenceField::TitlePhrase, 100);
+        push_evidence(
+            profile,
+            "cover",
+            EvidenceField::TitlePhrase,
+            EVIDENCE_EXPLICIT,
+        );
     }
 
     if title.raw_lower.contains("taylor's version") || title.raw_lower.contains("taylors version") {
         profile.edition.taylor_version = true;
-        push_evidence(profile, "taylor_version", EvidenceField::TitlePhrase, 100);
+        push_evidence(
+            profile,
+            "taylor_version",
+            EvidenceField::TitlePhrase,
+            EVIDENCE_EXPLICIT,
+        );
     }
     if let Some(field) = first_context(&["mono"]) {
         profile.edition.stereo = StereoKind::Mono;
-        push_evidence(profile, "mono", field, 100);
+        push_evidence(profile, "mono", field, EVIDENCE_EXPLICIT);
     } else if let Some(field) = first_context(&["stereo"]) {
         profile.edition.stereo = StereoKind::Stereo;
-        push_evidence(profile, "stereo", field, 100);
+        push_evidence(profile, "stereo", field, EVIDENCE_EXPLICIT);
     }
     if let Some((year, field)) = remaster_marker(title) {
         profile.edition.remastered = true;
         profile.edition.remaster_year = year;
-        push_evidence(profile, "remaster", field, 100);
+        push_evidence(profile, "remaster", field, EVIDENCE_EXPLICIT);
     }
     if first_context(&[
         "deluxe edition",
@@ -425,16 +447,26 @@ fn parse_title_markers(title: &TitleContext, profile: &mut VersionProfile) {
     ] {
         if let Some(field) = title.unambiguous_phrase(marker) {
             profile.edition.language_version = Some(language.to_owned());
-            push_evidence(profile, "language_version", field, 100);
+            push_evidence(profile, "language_version", field, EVIDENCE_EXPLICIT);
             break;
         }
     }
     if title.version_context("clean").is_some() || title.phrase("clean version") {
         profile.explicit = Some(false);
-        push_evidence(profile, "clean_title", EvidenceField::TitlePhrase, 70);
+        push_evidence(
+            profile,
+            "clean_title",
+            EvidenceField::TitlePhrase,
+            EVIDENCE_STRONG_PHRASE,
+        );
     } else if title.version_context("explicit").is_some() || title.phrase("explicit version") {
         profile.explicit = Some(true);
-        push_evidence(profile, "explicit_title", EvidenceField::TitlePhrase, 70);
+        push_evidence(
+            profile,
+            "explicit_title",
+            EvidenceField::TitlePhrase,
+            EVIDENCE_STRONG_PHRASE,
+        );
     }
 }
 
@@ -447,7 +479,7 @@ fn parse_supporting_markers(text: &str, field: EvidenceField, profile: &mut Vers
         if profile.authorship == AuthorshipKind::OriginalOrUnknown {
             profile.authorship = AuthorshipKind::Cover;
         }
-        push_evidence(profile, "cover_support", field, 70);
+        push_evidence(profile, "cover_support", field, EVIDENCE_STRONG_PHRASE);
     }
     if contains_phrase(&normalized, "karaoke") {
         profile.vocal = VocalKind::Karaoke;

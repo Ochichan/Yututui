@@ -12,6 +12,8 @@ use super::super::local_import_helpers::import_session_row_status_label;
 use super::super::*;
 use super::import_fingerprint::{local_import_files_fingerprint, stable_import_cache_key};
 
+/// Sentinel for a row whose track is no longer in the index: deliberately out of range so
+/// `tracks().get(idx)` misses and readers fall back to the uncached per-row path.
 const MISSING_LOCAL_TRACK_INDEX: usize = usize::MAX;
 const LOCAL_VISIBLE_VALUE_CACHE_CAP: usize = 512;
 const LOCAL_SELECTED_VALUE_CACHE_CAP: usize = 64;
@@ -302,6 +304,9 @@ impl App {
         }
     }
 
+    /// Classify a rows list by its first entry. Lists are produced one kind at a time, so the
+    /// first row decides; any row of another variant maps to [`MISSING_LOCAL_TRACK_INDEX`]
+    /// and simply takes the uncached path.
     fn local_rows_kind(&self, rows: &[crate::local::LocalRowId]) -> LocalRowsKind {
         let Some(first) = rows.first() else {
             return LocalRowsKind::Empty;

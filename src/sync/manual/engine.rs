@@ -207,11 +207,11 @@ impl<'a, T: VaultTransport + ?Sized> ManualSyncEngine<'a, T> {
             return Err(VaultError::RegistryMismatch);
         }
 
-        if membership_advanced {
-            // Membership operations and their new recipient set become visible atomically through
-            // the next signed checkpoint. Publishing a partial membership segment would make the
-            // batch reducer's registry invariant temporarily false.
-        } else {
+        // Membership operations and their new recipient set become visible atomically through
+        // the next signed checkpoint, so nothing is uploaded on a membership transition:
+        // publishing a partial membership segment would make the batch reducer's registry
+        // invariant temporarily false.
+        if !membership_advanced {
             let pending = pending_local_operations(
                 input.local_state,
                 &remote_state,

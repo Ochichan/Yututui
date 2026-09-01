@@ -1,4 +1,4 @@
-//! Settings-screen reducer methods, split out of the monolithic `app.rs` (behaviour-preserving).
+//! Settings-screen reducer arms: draft navigation, per-field value cycling, and save/cancel.
 use super::*;
 
 mod commit;
@@ -69,8 +69,6 @@ fn search_source_for(field: Field) -> Option<SearchSource> {
 }
 
 impl App {
-    // --- Settings screen ----------------------------------------------------
-
     /// The live settings draft, mutable. Valid **only** in `Mode::Settings`, where the reducer
     /// upholds the invariant that `self.settings` is `Some`: `open_settings` sets it on entry and
     /// `close_settings` clears it on exit, and every caller below is reached through a
@@ -586,7 +584,7 @@ impl App {
                     .cycled_source(s.draft.search.source, dir >= 0);
                 self.status.text = format!(
                     "{}: {}",
-                    t!("Search source", "검색 소스", "検索ソース"),
+                    Field::SearchSource.label(),
                     s.draft.search.source.label()
                 );
                 Vec::new()
@@ -599,7 +597,7 @@ impl App {
                     .cycled_streaming_source(s.draft.search.streaming_source, dir >= 0);
                 self.status.text = format!(
                     "{}: {}",
-                    t!("Streaming source", "추천 소스", "ストリーミングソース"),
+                    Field::StreamingSource.label(),
                     s.draft
                         .search
                         .normalized_streaming_source(s.draft.search.streaming_source)

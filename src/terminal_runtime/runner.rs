@@ -868,8 +868,8 @@ pub async fn run(
     // Drives the optional player-view animations at the configured frame rate - but only ticks
     // while `app.animation_active()` holds (player view, master + an effect enabled, a track
     // playing, focused unless the user opted out of focus-pausing). With every animation toggle
-    // off (the default) the guard is false, this timer never wakes, and the loop stays exactly as
-    // light as before.
+    // off (the default) the guard is false and this timer never wakes, so the loop pays nothing
+    // for animation support.
     // `Skip` drops missed frames so a busy moment can't build up a backlog of redraws. The period
     // is rebuilt below whenever the user changes the rate in Settings.
     let mut anim_fps = app.animation_tick_fps();
@@ -1337,9 +1337,10 @@ pub async fn run(
                 media.publish(snapshot);
             }
         }
-        // Remote elapsed remains outside the player fingerprint. Match origin's observer call
-        // gates so late subscriptions and follow-up snapshot ordering stay byte-for-byte stable;
-        // unchanged turns perform only borrowed comparisons and never build owned models.
+        // Remote elapsed remains outside the player fingerprint. Observation is gated on
+        // `should_observe` rather than on the fingerprint so late subscriptions and follow-up
+        // snapshot ordering stay byte-for-byte stable; unchanged turns perform only borrowed
+        // comparisons and never build owned models.
         if observer_plan != ObserverPlan::INERT
             && let Some(publisher) = publisher.as_mut()
             && publisher.should_observe(media_changed || media_enabled_changed)

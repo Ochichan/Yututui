@@ -5,10 +5,10 @@ use super::compaction::{
     operation_survives_checkpoint, retained_engagement_operation_ids, select_checkpoint,
 };
 use super::legacy::{
-    ENGAGEMENT_EVENTS_MAX, FAVORITES_MAX, HISTORY_MAX, LegacyPlayEvent, LegacyPlaylist,
-    LegacyPlaylistEntry, LegacyProjection, LegacySignals, LegacyStation, LegacyTrackSignal,
-    PLAYLIST_ENTRIES_MAX, PLAYLISTS_MAX, RADIO_MAX, SIGNAL_TRACKS_MAX, rating_from_legacy,
-    sha256_hex,
+    AVOID_ARTISTS_MAX, ENGAGEMENT_EVENTS_MAX, FAVORITES_MAX, HISTORY_MAX, LegacyPlayEvent,
+    LegacyPlaylist, LegacyPlaylistEntry, LegacyProjection, LegacySignals, LegacyStation,
+    LegacyTrackSignal, PLAYLIST_ENTRIES_MAX, PLAYLISTS_MAX, RADIO_MAX, SIGNAL_TRACKS_MAX,
+    rating_from_legacy, sha256_hex,
 };
 use super::model::{derive_device_registry, operation_set};
 use super::{
@@ -462,7 +462,7 @@ pub(crate) fn project_at(
         avoid_artist_keys: avoided
             .into_iter()
             .filter_map(|(artist, register)| register.value.then_some(artist))
-            .take(200)
+            .take(AVOID_ARTISTS_MAX)
             .collect(),
     };
     enforce_projection_caps(&mut legacy);
@@ -1000,6 +1000,9 @@ fn enforce_projection_caps(legacy: &mut LegacyProjection) {
         legacy.signals.play_log.drain(..remove);
     }
     if legacy.signals.tracks.len() > SIGNAL_TRACKS_MAX {
+        // Eviction order: never-disliked tracks first, oldest play first among them. A dislike is
+        // a deliberate signal the station must keep honouring, so disliked entries outlive stale
+        // neutral plays.
         let mut eviction = legacy
             .signals
             .tracks

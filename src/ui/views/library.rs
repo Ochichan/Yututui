@@ -325,6 +325,10 @@ fn render_list(
             .library_scroll
             .resolve(cursor, area.height, len, crate::ui::scroll::SCROLLOFF);
 
+    // Two always-rendered 2-cell prefixes ("▶ " / "♥ ") so text never shifts as the cursor
+    // or favourite state changes, plus one trailing blank cell of breathing room.
+    const ROW_GUTTER: usize = 4;
+    const ROW_RIGHT_MARGIN: usize = 1;
     let body_w = area.width.saturating_sub(del_w) as usize;
     let render_rows = app.library_render_window(start, visible);
     for (vis, song) in render_rows.into_iter().enumerate() {
@@ -341,23 +345,22 @@ fn render_list(
             "  "
         };
         let text = app.library_row_text_at(i, song);
-        // The cursor row marquees when clipped (the 4-cell marker+heart gutter stays
-        // put) so the full text stays readable even in a sliver-narrow window; every
-        // other row hard-truncates as before.
+        // The cursor row marquees when clipped (the gutter stays put) so the full text stays
+        // readable even in a sliver-narrow window; every other row hard-truncates.
         let text = if i == cursor {
             std::borrow::Cow::Owned(crate::ui::anim::selected_marquee(
                 app,
                 ScrollSurface::Library,
                 i,
                 &text,
-                body_w.saturating_sub(5),
+                body_w.saturating_sub(ROW_GUTTER + ROW_RIGHT_MARGIN),
             ))
         } else {
             std::borrow::Cow::Borrowed(text.as_ref())
         };
         let body = crate::ui::text::truncate_owned_to_width(
             format!("{marker}{heart}{text}"),
-            body_w.saturating_sub(1),
+            body_w.saturating_sub(ROW_RIGHT_MARGIN),
         );
 
         let base = if selected {

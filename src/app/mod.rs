@@ -479,7 +479,7 @@ pub struct App {
 
     /// Last-rendered mouse hit map: the clickable button rects and the seekbar rect views
     /// publish each frame, kept behind [`HitMap`]'s method API so the reducer and views never
-    /// touch the raw cells (extracted from [`RenderBridges`]).
+    /// touch the raw cells.
     pub hits: HitMap,
 
     /// When the last radio re-sync (seek-to-live or reconnect) was issued. A second

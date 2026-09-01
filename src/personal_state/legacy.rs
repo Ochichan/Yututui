@@ -10,6 +10,7 @@ use super::{
 };
 
 pub(crate) const FAVORITES_MAX: usize = 999;
+pub(crate) const AVOID_ARTISTS_MAX: usize = 200;
 pub(crate) const HISTORY_MAX: usize = 999;
 pub(crate) const RADIO_MAX: usize = 999;
 pub(crate) const PLAYLISTS_MAX: usize = 999;

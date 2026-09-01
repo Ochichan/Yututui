@@ -386,10 +386,15 @@ pub(crate) fn reconcile_all_pending() -> anyhow::Result<ArtifactMoveRecoveryRepo
     Ok(report)
 }
 
+/// Stage filenames carry a prefix of the SHA-256 operation key: 16 hex chars (64 bits) keeps
+/// them short while leaving collisions among the few concurrent stages in one directory
+/// practically impossible; recovery re-derives the same prefix to recognise its own stages.
+const STAGE_TAG_CHARS: usize = 16;
+
 fn prepare_transaction(request: ArtifactMoveRequest) -> anyhow::Result<ArtifactMoveTxn> {
     let operation_key = transaction_key(&request.session_id, &request.row_id, request.source_order);
     let stage_tag = operation_key
-        .get(..16)
+        .get(..STAGE_TAG_CHARS)
         .context("artifact operation key is too short")?;
     reject_parent_components(&request.audio_from)?;
     reject_parent_components(&request.audio_to)?;
@@ -962,7 +967,7 @@ fn validate_transaction(txn: &ArtifactMoveTxn) -> anyhow::Result<()> {
     validate_identity_components(&txn.session_id, &txn.row_id, txn.source_order)?;
     let operation_key = transaction_key(&txn.session_id, &txn.row_id, txn.source_order);
     let stage_tag = operation_key
-        .get(..16)
+        .get(..STAGE_TAG_CHARS)
         .context("artifact operation key is too short")?;
     if txn.audio_stage_name != format!(".ytt-stage-{stage_tag}-audio")
         || txn.sidecar_stage_name != format!(".ytt-stage-{stage_tag}-sidecar")

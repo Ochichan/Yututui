@@ -1,11 +1,9 @@
 //! Central keybinding map: the single source of truth for which key triggers which
 //! semantic [`Action`], per input [`KeyContext`].
 //!
-//! Key handling used to be inline `match k.code` literals scattered across the five
-//! `on_key_*` methods, and the on-screen hints were hand-synced string constants. This
-//! module decouples *intent* (`Action`) from the physical key ([`Chord`]): handlers
-//! resolve an `Action` for their context and act on it, while footers and the `?`
-//! cheat-sheet render the bound chords back out — so hints can never drift from behavior.
+//! Intent (`Action`) is decoupled from the physical key ([`Chord`]): handlers resolve an
+//! `Action` for their context and act on it, while footers and the `?` cheat-sheet render
+//! the bound chords back out — so on-screen hints can never drift from behavior.
 //!
 //! Bindings are user-remappable (the Settings → Keys tab) and persisted to `config.json`
 //! as `"<context>.<action>" -> "<chord>"`, storing only entries that differ from the

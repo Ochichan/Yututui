@@ -583,10 +583,10 @@ impl MediaSession {
 
     /// Rebase only the scalar playback clock after a `time-pos` update.
     ///
-    /// `origin/main` handed every progress snapshot to the platform backend even though the
-    /// snapshot diff had no changed facets. Linux and Windows used those calls to correct their
-    /// interpolated clocks. Keep that observable cadence while reusing the retained metadata, so
-    /// a progress turn neither rebuilds nor clones track strings, paths, artwork, or capabilities.
+    /// Every progress sample must still reach the platform backend even when no snapshot facet
+    /// changed: Linux and Windows interpolate their own clocks and use these calls to correct
+    /// them. Reusing the retained metadata keeps that cadence while a progress turn neither
+    /// rebuilds nor clones track strings, paths, artwork, or capabilities.
     /// Returns `true` only when the platform has not activated yet and the caller must publish one
     /// full current snapshot. This preserves lazy first-play activation on macOS/Windows.
     pub fn rebase_position(&mut self, position: f64, captured_at: Instant) -> bool {

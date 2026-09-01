@@ -485,6 +485,8 @@ impl DaemonEngine {
                 match confirmation.confirm_bridge_durable() {
                     Ok(()) | Err(crate::util::delivery::DeliveryError::Busy) => return,
                     Err(crate::util::delivery::DeliveryError::Closed) => {
+                        // The marker remains in its Pending state and will replay against the
+                        // bridge's durable row on restart.
                         self.open_subsonic_pending_scrobbles.pop_front();
                         continue;
                     }
@@ -539,6 +541,8 @@ impl DaemonEngine {
             match confirmation.confirm_source_acknowledged() {
                 Ok(()) | Err(crate::util::delivery::DeliveryError::Busy) => return,
                 Err(crate::util::delivery::DeliveryError::Closed) => {
+                    // The bridge already knows the source is acknowledged. The intermediate
+                    // journal marker will replay only this idempotent finalization after restart.
                     self.open_subsonic_pending_scrobbles.pop_front();
                     continue;
                 }

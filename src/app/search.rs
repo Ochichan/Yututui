@@ -164,19 +164,14 @@ impl App {
                     }
                     return Vec::new();
                 }
+                let action = self.keymap.action(KeyContext::SearchInput, k.into());
                 // Ctrl+A selects the whole query (desktop-style); idempotent re-select.
-                if matches!(
-                    self.keymap.action(KeyContext::SearchInput, k.into()),
-                    Some(Action::SelectAll)
-                ) {
+                if action == Some(Action::SelectAll) {
                     self.search.select_all = !self.search.input.is_empty();
                     self.dirty = true;
                     return Vec::new();
                 }
-                if matches!(
-                    self.keymap.action(KeyContext::SearchInput, k.into()),
-                    Some(Action::ToggleSearchSourceMenu)
-                ) {
+                if action == Some(Action::ToggleSearchSourceMenu) {
                     return self.toggle_search_source_menu();
                 }
                 // With the query selected, the next key consumes the selection: a character
@@ -231,10 +226,7 @@ impl App {
                     }
                     return Vec::new();
                 }
-                match self.keymap.action(KeyContext::SearchInput, k.into()) {
-                    Some(Action::ToggleSearchSourceMenu) => {
-                        return self.toggle_search_source_menu();
-                    }
+                match action {
                     Some(Action::ToggleSearchKind) => {
                         return self.toggle_search_kind();
                     }
@@ -923,7 +915,7 @@ impl App {
         self.status.kind = StatusKind::Info;
         self.status.text = format!(
             "{}: {}",
-            t!("Search source", "검색 소스", "検索ソース"),
+            crate::settings::Field::SearchSource.label(),
             source.label()
         );
         self.dirty = true;

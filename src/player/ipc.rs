@@ -415,7 +415,7 @@ pub(super) async fn run_actor(input: ActorInput) {
     }
 
     // Subscribe to the properties the player view needs. IDs are arbitrary but stable.
-    for (id, prop) in [
+    let observed_properties = [
         (1u64, "time-pos"),
         (2, "duration"),
         (3, "pause"),
@@ -441,15 +441,15 @@ pub(super) async fn run_actor(input: ActorInput) {
         (14, "partially-seekable"),
         (15, "cache-speed"),
         (16, "paused-for-cache"),
-        // Audio-output observation IDs follow the seek/cache range. Dynamic commands start
-        // above 19 so replies can never collide with a property subscription.
+        // Audio-output observation IDs follow the seek/cache range.
         (17, "audio-device-list"),
         (18, "audio-device"),
         (19, "current-ao"),
         // Chapter boundaries for the long-form player (`!`/`@` jumps + seekbar ticks). mpv
         // re-emits this per file, so an empty list reliably clears the previous file's markers.
         (20, "chapter-list"),
-    ] {
+    ];
+    for &(id, prop) in &observed_properties {
         remember_pending_command(&mut state, id, format!("observe {prop}"));
         if let Err(error) = write_json(&conn, &proto::cmd_observe(id, prop)).await {
             let exit = transport_exit_or_shutdown(
@@ -467,7 +467,13 @@ pub(super) async fn run_actor(input: ActorInput) {
 
     let mut reader = BufReader::new(&conn);
     let mut line: Vec<u8> = Vec::new();
-    let mut request_id: u64 = 19;
+    // Dynamic command ids continue above every observation id, so a command reply can never
+    // share a pending-table key with a property subscription.
+    let mut request_id: u64 = observed_properties
+        .iter()
+        .map(|&(id, _)| id)
+        .max()
+        .unwrap_or(0);
     let mut validating_load: Option<PendingLoadValidation> = None;
     let mut pending_load_boundary: Option<PendingLoadBoundary> = None;
     // This barrier is process-global rather than load-owned. A newer Load/Stop may supersede

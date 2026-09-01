@@ -381,7 +381,7 @@ fn without_optional_why_gem(mut parts: StatusLineParts) -> StatusLineParts {
     parts
 }
 
-/// Build the transport status-line as `(target, text)` segments from app state — split out
+/// Build the transport status-line as `(target, text)` segments from app state, kept apart
 /// from [`render_status_line`] so the conditional assembly (queue position, rating, shuffle /
 /// repeat, speed, EQ, streaming mode, download tag) is unit-testable without a frame
 /// buffer. A `None` target is a static label/spacing; spacing is its own label so a clickable
@@ -459,7 +459,10 @@ pub(in crate::ui) fn render_controls(frame: &mut Frame, app: &App, area: Rect, a
     let beginner_buttons = app
         .beginner_labels_enabled()
         .then(|| beginner::volume_buttons(app));
-    let tight_transport_width = 13u16;
+    // The transport strip is three 3-cell glyph buttons plus the two gaps between them and
+    // the gap before the volume cluster: 9 + 1 + 1 + 2 tight, 9 + 3 + 3 + 6 roomy.
+    const TIGHT_TRANSPORT_WIDTH: u16 = 13;
+    const ROOMY_TRANSPORT_WIDTH: u16 = 21;
     let cluster_width = |label: &str, down: &str, up: &str| {
         buttons::text_width(label)
             .saturating_add(buttons::text_width(down))
@@ -467,7 +470,7 @@ pub(in crate::ui) fn render_controls(frame: &mut Frame, app: &App, area: Rect, a
             .saturating_add(buttons::text_width(up))
     };
     let fits_tight = |label: &str, down: &str, up: &str| {
-        tight_transport_width.saturating_add(cluster_width(label, down, up)) <= area.width
+        TIGHT_TRANSPORT_WIDTH.saturating_add(cluster_width(label, down, up)) <= area.width
     };
     let (volume_label, volume_down, volume_up) = match beginner_buttons.as_ref() {
         Some((down, up)) if fits_tight(beginner_volume_label, down, up) => {
@@ -478,7 +481,8 @@ pub(in crate::ui) fn render_controls(frame: &mut Frame, app: &App, area: Rect, a
         }
         _ => (compact_volume_label, plain_down, plain_up),
     };
-    let full = 21u16.saturating_add(cluster_width(volume_label, volume_down, volume_up));
+    let full =
+        ROOMY_TRANSPORT_WIDTH.saturating_add(cluster_width(volume_label, volume_down, volume_up));
     let (gap, vol_gap) = if full <= area.width {
         ("   ", "      ")
     } else {

@@ -504,8 +504,13 @@ where
                 } else {
                     vec![streaming_source]
                 };
+                // With every source enabled, split the budget evenly but never below a handful
+                // per source, so a provider with thin results still contributes variety.
+                const MIN_PER_SOURCE_CANDIDATES: usize = 4;
                 let per_source_limit = if streaming_source == SearchSource::All {
-                    (limit / selected_sources.len().max(1)).max(4).min(limit)
+                    (limit / selected_sources.len().max(1))
+                        .max(MIN_PER_SOURCE_CANDIDATES)
+                        .min(limit)
                 } else {
                     limit
                 };

@@ -114,8 +114,8 @@ pub fn parse_line(line: &str) -> Option<MpvIncoming> {
                     .unwrap_or_default()
                     .to_owned();
                 // Move potentially large demuxer-cache-state payloads out of the parsed
-                // object. Cloning here used to duplicate every seekable-ranges entry on the
-                // watchdog path before the pending request could decide how much it needed.
+                // object instead of cloning: the watchdog path would otherwise duplicate every
+                // seekable-ranges entry before the pending request decides how much it needs.
                 let data = v.as_object_mut().and_then(|object| object.remove("data"));
                 Some(MpvIncoming::CommandReply {
                     request_id,

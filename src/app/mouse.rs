@@ -8,8 +8,7 @@ mod scrollbar;
 /// The last-rendered mouse hit map: the clickable button rects views publish each frame plus
 /// the seekbar's screen rect. Kept behind a small method API so the reducer and views never
 /// touch the raw cells. Interior-mutable throughout because the render pass only holds `&App`
-/// yet must record this frame's geometry for the next event to hit-test against (extracted
-/// from [`RenderBridges`], behaviour-preserving).
+/// yet must record this frame's geometry for the next event to hit-test against.
 #[derive(Default)]
 pub struct HitMap {
     /// Screen rect of the seekbar, written by the player view each render so a mouse click can

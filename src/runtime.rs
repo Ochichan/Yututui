@@ -466,8 +466,8 @@ impl From<RuntimeEvent> for Msg {
                 ..
             }) => {
                 // Session ops are intercepted in the run loop (the Publisher's owner
-                // lane) before Msg conversion — the reducer never sees sessions
-                //. Reaching here means a host forgot the intercept.
+                // lane) before Msg conversion — the reducer never sees sessions.
+                // Reaching here means a host forgot the intercept.
                 unreachable!("SessionSubscribe must be handled in the owner loop, not the reducer")
             }
             RuntimeEvent::Resolver(crate::resolver::ResolverEvent::Resolved {

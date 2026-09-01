@@ -25,6 +25,17 @@ pub use crate::track_identity::{normalize, normalize_stripped, similarity};
 
 use super::{ImportMediaKind, MatchPolicy};
 
+// Seed-score weights. They sum to 1.0 so a perfect candidate scores exactly 1 and the
+// `MatchConfig` accept/margin thresholds stay comparable across releases; each term has a
+// distinct semantic role so missing metadata cannot be mistaken for negative evidence.
+const W_TITLE: f32 = 0.42;
+const W_ARTIST: f32 = 0.23;
+const W_ARTIST_COVERAGE: f32 = 0.08;
+const W_DURATION: f32 = 0.12;
+const W_ALBUM_YEAR: f32 = 0.08;
+const W_VERSION_AGREEMENT: f32 = 0.05;
+const W_TRACK_NUMBER: f32 = 0.02;
+
 mod identity;
 mod music_video;
 mod quality;
@@ -789,17 +800,15 @@ pub fn score_candidate_breakdown_with_config(
         (Some(_), Some(_)) => 0.0,
         _ => 0.5,
     };
-    let album_bonus = 0.08 * album_year;
-    let track_number_bonus = 0.02 * track_number;
+    let album_bonus = W_ALBUM_YEAR * album_year;
+    let track_number_bonus = W_TRACK_NUMBER * track_number;
 
-    // Bounded seed model.  Each term has a distinct semantic role so missing metadata
-    // cannot be mistaken for negative evidence and quality adjustments remain auditable.
-    let raw_total = (0.42 * title
-        + 0.23 * artist
-        + 0.08 * artist_coverage
-        + 0.12 * duration
+    let raw_total = (W_TITLE * title
+        + W_ARTIST * artist
+        + W_ARTIST_COVERAGE * artist_coverage
+        + W_DURATION * duration
         + album_bonus
-        + 0.05 * version_agreement
+        + W_VERSION_AGREEMENT * version_agreement
         + track_number_bonus)
         .clamp(0.0, 1.0);
     let mut gate = identity_gate(input, cand);
@@ -808,18 +817,15 @@ pub fn score_candidate_breakdown_with_config(
     }
     let delta_secs = duration_delta_secs(input, cand);
     if let Some(delta) = delta_secs.map(i32::unsigned_abs) {
-        if delta > hard_duration_limit(input)
-            && !(delta_secs.is_some_and(|signed| signed > 0)
-                && is_official_video_presentation(cand)
-                && delta <= official_video_runtime_limit(input))
-        {
+        // An official video presentation is allowed a one-sided runtime difference up to
+        // `official_video_runtime_limit` (intros, credits, end cards), exempt from both limits.
+        let official_runtime_exempt = delta_secs.is_some_and(|signed| signed > 0)
+            && is_official_video_presentation(cand)
+            && delta <= official_video_runtime_limit(input);
+        if delta > hard_duration_limit(input) && !official_runtime_exempt {
             gate.hard_reject = Some("duration_mismatch");
             gate.reasons.push("duration_mismatch");
-        } else if delta > soft_duration_limit(input)
-            && !(delta_secs.is_some_and(|signed| signed > 0)
-                && is_official_video_presentation(cand)
-                && delta <= official_video_runtime_limit(input))
-        {
+        } else if delta > soft_duration_limit(input) && !official_runtime_exempt {
             gate.accept_blocked = true;
             gate.reasons.push("duration_mismatch");
         } else if delta > soft_duration_limit(input) {
