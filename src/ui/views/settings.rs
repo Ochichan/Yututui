@@ -29,7 +29,6 @@ use crate::app::{App, MouseTarget, ScrollSurface};
 use crate::config::{
     FPS_DEFAULT, FPS_MAX, FPS_MIN, SEEK_SECONDS_MAX, SEEK_SECONDS_MIN, SPEED_MAX, SPEED_MIN,
 };
-use crate::i18n::Language;
 use crate::keymap::{self, Action, KeyContext};
 use crate::settings::{BAND_GAIN_MAX, BAND_GAIN_MIN};
 use crate::settings::{Field, FieldKind, SettingsState, SettingsTab};
@@ -38,6 +37,120 @@ use crate::theme::ThemeConfig;
 use crate::theme::ThemeRole as R;
 use crate::ui::buttons;
 use crate::ui::text::pad_to_width;
+
+/// Footer hint for the Settings screen. Reflects the *committed* keymap, since that's what
+/// operates the screen until the edits are saved.
+fn footer_hint(app: &App, st: &SettingsState) -> String {
+    let k = |a| {
+        app.keymap
+            .label_for_display(KeyContext::Settings, a, app.retro_mode())
+    };
+    let save_quit = t!("save + quit", "저장하고 닫기", "保存して閉じる");
+    let switch_tab = t!("switch tab", "탭 전환", "タブ切替");
+    let reset = t!("reset", "초기화", "リセット");
+    if st.editing_text && matches!(st.current_field(), Some(Field::ThemeColor(_))) {
+        t!(
+            "type #RRGGBB or none  ·  Enter save  ·  Backspace delete",
+            "#RRGGBB 또는 none 입력  ·  Enter 저장  ·  Backspace 삭제",
+            "#RRGGBB または none を入力  ·  Enter 保存  ·  Backspace 削除"
+        )
+        .to_owned()
+    } else if st.editing_text {
+        // While typing a path/key, Enter or Esc both commit *and* persist it immediately,
+        // so the value can't be lost by leaving the screen later.
+        t!(
+            "type value  ·  Enter or Esc save  ·  Backspace delete",
+            "값 입력  ·  Enter 또는 Esc 저장  ·  Backspace 삭제",
+            "値を入力  ·  Enter または Esc 保存  ·  Backspace 削除"
+        )
+        .to_owned()
+    } else if matches!(st.current_field(), Some(Field::ExportPersonalData)) {
+        format!(
+            "{} {}",
+            k(Action::Confirm),
+            t!(
+                "export · unencrypted JSON · includes private listening history",
+                "내보내기 · 암호화되지 않은 JSON · 개인 감상 기록 포함",
+                "エクスポート · 暗号化されないJSON · 個人の再生履歴を含む"
+            )
+        )
+    } else if st.tab == SettingsTab::Sync {
+        format!(
+            "{}/{} {}  ·  {} {}  ·  {} {}  ·  {} {}",
+            k(Action::MoveUp),
+            k(Action::MoveDown),
+            t!("select", "선택", "選択"),
+            k(Action::Confirm),
+            t!("open", "열기", "開く"),
+            k(Action::FocusNext),
+            switch_tab,
+            k(Action::SettingsCancel),
+            t!("close", "닫기", "閉じる"),
+        )
+    } else if st.tab == SettingsTab::Keys {
+        let mouse_row = st.row >= keymap::editable_entries().len();
+        let rebind = if mouse_row {
+            format!(
+                "{}/{} {} {} {}",
+                k(Action::ChangeDecrease),
+                k(Action::ChangeIncrease),
+                t!("or", "또는", "または"),
+                k(Action::Confirm),
+                t!("change", "변경", "変更"),
+            )
+        } else {
+            format!(
+                "{} {}",
+                k(Action::Confirm),
+                t!("rebind", "재설정", "再割り当て")
+            )
+        };
+        format!(
+            "{}/{} {}  ·  {}  ·  {} {}  ·  {} {}  ·  {} {}",
+            k(Action::MoveUp),
+            k(Action::MoveDown),
+            t!("select", "선택", "選択"),
+            rebind,
+            k(Action::DeleteChar),
+            reset,
+            k(Action::FocusNext),
+            switch_tab,
+            k(Action::SettingsCancel),
+            save_quit,
+        )
+    } else if matches!(st.current_field(), Some(Field::ThemeColor(_))) {
+        format!(
+            "{}/{} {}  ·  {} {}  ·  {} {}  ·  {} {}  ·  {} {}",
+            k(Action::MoveUp),
+            k(Action::MoveDown),
+            t!("color", "색상", "カラー"),
+            k(Action::Confirm),
+            t!("edit", "편집", "編集"),
+            k(Action::DeleteChar),
+            reset,
+            k(Action::FocusNext),
+            switch_tab,
+            k(Action::SettingsCancel),
+            save_quit,
+        )
+    } else {
+        format!(
+            "{}/{} {}  ·  {}/{} {}  ·  {} {}  ·  {} {}  ·  {} {}",
+            k(Action::MoveUp),
+            k(Action::MoveDown),
+            t!("field", "이동", "移動"),
+            k(Action::ChangeDecrease),
+            k(Action::ChangeIncrease),
+            t!("change", "변경", "変更"),
+            k(Action::Confirm),
+            t!("edit/toggle", "편집/전환", "編集/切替"),
+            k(Action::FocusNext),
+            switch_tab,
+            k(Action::SettingsCancel),
+            save_quit,
+        )
+    }
+}
 
 pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     // No screen without state — but render defensively rather than panic.
@@ -98,180 +211,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     }
     crate::ui::control_box::render_docked(frame, app, rows[3]);
 
-    // Footer reflects the *committed* keymap, since that's what operates the screen until
-    // the edits are saved.
-    let k = |a| {
-        app.keymap
-            .label_for_display(KeyContext::Settings, a, app.retro_mode())
-    };
-    let lang = crate::i18n::current();
-    let help_text = if st.editing_text && matches!(st.current_field(), Some(Field::ThemeColor(_))) {
-        t!(
-            "type #RRGGBB or none  ·  Enter save  ·  Backspace delete",
-            "#RRGGBB 또는 none 입력  ·  Enter 저장  ·  Backspace 삭제",
-            "#RRGGBB または none を入力  ·  Enter 保存  ·  Backspace 削除"
-        )
-        .to_owned()
-    } else if st.editing_text {
-        // While typing a path/key, Enter or Esc both commit *and* persist it immediately,
-        // so the value can't be lost by leaving the screen later.
-        t!(
-            "type value  ·  Enter or Esc save  ·  Backspace delete",
-            "값 입력  ·  Enter 또는 Esc 저장  ·  Backspace 삭제",
-            "値を入力  ·  Enter または Esc 保存  ·  Backspace 削除"
-        )
-        .to_owned()
-    } else if matches!(st.current_field(), Some(Field::ExportPersonalData)) {
-        format!(
-            "{} {}",
-            k(Action::Confirm),
-            t!(
-                "export · unencrypted JSON · includes private listening history",
-                "내보내기 · 암호화되지 않은 JSON · 개인 감상 기록 포함",
-                "エクスポート · 暗号化されないJSON · 個人の再生履歴を含む"
-            )
-        )
-    } else if st.tab == SettingsTab::Sync {
-        format!(
-            "{}/{} {}  ·  {} {}  ·  {} {}  ·  {} {}",
-            k(Action::MoveUp),
-            k(Action::MoveDown),
-            t!("select", "선택", "選択"),
-            k(Action::Confirm),
-            t!("open", "열기", "開く"),
-            k(Action::FocusNext),
-            t!("switch tab", "탭 전환", "タブ切替"),
-            k(Action::SettingsCancel),
-            t!("close", "닫기", "閉じる"),
-        )
-    } else if st.tab == SettingsTab::Keys {
-        let mouse_row = st.row >= keymap::editable_entries().len();
-        match (lang, mouse_row) {
-            (Language::Korean, true) => format!(
-                "{}/{} 선택  ·  {}/{} 또는 {} 변경  ·  {} 초기화  ·  {} 탭 전환  ·  {} 저장하고 닫기",
-                k(Action::MoveUp),
-                k(Action::MoveDown),
-                k(Action::ChangeDecrease),
-                k(Action::ChangeIncrease),
-                k(Action::Confirm),
-                k(Action::DeleteChar),
-                k(Action::FocusNext),
-                k(Action::SettingsCancel),
-            ),
-            (Language::Korean, false) => format!(
-                "{}/{} 선택  ·  {} 재설정  ·  {} 초기화  ·  {} 탭 전환  ·  {} 저장하고 닫기",
-                k(Action::MoveUp),
-                k(Action::MoveDown),
-                k(Action::Confirm),
-                k(Action::DeleteChar),
-                k(Action::FocusNext),
-                k(Action::SettingsCancel),
-            ),
-            (Language::Japanese, true) => format!(
-                "{}/{} 選択  ·  {}/{} または {} 変更  ·  {} リセット  ·  {} タブ切替  ·  {} 保存して閉じる",
-                k(Action::MoveUp),
-                k(Action::MoveDown),
-                k(Action::ChangeDecrease),
-                k(Action::ChangeIncrease),
-                k(Action::Confirm),
-                k(Action::DeleteChar),
-                k(Action::FocusNext),
-                k(Action::SettingsCancel),
-            ),
-            (Language::Japanese, false) => format!(
-                "{}/{} 選択  ·  {} 再割り当て  ·  {} リセット  ·  {} タブ切替  ·  {} 保存して閉じる",
-                k(Action::MoveUp),
-                k(Action::MoveDown),
-                k(Action::Confirm),
-                k(Action::DeleteChar),
-                k(Action::FocusNext),
-                k(Action::SettingsCancel),
-            ),
-            (_, true) => format!(
-                "{}/{} select  ·  {}/{} or {} change  ·  {} reset  ·  {} switch tab  ·  {} save + quit",
-                k(Action::MoveUp),
-                k(Action::MoveDown),
-                k(Action::ChangeDecrease),
-                k(Action::ChangeIncrease),
-                k(Action::Confirm),
-                k(Action::DeleteChar),
-                k(Action::FocusNext),
-                k(Action::SettingsCancel),
-            ),
-            (_, false) => format!(
-                "{}/{} select  ·  {} rebind  ·  {} reset  ·  {} switch tab  ·  {} save + quit",
-                k(Action::MoveUp),
-                k(Action::MoveDown),
-                k(Action::Confirm),
-                k(Action::DeleteChar),
-                k(Action::FocusNext),
-                k(Action::SettingsCancel),
-            ),
-        }
-    } else if matches!(st.current_field(), Some(Field::ThemeColor(_))) {
-        match lang {
-            Language::Korean => format!(
-                "{}/{} 색상  ·  {} 편집  ·  {} 초기화  ·  {} 탭 전환  ·  {} 저장하고 닫기",
-                k(Action::MoveUp),
-                k(Action::MoveDown),
-                k(Action::Confirm),
-                k(Action::DeleteChar),
-                k(Action::FocusNext),
-                k(Action::SettingsCancel),
-            ),
-            Language::Japanese => format!(
-                "{}/{} カラー  ·  {} 編集  ·  {} リセット  ·  {} タブ切替  ·  {} 保存して閉じる",
-                k(Action::MoveUp),
-                k(Action::MoveDown),
-                k(Action::Confirm),
-                k(Action::DeleteChar),
-                k(Action::FocusNext),
-                k(Action::SettingsCancel),
-            ),
-            _ => format!(
-                "{}/{} color  ·  {} edit  ·  {} reset  ·  {} switch tab  ·  {} save + quit",
-                k(Action::MoveUp),
-                k(Action::MoveDown),
-                k(Action::Confirm),
-                k(Action::DeleteChar),
-                k(Action::FocusNext),
-                k(Action::SettingsCancel),
-            ),
-        }
-    } else {
-        match lang {
-            Language::Korean => format!(
-                "{}/{} 이동  ·  {}/{} 변경  ·  {} 편집/전환  ·  {} 탭 전환  ·  {} 저장하고 닫기",
-                k(Action::MoveUp),
-                k(Action::MoveDown),
-                k(Action::ChangeDecrease),
-                k(Action::ChangeIncrease),
-                k(Action::Confirm),
-                k(Action::FocusNext),
-                k(Action::SettingsCancel),
-            ),
-            Language::Japanese => format!(
-                "{}/{} 移動  ·  {}/{} 変更  ·  {} 編集/切替  ·  {} タブ切替  ·  {} 保存して閉じる",
-                k(Action::MoveUp),
-                k(Action::MoveDown),
-                k(Action::ChangeDecrease),
-                k(Action::ChangeIncrease),
-                k(Action::Confirm),
-                k(Action::FocusNext),
-                k(Action::SettingsCancel),
-            ),
-            _ => format!(
-                "{}/{} field  ·  {}/{} change  ·  {} edit/toggle  ·  {} switch tab  ·  {} save + quit",
-                k(Action::MoveUp),
-                k(Action::MoveDown),
-                k(Action::ChangeDecrease),
-                k(Action::ChangeIncrease),
-                k(Action::Confirm),
-                k(Action::FocusNext),
-                k(Action::SettingsCancel),
-            ),
-        }
-    };
+    let help_text = footer_hint(app, st);
     // The footer row doubles as the status/toast surface. An active status message (Spotify
     // connect/import feedback, errors, the browser/clipboard-fallback hint) takes the row so it
     // is visible without leaving Settings; otherwise the keybinding hint shows. Every other view

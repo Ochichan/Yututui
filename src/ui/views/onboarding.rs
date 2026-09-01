@@ -310,22 +310,12 @@ fn coach_copy(app: &App, mini: bool, confirming: bool) -> CoachCopy {
                 )
                 .to_owned()
             } else {
-                format!(
-                    "{} {} {}",
+                open_with_hint(
                     t!("Open Search with", "검색 화면은", "検索画面は"),
-                    key(KeyContext::Player, Action::OpenSearch),
-                    t!(
-                        "or the top navigation.",
-                        "키 또는 위쪽 메뉴로 열 수 있어요.",
-                        "キーまたは上部メニューで開けます。"
-                    )
+                    &key(KeyContext::Player, Action::OpenSearch),
                 )
             },
-            primary: if reached {
-                t!("Continue", "계속", "続行").to_owned()
-            } else {
-                t!("Open Search", "검색 열기", "検索を開く").to_owned()
-            },
+            primary: continue_or_open(reached, t!("Open Search", "검색 열기", "検索を開く")),
         },
         BeginnerStep::Player => CoachCopy {
             heading: t!("Player controls", "플레이어 조작", "プレイヤー操作").to_owned(),
@@ -347,11 +337,7 @@ fn coach_copy(app: &App, mini: bool, confirming: bool) -> CoachCopy {
                     key(KeyContext::Global, Action::Home)
                 )
             },
-            primary: if reached {
-                t!("Continue", "계속", "続行").to_owned()
-            } else {
-                t!("Open Player", "플레이어 열기", "プレイヤーを開く").to_owned()
-            },
+            primary: continue_or_open(reached, t!("Open Player", "플레이어 열기", "プレイヤーを開く")),
         },
         BeginnerStep::Library => CoachCopy {
             heading: t!("Your Library", "내 라이브러리", "マイライブラリ").to_owned(),
@@ -363,22 +349,12 @@ fn coach_copy(app: &App, mini: bool, confirming: bool) -> CoachCopy {
                 )
                 .to_owned()
             } else {
-                format!(
-                    "{} {} {}",
+                open_with_hint(
                     t!("Open Library with", "라이브러리는", "ライブラリは"),
-                    key(KeyContext::Player, Action::OpenLibrary),
-                    t!(
-                        "or the top navigation.",
-                        "키 또는 위쪽 메뉴로 열 수 있어요.",
-                        "キーまたは上部メニューで開けます。"
-                    )
+                    &key(KeyContext::Player, Action::OpenLibrary),
                 )
             },
-            primary: if reached {
-                t!("Continue", "계속", "続行").to_owned()
-            } else {
-                t!("Open Library", "라이브러리 열기", "ライブラリを開く").to_owned()
-            },
+            primary: continue_or_open(reached, t!("Open Library", "라이브러리 열기", "ライブラリを開く")),
         },
         BeginnerStep::DjGem => CoachCopy {
             heading: t!("Meet DJ Gem", "DJ Gem 만나기", "DJ Gemの紹介").to_owned(),
@@ -410,28 +386,40 @@ fn coach_copy(app: &App, mini: bool, confirming: bool) -> CoachCopy {
                         .to_owned()
                     },
                     |context| {
-                        format!(
-                            "{} {} {}",
+                        open_with_hint(
                             t!("Open DJ Gem with", "DJ Gem은", "DJ Gemは"),
-                            key(context, Action::OpenAi),
-                            t!(
-                                "or the top navigation.",
-                                "키 또는 위쪽 메뉴로 열 수 있어요.",
-                                "キーまたは上部メニューで開けます。"
-                            )
+                            &key(context, Action::OpenAi),
                         )
                     },
                 )
             },
-            primary: if reached {
-                t!("Continue", "계속", "続行").to_owned()
-            } else {
-                t!("Open DJ Gem", "DJ Gem 열기", "DJ Gemを開く").to_owned()
-            },
+            primary: continue_or_open(reached, t!("Open DJ Gem", "DJ Gem 열기", "DJ Gemを開く")),
         },
         BeginnerStep::Settings => settings_copy(app, &key),
         BeginnerStep::Finish => finish_copy(app, &key),
     }
+}
+
+/// Primary button for a screen step: advance once the screen has been visited, otherwise
+/// offer to open it.
+fn continue_or_open(reached: bool, open: &str) -> String {
+    if reached {
+        t!("Continue", "계속", "続行").to_owned()
+    } else {
+        open.to_owned()
+    }
+}
+
+/// "Open <screen> with <key> or the top navigation." for a step whose screen is not open yet.
+fn open_with_hint(lead: &str, key: &str) -> String {
+    format!(
+        "{lead} {key} {}",
+        t!(
+            "or the top navigation.",
+            "키 또는 위쪽 메뉴로 열 수 있어요.",
+            "キーまたは上部メニューで開けます。"
+        )
+    )
 }
 
 fn settings_copy(app: &App, key: &impl Fn(KeyContext, Action) -> String) -> CoachCopy {

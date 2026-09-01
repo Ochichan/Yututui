@@ -254,6 +254,34 @@ fn forward_time_pos(emit: &EventSink, state: &mut DispatchState, position: f64) 
     }
 }
 
+/// Forward `demuxer-cache-time`, deduplicated to whole seconds like time-pos. Unlike time-pos,
+/// a null is a signal the reducer needs — the property became unavailable (stream teardown,
+/// cache-less demuxer) — so it is forwarded once as `CacheTime(None)`.
+fn observe_cache_time(
+    emit: &EventSink,
+    state: &mut DispatchState,
+    name: &str,
+    value: Option<f64>,
+) {
+    match value {
+        Some(t) => {
+            let t = crate::playback_policy::norm_position(t);
+            let sec = t as i64;
+            if state.last_sent_cache_sec != Some(sec) {
+                state.last_sent_cache_sec = Some(sec);
+                emit_file_event(emit, state, PlayerEvent::CacheTime(Some(t)));
+                record_numeric_forward(state, name);
+            }
+        }
+        None => {
+            if state.last_sent_cache_sec.take().is_some() {
+                emit_file_event(emit, state, PlayerEvent::CacheTime(None));
+                record_numeric_forward(state, name);
+            }
+        }
+    }
+}
+
 fn emit_file_event(emit: &EventSink, state: &mut DispatchState, event: PlayerEvent) {
     if let Some(generation) = state.active_file_generation {
         emit(PlayerEvent::file_scoped(generation, event));
@@ -665,23 +693,7 @@ fn dispatch_incoming(line: &str, emit: &EventSink, state: &mut DispatchState) {
             }
             "demuxer-cache-time" => {
                 record_numeric_input(state, property.name, true);
-                match property.data {
-                    Some(t) => {
-                        let t = crate::playback_policy::norm_position(t);
-                        let sec = t as i64;
-                        if state.last_sent_cache_sec != Some(sec) {
-                            state.last_sent_cache_sec = Some(sec);
-                            emit_file_event(emit, state, PlayerEvent::CacheTime(Some(t)));
-                            record_numeric_forward(state, property.name);
-                        }
-                    }
-                    None => {
-                        if state.last_sent_cache_sec.take().is_some() {
-                            emit_file_event(emit, state, PlayerEvent::CacheTime(None));
-                            record_numeric_forward(state, property.name);
-                        }
-                    }
-                }
+                observe_cache_time(emit, state, property.name, property.data);
                 return;
             }
             _ => {}
@@ -814,28 +826,10 @@ fn dispatch_incoming(line: &str, emit: &EventSink, state: &mut DispatchState) {
                     emit_file_event(emit, state, PlayerEvent::Eof);
                 }
             }
-            "demuxer-cache-time" => match value.as_f64() {
-                // High-rate like time-pos → dedup to whole seconds.
-                Some(t) => {
-                    record_numeric_input(state, &name, false);
-                    let t = crate::playback_policy::norm_position(t);
-                    let sec = t as i64;
-                    if state.last_sent_cache_sec != Some(sec) {
-                        state.last_sent_cache_sec = Some(sec);
-                        emit_file_event(emit, state, PlayerEvent::CacheTime(Some(t)));
-                        record_numeric_forward(state, &name);
-                    }
-                }
-                // Unlike time-pos, a null here is a signal the reducer needs: the
-                // property became unavailable (stream teardown, cache-less demuxer).
-                None => {
-                    record_numeric_input(state, &name, false);
-                    if state.last_sent_cache_sec.take().is_some() {
-                        emit_file_event(emit, state, PlayerEvent::CacheTime(None));
-                        record_numeric_forward(state, &name);
-                    }
-                }
-            },
+            "demuxer-cache-time" => {
+                record_numeric_input(state, &name, false);
+                observe_cache_time(emit, state, &name, value.as_f64());
+            }
             _ => {}
         },
         MpvIncoming::StartFile { playlist_entry_id } => {

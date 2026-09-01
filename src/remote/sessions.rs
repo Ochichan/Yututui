@@ -984,6 +984,12 @@ pub(crate) async fn run_session(
             page_id,
             op,
         } = frame;
+        let reply_err = |reason: &str| {
+            Some(ServerFrame::Reply {
+                id: frame_id,
+                resp: RemoteResponse::err(reason),
+            })
+        };
         let reply = match op {
             // Pings never touch the owner loop: answered right here.
             ClientOp::Ping => Some(ServerFrame::Pong { id: frame_id }),
@@ -996,15 +1002,9 @@ pub(crate) async fn run_session(
                     .as_deref()
                     .is_some_and(|page_id| !super::requests::valid_page_id(page_id))
                 {
-                    Some(ServerFrame::Reply {
-                        id: frame_id,
-                        resp: RemoteResponse::err("bad_page_id"),
-                    })
+                    reply_err("bad_page_id")
                 } else if topics.len() > REMOTE_MAX_TOPICS {
-                    Some(ServerFrame::Reply {
-                        id: frame_id,
-                        resp: RemoteResponse::err("too_many_topics"),
-                    })
+                    reply_err("too_many_topics")
                 } else {
                     let session = RemoteSessionRef {
                         session_id,
@@ -1023,18 +1023,9 @@ pub(crate) async fn run_session(
                         })
                     }) {
                         SubscribeIngress::Accepted => None,
-                        SubscribeIngress::Busy => Some(ServerFrame::Reply {
-                            id: frame_id,
-                            resp: RemoteResponse::err("server_busy"),
-                        }),
-                        SubscribeIngress::StalePage => Some(ServerFrame::Reply {
-                            id: frame_id,
-                            resp: RemoteResponse::err("stale_page"),
-                        }),
-                        SubscribeIngress::ShuttingDown => Some(ServerFrame::Reply {
-                            id: frame_id,
-                            resp: RemoteResponse::err("shutting_down"),
-                        }),
+                        SubscribeIngress::Busy => reply_err("server_busy"),
+                        SubscribeIngress::StalePage => reply_err("stale_page"),
+                        SubscribeIngress::ShuttingDown => reply_err("shutting_down"),
                     }
                 }
             }
@@ -1043,15 +1034,9 @@ pub(crate) async fn run_session(
                     .as_deref()
                     .is_some_and(|page_id| !super::requests::valid_page_id(page_id))
                 {
-                    Some(ServerFrame::Reply {
-                        id: frame_id,
-                        resp: RemoteResponse::err("bad_page_id"),
-                    })
+                    reply_err("bad_page_id")
                 } else if topics.len() > REMOTE_MAX_TOPICS {
-                    Some(ServerFrame::Reply {
-                        id: frame_id,
-                        resp: RemoteResponse::err("too_many_topics"),
-                    })
+                    reply_err("too_many_topics")
                 } else {
                     let session = RemoteSessionRef {
                         session_id,
@@ -1063,10 +1048,7 @@ pub(crate) async fn run_session(
                             resp: RemoteResponse::ok("unsubscribed".to_string()),
                         })
                     } else {
-                        Some(ServerFrame::Reply {
-                            id: frame_id,
-                            resp: RemoteResponse::err("stale_page"),
-                        })
+                        reply_err("stale_page")
                     }
                 }
             }
@@ -1075,20 +1057,11 @@ pub(crate) async fn run_session(
                     .as_deref()
                     .is_some_and(|page_id| !super::requests::valid_page_id(page_id))
                 {
-                    Some(ServerFrame::Reply {
-                        id: frame_id,
-                        resp: RemoteResponse::err("bad_page_id"),
-                    })
+                    reply_err("bad_page_id")
                 } else if !handle.page_is_current(page_id.as_deref()) {
-                    Some(ServerFrame::Reply {
-                        id: frame_id,
-                        resp: RemoteResponse::err("stale_page"),
-                    })
+                    reply_err("stale_page")
                 } else if let Err(err) = command.validate() {
-                    Some(ServerFrame::Reply {
-                        id: frame_id,
-                        resp: RemoteResponse::err(err.reason()),
-                    })
+                    reply_err(err.reason())
                 } else {
                     let origin = RemoteSessionScope::new(
                         RemoteSessionRef {
