@@ -386,10 +386,7 @@ async fn run_bulk_actor<F>(api: Arc<ytmusic::YtMusicApi>, mut rx: Receiver<ApiCm
 where
     F: Fn(ApiEvent) + Send + Sync + 'static,
 {
-    let mut streaming_ytdlp_cache: HashMap<
-        (String, StreamingMode, SearchSource),
-        (Instant, Vec<Song>),
-    > = HashMap::new();
+    let mut streaming_ytdlp_cache = StreamingCache::new();
     while let Some(cmd) = rx.recv().await {
         match cmd {
             ApiCmd::PlaylistTracks {
@@ -499,7 +496,8 @@ where
                 // use their Search-screen backends with the same seed query variants.
                 let config = config.normalized();
                 let streaming_source = config.normalized_streaming_source(config.streaming_source);
-                let selected_sources = if streaming_source == SearchSource::All {
+                let split_budget = streaming_source == SearchSource::All;
+                let selected_sources = if split_budget {
                     config.streaming_enabled_sources()
                 } else {
                     vec![streaming_source]
@@ -507,70 +505,44 @@ where
                 // With every source enabled, split the budget evenly but never below a handful
                 // per source, so a provider with thin results still contributes variety.
                 const MIN_PER_SOURCE_CANDIDATES: usize = 4;
-                let per_source_limit = if streaming_source == SearchSource::All {
+                let per_source_limit = if split_budget {
                     (limit / selected_sources.len().max(1))
                         .max(MIN_PER_SOURCE_CANDIDATES)
                         .min(limit)
                 } else {
                     limit
                 };
-                let mut candidate_ids: HashSet<String> = exclude_ids.into_iter().collect();
-                let mut candidates: Vec<(Song, CandidateSource)> = Vec::new();
-                let mut errors = Vec::new();
+                let mut pool = CandidatePool::new(exclude_ids, limit);
+                let query = RelatedQuery {
+                    seed: &seed,
+                    config: &config,
+                    mode,
+                };
 
                 if selected_sources.contains(&SearchSource::Youtube) {
-                    let mut yt_added = 0usize;
-                    match api.streaming_continuation(&seed_video_id).await {
+                    let yt_added = match api.streaming_continuation(&seed_video_id).await {
                         Ok(songs) => {
-                            for s in songs {
-                                if candidate_ids.insert(s.video_id.clone()) {
-                                    candidates.push((s, CandidateSource::WatchPlaylist));
-                                    yt_added += 1;
-                                    if yt_added >= per_source_limit || candidates.len() >= limit {
-                                        break;
-                                    }
-                                }
-                            }
+                            pool.admit(songs, CandidateSource::WatchPlaylist, per_source_limit)
                         }
                         Err(e) => {
                             tracing::warn!(error = %sanitize::sanitize_error_text(format!("{e:#}")), "watch-playlist streaming unavailable; using search top-up");
+                            0
                         }
-                    }
-
-                    let want = if streaming_source == SearchSource::All {
+                    };
+                    let want = if split_budget {
                         per_source_limit.saturating_sub(yt_added)
                     } else {
-                        limit.saturating_sub(candidates.len())
+                        pool.remaining()
                     };
-                    if want > 0 && candidates.len() < limit {
-                        match cached_related_tracks(
+                    if want > 0 && !pool.is_full() {
+                        top_up_from_source(
                             &mut streaming_ytdlp_cache,
-                            &seed,
+                            &mut pool,
+                            &query,
                             SearchSource::Youtube,
-                            &config,
                             want,
-                            mode,
                         )
-                        .await
-                        {
-                            Ok(songs) => {
-                                let mut added = 0usize;
-                                for s in songs {
-                                    if candidate_ids.insert(s.video_id.clone()) {
-                                        candidates.push((s, CandidateSource::YtdlpStreaming));
-                                        added += 1;
-                                        if added >= want || candidates.len() >= limit {
-                                            break;
-                                        }
-                                    }
-                                }
-                            }
-                            Err(e) => errors.push(format!(
-                                "{}: {}",
-                                SearchSource::Youtube.code(),
-                                sanitize::sanitize_error_text(format!("{e:#}"))
-                            )),
-                        }
+                        .await;
                     }
                 }
 
@@ -579,47 +551,24 @@ where
                     .copied()
                     .filter(|source| *source != SearchSource::Youtube)
                 {
-                    if candidates.len() >= limit {
+                    if pool.is_full() {
                         break;
                     }
-                    let source_limit = if streaming_source == SearchSource::All {
+                    let want = if split_budget {
                         per_source_limit
                     } else {
-                        limit.saturating_sub(candidates.len())
+                        pool.remaining()
                     };
-                    if source_limit == 0 {
+                    if want == 0 {
                         continue;
                     }
-                    match cached_related_tracks(
-                        &mut streaming_ytdlp_cache,
-                        &seed,
-                        source,
-                        &config,
-                        source_limit,
-                        mode,
-                    )
-                    .await
-                    {
-                        Ok(songs) => {
-                            let mut added = 0usize;
-                            for s in songs {
-                                if candidate_ids.insert(s.video_id.clone()) {
-                                    candidates.push((s, CandidateSource::YtdlpStreaming));
-                                    added += 1;
-                                    if added >= source_limit || candidates.len() >= limit {
-                                        break;
-                                    }
-                                }
-                            }
-                        }
-                        Err(e) => errors.push(format!(
-                            "{}: {}",
-                            source.code(),
-                            sanitize::sanitize_error_text(format!("{e:#}"))
-                        )),
-                    }
+                    top_up_from_source(&mut streaming_ytdlp_cache, &mut pool, &query, source, want)
+                        .await;
                 }
 
+                let CandidatePool {
+                    candidates, errors, ..
+                } = pool;
                 let event = if candidates.is_empty() {
                     let error = if errors.is_empty() {
                         "no related tracks found".to_owned()
@@ -671,14 +620,87 @@ where
     }
 }
 
-async fn cached_related_tracks(
-    cache: &mut HashMap<(String, StreamingMode, SearchSource), (Instant, Vec<Song>)>,
-    seed: &str,
-    source: SearchSource,
-    config: &SearchConfig,
-    limit: usize,
+type StreamingCache = HashMap<(String, StreamingMode, SearchSource), (Instant, Vec<Song>)>;
+
+/// The seed one streaming request expands, shared by every source consulted for it.
+struct RelatedQuery<'a> {
+    seed: &'a str,
+    config: &'a SearchConfig,
     mode: StreamingMode,
+}
+
+/// Provenance-tagged streaming candidates, deduplicated by video id against the request's
+/// exclusions and capped at its overall budget.
+struct CandidatePool {
+    seen: HashSet<String>,
+    candidates: Vec<(Song, CandidateSource)>,
+    errors: Vec<String>,
+    limit: usize,
+}
+
+impl CandidatePool {
+    fn new(exclude_ids: impl IntoIterator<Item = String>, limit: usize) -> Self {
+        Self {
+            seen: exclude_ids.into_iter().collect(),
+            candidates: Vec::new(),
+            errors: Vec::new(),
+            limit,
+        }
+    }
+
+    fn is_full(&self) -> bool {
+        self.candidates.len() >= self.limit
+    }
+
+    fn remaining(&self) -> usize {
+        self.limit.saturating_sub(self.candidates.len())
+    }
+
+    /// Appends unseen songs until `want` were added or the pool is full; returns how many
+    /// were added. The caps are checked after each admission, so a zero `want` or budget
+    /// still lets the first unseen song through.
+    fn admit(&mut self, songs: Vec<Song>, source: CandidateSource, want: usize) -> usize {
+        let mut added = 0;
+        for song in songs {
+            if !self.seen.insert(song.video_id.clone()) {
+                continue;
+            }
+            self.candidates.push((song, source));
+            added += 1;
+            if added >= want || self.is_full() {
+                break;
+            }
+        }
+        added
+    }
+}
+
+async fn top_up_from_source(
+    cache: &mut StreamingCache,
+    pool: &mut CandidatePool,
+    query: &RelatedQuery<'_>,
+    source: SearchSource,
+    want: usize,
+) {
+    match cached_related_tracks(cache, query, source, want).await {
+        Ok(songs) => {
+            pool.admit(songs, CandidateSource::YtdlpStreaming, want);
+        }
+        Err(e) => pool.errors.push(format!(
+            "{}: {}",
+            source.code(),
+            sanitize::sanitize_error_text(format!("{e:#}"))
+        )),
+    }
+}
+
+async fn cached_related_tracks(
+    cache: &mut StreamingCache,
+    query: &RelatedQuery<'_>,
+    source: SearchSource,
+    limit: usize,
 ) -> anyhow::Result<Vec<Song>> {
+    let RelatedQuery { seed, config, mode } = *query;
     let now = Instant::now();
     cache.retain(|_, (stored, _)| now.duration_since(*stored) < STREAMING_YTDLP_CACHE_TTL);
     let cache_key = (seed.to_owned(), mode, source);
@@ -697,9 +719,7 @@ async fn cached_related_tracks(
     Ok(songs)
 }
 
-pub(super) fn enforce_streaming_cache_cap(
-    cache: &mut HashMap<(String, StreamingMode, SearchSource), (Instant, Vec<Song>)>,
-) {
+pub(super) fn enforce_streaming_cache_cap(cache: &mut StreamingCache) {
     while cache.len() > STREAMING_YTDLP_CACHE_MAX {
         let Some(oldest) = cache
             .iter()
@@ -709,6 +729,56 @@ pub(super) fn enforce_streaming_cache_cap(
             return;
         };
         cache.remove(&oldest);
+    }
+}
+
+#[cfg(test)]
+mod candidate_pool_tests {
+    use super::*;
+
+    fn song(id: &str) -> Song {
+        Song::remote(id, "Title", "Artist", "3:00")
+    }
+
+    #[test]
+    fn admit_skips_excluded_and_repeated_ids() {
+        let mut pool = CandidatePool::new(["x".to_owned()], 10);
+        let added = pool.admit(
+            vec![song("x"), song("a"), song("a"), song("b")],
+            CandidateSource::WatchPlaylist,
+            10,
+        );
+        assert_eq!(added, 2);
+        let ids: Vec<&str> = pool
+            .candidates
+            .iter()
+            .map(|(song, _)| song.video_id.as_str())
+            .collect();
+        assert_eq!(ids, ["a", "b"]);
+        assert_eq!(pool.remaining(), 8);
+    }
+
+    #[test]
+    fn admit_stops_at_want_then_at_budget() {
+        let mut pool = CandidatePool::new([], 3);
+        let songs = vec![song("a"), song("b"), song("c"), song("d")];
+        assert_eq!(pool.admit(songs, CandidateSource::YtdlpStreaming, 2), 2);
+        assert!(!pool.is_full());
+        assert_eq!(
+            pool.admit(
+                vec![song("e"), song("f")],
+                CandidateSource::YtdlpStreaming,
+                5
+            ),
+            1
+        );
+        assert!(pool.is_full());
+        assert_eq!(pool.remaining(), 0);
+        assert_eq!(
+            pool.admit(vec![song("g")], CandidateSource::YtdlpStreaming, 5),
+            1
+        );
+        assert_eq!(pool.candidates.len(), 4);
     }
 }
 
