@@ -351,22 +351,26 @@ async fn run_owner_loop(
     let mut personal_export = personal_export::PersonalExport::default();
     let mut personal_sync = personal_sync::PersonalSync::default();
     let mut pending_events: VecDeque<DaemonEvent> = VecDeque::new();
+    macro_rules! dispatch_effects {
+        ($effects:expr) => {
+            pending_events.extend(dispatch_engine_effects(
+                &api,
+                &event_tx,
+                &shutdown,
+                &mut effect_tasks,
+                $effects,
+            ))
+        };
+    }
     if !shutdown.is_triggered() {
         let initial_effects = engine.initial_effects();
-        pending_events.extend(dispatch_engine_effects(
-            &api,
-            &event_tx,
-            &shutdown,
-            &mut effect_tasks,
-            initial_effects,
-        ));
+        dispatch_effects!(initial_effects);
     }
     personal_sync.enable_automatic(&mut engine, &event_tx, &shutdown);
     'owner: loop {
         effect_tasks.reap_finished();
         if shutdown.is_triggered() {
-            engine.suppress_transport_recovery_for_shutdown();
-            break;
+            break 'owner;
         }
         let event = if let Some(event) = pending_events.pop_front() {
             event
@@ -374,7 +378,6 @@ async fn run_owner_loop(
             tokio::select! {
                 biased;
                 _ = shutdown.wait() => {
-                    engine.suppress_transport_recovery_for_shutdown();
                     break 'owner;
                 },
                 wake = personal_sync.wait_for_automatic_wake() => {
@@ -396,7 +399,6 @@ async fn run_owner_loop(
                 },
                 _ = media_pump.tick(), if media.wants_pump() => {
                     if shutdown.is_triggered() {
-                        engine.suppress_transport_recovery_for_shutdown();
                         break 'owner;
                     }
                     media.pump();
@@ -408,7 +410,6 @@ async fn run_owner_loop(
                 },
                 _ = sleep_pump.tick(), if engine.sleep_timer_active() => {
                     if shutdown.is_triggered() {
-                        engine.suppress_transport_recovery_for_shutdown();
                         break 'owner;
                     }
                     let _changed = engine.sleep_tick();
@@ -419,8 +420,7 @@ async fn run_owner_loop(
         // A queued TransportClosed/Signal may have won the same scheduler turn. The monotonic
         // latch still takes precedence before the event can mutate the engine or spawn mpv.
         if shutdown.is_triggered() {
-            engine.suppress_transport_recovery_for_shutdown();
-            break;
+            break 'owner;
         }
         if event.is_telemetry_wake() {
             pending_events.extend(event_tx.drain_coalesced());
@@ -428,7 +428,14 @@ async fn run_owner_loop(
         }
         let (observer_plan, media_position_turn, media_before) = event.observer_context(&engine);
         match event {
-            DaemonEvent::Remote(RemoteEvent::Command(command, reply)) => match command {
+            DaemonEvent::Remote(
+                RemoteEvent::Command(command, reply)
+                | RemoteEvent::SessionCommand {
+                    command,
+                    origin: _,
+                    reply,
+                },
+            ) => match command {
                 RemoteCommand::ExportPersonalData { directory, schema } => {
                     personal_export.start_engine(
                         personal_export::Target::new(
@@ -449,71 +456,17 @@ async fn run_owner_loop(
                     let Some((response, wants_shutdown, effects)) =
                         await_owner_handler(&shutdown, engine.handle_remote(command)).await
                     else {
-                        engine.suppress_transport_recovery_for_shutdown();
-                        break;
+                        break 'owner;
                     };
                     if shutdown.is_triggered() {
-                        engine.suppress_transport_recovery_for_shutdown();
-                        break;
+                        break 'owner;
                     }
                     let _ = reply.send(response);
                     if wants_shutdown {
                         shutdown.trigger();
-                        break;
+                        break 'owner;
                     }
-                    pending_events.extend(dispatch_engine_effects(
-                        &api,
-                        &event_tx,
-                        &shutdown,
-                        &mut effect_tasks,
-                        effects,
-                    ));
-                }
-            },
-            DaemonEvent::Remote(RemoteEvent::SessionCommand {
-                command,
-                origin: _,
-                reply,
-            }) => match command {
-                RemoteCommand::ExportPersonalData { directory, schema } => {
-                    personal_export.start_engine(
-                        personal_export::Target::new(
-                            directory,
-                            schema.unwrap_or(crate::remote::proto::DEFAULT_EXPORT_SCHEMA),
-                        ),
-                        reply,
-                        &engine,
-                        &event_tx,
-                        &shutdown,
-                        &mut effect_tasks,
-                    );
-                }
-                command @ (RemoteCommand::SyncNow | RemoteCommand::SyncRevokeDevice { .. }) => {
-                    personal_sync.start_command(command, reply, &mut engine, &event_tx, &shutdown);
-                }
-                command => {
-                    let Some((response, wants_shutdown, effects)) =
-                        await_owner_handler(&shutdown, engine.handle_remote(command)).await
-                    else {
-                        engine.suppress_transport_recovery_for_shutdown();
-                        break;
-                    };
-                    if shutdown.is_triggered() {
-                        engine.suppress_transport_recovery_for_shutdown();
-                        break;
-                    }
-                    let _ = reply.send(response);
-                    if wants_shutdown {
-                        shutdown.trigger();
-                        break;
-                    }
-                    pending_events.extend(dispatch_engine_effects(
-                        &api,
-                        &event_tx,
-                        &shutdown,
-                        &mut effect_tasks,
-                        effects,
-                    ));
+                    dispatch_effects!(effects);
                 }
             },
             // Owner lane: initial snapshots + reply from current
@@ -526,8 +479,7 @@ async fn run_owner_loop(
                 settlement,
             }) => {
                 if shutdown.is_triggered() {
-                    engine.suppress_transport_recovery_for_shutdown();
-                    break;
+                    break 'owner;
                 }
                 publisher.handle_tracked_subscribe(
                     &engine.core_view(),
@@ -543,56 +495,33 @@ async fn run_owner_loop(
                 let Some(effects) =
                     await_owner_handler(&shutdown, engine.handle_player_event(event)).await
                 else {
-                    engine.suppress_transport_recovery_for_shutdown();
-                    break;
+                    break 'owner;
                 };
-                pending_events.extend(dispatch_engine_effects(
-                    &api,
-                    &event_tx,
-                    &shutdown,
-                    &mut effect_tasks,
-                    effects,
-                ));
+                dispatch_effects!(effects);
             }
             DaemonEvent::Api(event) => {
                 let Some(effects) =
                     await_owner_handler(&shutdown, engine.handle_api_event(event)).await
                 else {
-                    engine.suppress_transport_recovery_for_shutdown();
-                    break;
+                    break 'owner;
                 };
-                pending_events.extend(dispatch_engine_effects(
-                    &api,
-                    &event_tx,
-                    &shutdown,
-                    &mut effect_tasks,
-                    effects,
-                ));
+                dispatch_effects!(effects);
             }
             DaemonEvent::Media(command) => {
                 let Some((wants_shutdown, effects)) =
                     await_owner_handler(&shutdown, engine.handle_media(command)).await
                 else {
-                    engine.suppress_transport_recovery_for_shutdown();
-                    break;
+                    break 'owner;
                 };
                 if wants_shutdown {
                     shutdown.trigger();
-                    engine.suppress_transport_recovery_for_shutdown();
-                    break;
+                    break 'owner;
                 }
-                pending_events.extend(dispatch_engine_effects(
-                    &api,
-                    &event_tx,
-                    &shutdown,
-                    &mut effect_tasks,
-                    effects,
-                ));
+                dispatch_effects!(effects);
             }
             DaemonEvent::MediaArt(ready) => {
                 if shutdown.is_triggered() {
-                    engine.suppress_transport_recovery_for_shutdown();
-                    break;
+                    break 'owner;
                 }
                 engine.set_media_art(ready);
             }
@@ -601,32 +530,18 @@ async fn run_owner_loop(
                     await_owner_handler(&shutdown, engine.handle_heal_result(video_id, updated))
                         .await
                 else {
-                    engine.suppress_transport_recovery_for_shutdown();
-                    break;
+                    break 'owner;
                 };
-                pending_events.extend(dispatch_engine_effects(
-                    &api,
-                    &event_tx,
-                    &shutdown,
-                    &mut effect_tasks,
-                    effects,
-                ));
+                dispatch_effects!(effects);
             }
             DaemonEvent::TransportRecoveryRetry { generation } => {
                 let Some(effects) =
                     await_owner_handler(&shutdown, engine.attempt_transport_recovery(generation))
                         .await
                 else {
-                    engine.suppress_transport_recovery_for_shutdown();
-                    break;
+                    break 'owner;
                 };
-                pending_events.extend(dispatch_engine_effects(
-                    &api,
-                    &event_tx,
-                    &shutdown,
-                    &mut effect_tasks,
-                    effects,
-                ));
+                dispatch_effects!(effects);
             }
             DaemonEvent::PersonalExportFinished(finished) => personal_export.finish(finished),
             DaemonEvent::PersonalSyncFinished(finished) => {
@@ -652,16 +567,14 @@ async fn run_owner_loop(
             }
             DaemonEvent::Signal => {
                 shutdown.trigger();
-                engine.suppress_transport_recovery_for_shutdown();
-                break;
+                break 'owner;
             }
             DaemonEvent::TelemetryWake => {
                 unreachable!("telemetry wake is handled before dispatch")
             }
         }
         if shutdown.is_triggered() {
-            engine.suppress_transport_recovery_for_shutdown();
-            break;
+            break 'owner;
         }
         engine.maintain_open_subsonic_bridge();
         personal_sync.observe(&mut engine, &event_tx, &shutdown);
@@ -674,8 +587,7 @@ async fn run_owner_loop(
         let media_enabled = daemon_media_enabled(&engine, media_session_allowed);
         let media_enabled_changed = media.set_enabled(media_enabled);
         if shutdown.is_triggered() {
-            engine.suppress_transport_recovery_for_shutdown();
-            break;
+            break 'owner;
         }
 
         // Progress turns only rebase the platform clock: Linux/Windows backends interpolate their
@@ -688,8 +600,7 @@ async fn run_owner_loop(
                     media.rebase_position(position, captured_at)
                 });
         if shutdown.is_triggered() {
-            engine.suppress_transport_recovery_for_shutdown();
-            break;
+            break 'owner;
         }
 
         // Build the owned OS/scrobble projection only when a projected facet changed or the
@@ -703,22 +614,19 @@ async fn run_owner_loop(
         if media_changed || scrobble_due || media_progress_publish_due || media_enable_publish_due {
             let snapshot = engine.media_snapshot();
             if shutdown.is_triggered() {
-                engine.suppress_transport_recovery_for_shutdown();
-                break;
+                break 'owner;
             }
             if media_changed || scrobble_due || media_progress_publish_due {
                 let _ = scrobble.observe(&snapshot);
             }
             if shutdown.is_triggered() {
-                engine.suppress_transport_recovery_for_shutdown();
-                break;
+                break 'owner;
             }
             if media_changed || media_progress_publish_due || media_enable_publish_due {
                 media.publish(snapshot);
             }
             if shutdown.is_triggered() {
-                engine.suppress_transport_recovery_for_shutdown();
-                break;
+                break 'owner;
             }
         }
         // Observe after every dispatched event, in dispatch order, so remote subscribers see
@@ -728,6 +636,9 @@ async fn run_owner_loop(
         publisher.observe(&view);
         lyrics_host.observe(&mut publisher, view.queue.current());
     }
+    // Every loop exit arrives here with the latch already set and no await in between, so
+    // retiring the player once here is enough: a queued TransportClosed cannot recreate mpv
+    // during the drain below.
     shutdown.trigger();
     engine.suppress_transport_recovery_for_shutdown();
     // Token creation and this monotonic transition share the hub registry lock. Close remote
