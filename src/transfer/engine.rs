@@ -504,12 +504,7 @@ async fn match_stage(
         cache_dirty |= apply_persistent_cache(cp, cache);
     }
     let mut local_capacity_keys = local_destination_keys(cp, local_snapshot);
-    if let Some(keys) = local_capacity_keys.as_mut() {
-        enforce_matched_capacity(cp, keys);
-        if keys.len() >= crate::playlists::SONGS_PER_PLAYLIST_MAX {
-            mark_pending_capacity_skipped(cp);
-        }
-    }
+    enforce_local_capacity(cp, local_capacity_keys.as_mut());
     if !to_spotify
         && cp.spec.media_kind == ImportMediaKind::Track
         && cp.tracks.iter().any(|track| track.outcome.is_none())
@@ -529,12 +524,7 @@ async fn match_stage(
             .map_err(|error| defer_ytm_match_error(cp, None, error))?;
         }
     }
-    if let Some(keys) = local_capacity_keys.as_mut() {
-        enforce_matched_capacity(cp, keys);
-        if keys.len() >= crate::playlists::SONGS_PER_PLAYLIST_MAX {
-            mark_pending_capacity_skipped(cp);
-        }
-    }
+    enforce_local_capacity(cp, local_capacity_keys.as_mut());
     let (mut matched_count, mut ambiguous_count, mut not_found_count) = outcome_counts(&cp.tracks);
     let mut completed_count = cp
         .tracks
@@ -962,6 +952,20 @@ async fn match_track_spotify(
         );
     }
     Ok(outcome)
+}
+
+/// Re-apply the local playlist cap after a step that may have matched more rows, marking the
+/// still-pending rows as capacity-skipped once the destination is full.
+fn enforce_local_capacity(
+    cp: &mut Checkpoint,
+    keys: Option<&mut std::collections::HashSet<String>>,
+) {
+    if let Some(keys) = keys {
+        enforce_matched_capacity(cp, keys);
+        if keys.len() >= crate::playlists::SONGS_PER_PLAYLIST_MAX {
+            mark_pending_capacity_skipped(cp);
+        }
+    }
 }
 
 async fn write_stage(

@@ -193,6 +193,92 @@ fn render_filter(frame: &mut Frame, app: &App, area: Rect, matches: usize) {
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
+/// The message for an empty list: a filtered-to-nothing list gets a filter-specific message,
+/// not the per-tab "empty" hint.
+fn empty_list_message(app: &App) -> String {
+    if !app.library_ui.filter_query.is_empty() {
+        match crate::i18n::current() {
+            Language::Korean => {
+                format!("'{}' 와 일치하는 곡이 없어요.", app.library_ui.filter_query)
+            }
+            Language::Japanese => {
+                format!(
+                    "'{}' に一致する曲はありません。",
+                    app.library_ui.filter_query
+                )
+            }
+            _ => format!("No tracks match \"{}\".", app.library_ui.filter_query),
+        }
+    } else if app.library_ui.tab == LibraryTab::Playlists {
+        // The root level never reaches here (it renders via `render_playlist_list`),
+        // so this is an opened-but-empty playlist. Built from the live keymap so a
+        // rebind updates the hint in lock-step.
+        let add = app.keymap.label_for_display(
+            crate::keymap::KeyContext::Library,
+            crate::keymap::Action::AddToPlaylist,
+            app.retro_mode(),
+        );
+        let gem = app.keymap.label_for_display(
+            crate::keymap::KeyContext::Playlists,
+            crate::keymap::Action::OpenAi,
+            app.retro_mode(),
+        );
+        match crate::i18n::current() {
+            Language::Korean => format!(
+                "빈 플레이리스트예요 — 다른 목록에서 {add} 로 곡을 추가하거나 DJ Gem({gem})에게 부탁하세요."
+            ),
+            Language::Japanese => format!(
+                "空のプレイリストです — 他のリストで {add} を押して曲を追加するか、DJ Gem({gem})に頼んでください。"
+            ),
+            _ => format!(
+                "This playlist is empty — press {add} on any song to add it here, or ask DJ Gem ({gem})."
+            ),
+        }
+    } else {
+        match app.library_ui.tab {
+            LibraryTab::All => t!(
+                "No library tracks yet — play, favorite, or download something.",
+                "아직 라이브러리에 곡이 없어요 — 재생하거나 즐겨찾기하거나 다운로드해 보세요.",
+                "まだライブラリに曲がありません — 再生・お気に入り・ダウンロードしてみてください。"
+            ),
+            LibraryTab::Favorites => t!(
+                "No favorites yet — press f on a track to save it.",
+                "즐겨찾기가 없어요 — 곡에서 f 를 눌러 저장하세요.",
+                "お気に入りがありません — 曲で f を押して保存してください。"
+            ),
+            LibraryTab::History => {
+                t!(
+                    "No history yet — play something.",
+                    "재생 기록이 없어요 — 뭐든 재생해 보세요.",
+                    "再生履歴がありません — 何か再生してみてください。"
+                )
+            }
+            LibraryTab::RadioFavorites => t!(
+                "No radio favorites yet — press f on a Radio Browser station.",
+                "라디오 즐겨찾기가 없어요 — Radio Browser 방송에서 f 를 눌러 저장하세요.",
+                "ラジオのお気に入りがありません — Radio Browser の放送局で f を押して保存してください。"
+            ),
+            LibraryTab::Radio => t!(
+                "No recent radio stations yet — play one from Radio Browser search.",
+                "최근 라디오가 없어요 — Radio Browser 검색에서 재생해 보세요.",
+                "最近のラジオがありません — Radio Browser 検索から再生してみてください。"
+            ),
+            LibraryTab::Downloads => t!(
+                "No downloaded tracks found in the download folder.",
+                "다운로드 폴더에 받은 곡이 없어요.",
+                "ダウンロードフォルダーに曲が見つかりません。"
+            ),
+            // Handled by the keymap-aware branch above; benign fallback for exhaustiveness.
+            LibraryTab::Playlists => t!(
+                "This playlist is empty.",
+                "빈 플레이리스트예요.",
+                "空のプレイリストです。"
+            ),
+        }
+        .to_owned()
+    }
+}
+
 fn render_list(
     frame: &mut Frame,
     app: &App,
@@ -204,90 +290,10 @@ fn render_list(
     app.bridges.list_viewport_rows.set(area.height);
 
     if len == 0 {
-        // A filtered-to-nothing list gets a filter-specific message, not the per-tab "empty" hint.
-        let msg: String = if !app.library_ui.filter_query.is_empty() {
-            match crate::i18n::current() {
-                Language::Korean => {
-                    format!("'{}' 와 일치하는 곡이 없어요.", app.library_ui.filter_query)
-                }
-                Language::Japanese => {
-                    format!(
-                        "'{}' に一致する曲はありません。",
-                        app.library_ui.filter_query
-                    )
-                }
-                _ => format!("No tracks match \"{}\".", app.library_ui.filter_query),
-            }
-        } else if app.library_ui.tab == LibraryTab::Playlists {
-            // The root level never reaches here (it renders via `render_playlist_list`),
-            // so this is an opened-but-empty playlist. Built from the live keymap so a
-            // rebind updates the hint in lock-step.
-            let add = app.keymap.label_for_display(
-                crate::keymap::KeyContext::Library,
-                crate::keymap::Action::AddToPlaylist,
-                app.retro_mode(),
-            );
-            let gem = app.keymap.label_for_display(
-                crate::keymap::KeyContext::Playlists,
-                crate::keymap::Action::OpenAi,
-                app.retro_mode(),
-            );
-            match crate::i18n::current() {
-                Language::Korean => format!(
-                    "빈 플레이리스트예요 — 다른 목록에서 {add} 로 곡을 추가하거나 DJ Gem({gem})에게 부탁하세요."
-                ),
-                Language::Japanese => format!(
-                    "空のプレイリストです — 他のリストで {add} を押して曲を追加するか、DJ Gem({gem})に頼んでください。"
-                ),
-                _ => format!(
-                    "This playlist is empty — press {add} on any song to add it here, or ask DJ Gem ({gem})."
-                ),
-            }
-        } else {
-            match app.library_ui.tab {
-                LibraryTab::All => t!(
-                    "No library tracks yet — play, favorite, or download something.",
-                    "아직 라이브러리에 곡이 없어요 — 재생하거나 즐겨찾기하거나 다운로드해 보세요.",
-                    "まだライブラリに曲がありません — 再生・お気に入り・ダウンロードしてみてください。"
-                ),
-                LibraryTab::Favorites => t!(
-                    "No favorites yet — press f on a track to save it.",
-                    "즐겨찾기가 없어요 — 곡에서 f 를 눌러 저장하세요.",
-                    "お気に入りがありません — 曲で f を押して保存してください。"
-                ),
-                LibraryTab::History => {
-                    t!(
-                        "No history yet — play something.",
-                        "재생 기록이 없어요 — 뭐든 재생해 보세요.",
-                        "再生履歴がありません — 何か再生してみてください。"
-                    )
-                }
-                LibraryTab::RadioFavorites => t!(
-                    "No radio favorites yet — press f on a Radio Browser station.",
-                    "라디오 즐겨찾기가 없어요 — Radio Browser 방송에서 f 를 눌러 저장하세요.",
-                    "ラジオのお気に入りがありません — Radio Browser の放送局で f を押して保存してください。"
-                ),
-                LibraryTab::Radio => t!(
-                    "No recent radio stations yet — play one from Radio Browser search.",
-                    "최근 라디오가 없어요 — Radio Browser 검색에서 재생해 보세요.",
-                    "最近のラジオがありません — Radio Browser 検索から再生してみてください。"
-                ),
-                LibraryTab::Downloads => t!(
-                    "No downloaded tracks found in the download folder.",
-                    "다운로드 폴더에 받은 곡이 없어요.",
-                    "ダウンロードフォルダーに曲が見つかりません。"
-                ),
-                // Handled by the keymap-aware branch above; benign fallback for exhaustiveness.
-                LibraryTab::Playlists => t!(
-                    "This playlist is empty.",
-                    "빈 플레이리스트예요.",
-                    "空のプレイリストです。"
-                ),
-            }
-            .to_owned()
-        };
         frame.render_widget(
-            Paragraph::new(Line::from(msg).style(app.theme.style(R::TextMuted))),
+            Paragraph::new(
+                Line::from(empty_list_message(app)).style(app.theme.style(R::TextMuted)),
+            ),
             area,
         );
         return;

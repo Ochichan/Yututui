@@ -309,33 +309,12 @@ impl App {
     /// Whether another modal owns input. The queue and search-filter popups are deliberately
     /// excluded: their semantic rows are valid context-menu targets.
     fn context_menu_blocked(&self) -> bool {
-        self.personal_state.sync_ui.modal_open()
+        self.blocking_modal_open()
+            || self.personal_state.sync_ui.modal_open()
             || self.server.settings.modal_open()
-            || self.server.library.playlist_preview.is_some()
-            || self.server.library.playlist_create.is_some()
-            || self.server.library.playlist_recovery.is_some()
-            || self.overlays.help_visible
-            || self.overlays.mouse_help_visible
-            || self.overlays.about_visible
-            || self.overlays.why_gem_video_id.is_some()
             || self.overlays.now_playing_overlay.is_some()
-            || self.overlays.key_conflict.is_some()
-            || self.overlays.pending_settings_confirm.is_some()
-            || self.overlays.spotify_picker.is_some()
             || self.overlays.audio_output_picker.is_some()
-            || self.overlays.recordings_browser.is_some()
-            || self.overlays.recording_settings.is_some()
-            || self.radio_mode.pending_radio_mode_confirm.is_some()
-            || self.local_mode.pending_confirm.is_some()
-            || self.local_mode.find.pending_bulk_confirm.is_some()
-            || self.local_mode.find.pending_rebuild_confirm
-            || self.local_mode.find.refine_popup.open
-            || self.local_import_confirmation_open()
-            || self.library_ui.confirm_delete.is_some()
             || self.library_ui.confirm_download.is_some()
-            || self.library_ui.confirm_playlist_delete.is_some()
-            || self.library_ui.create_input.is_some()
-            || self.playlist_picker.is_some()
             || self.dropdowns.eq_open
             || self.dropdowns.streaming_open
             || self.dropdowns.search_source_open

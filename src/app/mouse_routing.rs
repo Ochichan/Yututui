@@ -3,6 +3,31 @@
 use super::*;
 
 impl App {
+    /// Overlays that own pointer input on every surface. Callers add the surfaces they must
+    /// additionally treat as modal; register a new overlay here so no caller drifts.
+    pub(in crate::app) fn blocking_modal_open(&self) -> bool {
+        self.overlays.help_visible
+            || self.overlays.mouse_help_visible
+            || self.overlays.about_visible
+            || self.overlays.why_gem_video_id.is_some()
+            || self.overlays.key_conflict.is_some()
+            || self.overlays.pending_settings_confirm.is_some()
+            || self.overlays.spotify_picker.is_some()
+            || self.overlays.recordings_browser.is_some()
+            || self.overlays.recording_settings.is_some()
+            || self.radio_mode.pending_radio_mode_confirm.is_some()
+            || self.local_mode.pending_confirm.is_some()
+            || self.local_mode.find.pending_bulk_confirm.is_some()
+            || self.local_mode.find.pending_rebuild_confirm
+            || self.local_mode.find.refine_popup.open
+            || self.local_import_confirmation_open()
+            || self.server.library.playlist_modal_open()
+            || self.library_ui.confirm_delete.is_some()
+            || self.library_ui.confirm_playlist_delete.is_some()
+            || self.library_ui.create_input.is_some()
+            || self.playlist_picker.is_some()
+    }
+
     pub(in crate::app) fn route_mouse_click(
         &mut self,
         col: u16,
