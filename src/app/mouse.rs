@@ -140,29 +140,11 @@ impl App {
             self.dirty = true;
             return Vec::new();
         }
-        // Modal overlays treat a double-click like a single click.
-        if self.overlays.help_visible
-            || self.overlays.context_menu.is_some()
-            || self.overlays.mouse_help_visible
-            || self.overlays.about_visible
-            || self.overlays.why_gem_video_id.is_some()
-            || self.overlays.key_conflict.is_some()
-            || self.radio_mode.pending_radio_mode_confirm.is_some()
-            || self.local_mode.pending_confirm.is_some()
-            || self.local_mode.find.pending_bulk_confirm.is_some()
-            || self.local_mode.find.pending_rebuild_confirm
-            || self.local_mode.find.refine_popup.open
-            || self.local_import_confirmation_open()
-            || self.overlays.pending_settings_confirm.is_some()
-            || self.server.library.playlist_modal_open()
-            || self.library_ui.confirm_delete.is_some()
-            || self.library_ui.confirm_playlist_delete.is_some()
-            || self.library_ui.create_input.is_some()
-            || self.playlist_picker.is_some()
-            || self.overlays.spotify_picker.is_some()
-            || self.overlays.recordings_browser.is_some()
-            || self.overlays.recording_settings.is_some()
-        {
+        // Modal overlays treat a double-click like a single click. The sync/settings wizards
+        // are swallowed in the reducer dispatcher and the audio-output picker is routed above;
+        // of the extra surfaces `context_menu_blocked` lists, only the dropdowns, download
+        // confirm and now-playing overlay fall through here.
+        if self.overlays.context_menu.is_some() || self.blocking_modal_open() {
             return self.on_mouse_click(col, row, false);
         }
         // Double-clicking a filter-popup row plays it (the mouse Enter), mirroring the

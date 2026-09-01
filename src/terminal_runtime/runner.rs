@@ -461,16 +461,9 @@ pub async fn run(
     }
     let mut perf = PerfStats::from_env();
     if let Err(error) = draw_app_frame(terminal, &mut app, &mut perf, None) {
-        if shutdown.is_triggered() {
-            return finish_interrupted_startup(&app, &persist, None).await;
-        }
-        let owner_error = anyhow::Error::from(error);
-        return match flush_owner_persistence(&app, &persist).await {
-            Ok(()) => Err(owner_error),
-            Err(persistence_error) => Err(owner_error.context(format!(
-                "persistence shutdown also failed: {persistence_error:#}"
-            ))),
-        };
+        // A draw failure during an already-requested shutdown is not the owner error.
+        let error = (!shutdown.is_triggered()).then_some(error);
+        return finish_interrupted_startup(&app, &persist, error).await;
     }
     startup.mark("first_draw");
     if shutdown.is_triggered() {
@@ -489,16 +482,8 @@ pub async fn run(
         match terminal_events::start(shutdown.clone()) {
             Ok(source) => source,
             Err(error) => {
-                if shutdown.was_triggered_by_signal() {
-                    return finish_interrupted_startup(&app, &persist, None).await;
-                }
-                let owner_error = anyhow::Error::from(error);
-                return match flush_owner_persistence(&app, &persist).await {
-                    Ok(()) => Err(owner_error),
-                    Err(persistence_error) => Err(owner_error.context(format!(
-                        "persistence shutdown also failed: {persistence_error:#}"
-                    ))),
-                };
+                let error = (!shutdown.was_triggered_by_signal()).then_some(error);
+                return finish_interrupted_startup(&app, &persist, error).await;
             }
         };
     startup.mark("terminal_liveness_ready");
@@ -904,13 +889,11 @@ pub async fn run(
         Worker(RuntimeEvent),
     }
 
-    'owner: while !app.should_quit {
-        if shutdown.is_triggered() {
-            handles.begin_player_shutdown(&mut app);
-            break;
-        }
-        if app.dirty {
-            let Some(_drew) = capture_owner_io_result(
+    // Draw the full frame; a terminal write failure records the first owner error and leaves
+    // the loop so teardown can restore the terminal.
+    macro_rules! draw_or_break {
+        ($label:lifetime) => {
+            if capture_owner_io_result(
                 terminal_output.run_io(|deadline| {
                     draw_full_app_frame(
                         terminal,
@@ -921,9 +904,21 @@ pub async fn run(
                     )
                 }),
                 &mut owner_error,
-            ) else {
-                break 'owner;
-            };
+            )
+            .is_none()
+            {
+                break $label;
+            }
+        };
+    }
+
+    'owner: while !app.should_quit {
+        if shutdown.is_triggered() {
+            handles.begin_player_shutdown(&mut app);
+            break;
+        }
+        if app.dirty {
+            draw_or_break!('owner);
             perf.maybe_log(&app);
             if app.dirty {
                 continue;
@@ -1025,20 +1020,7 @@ pub async fn run(
                     handles.handle_player_ready(result, &mut app);
                     reducer_turn_unrendered = true;
                     if app.dirty {
-                        let Some(_drew) = capture_owner_io_result(
-                            terminal_output.run_io(|deadline| {
-                                draw_full_app_frame(
-                                    terminal,
-                                    &mut app,
-                                    &mut perf,
-                                    &mut reducer_turn_unrendered,
-                                    deadline,
-                                )
-                            }),
-                            &mut owner_error,
-                        ) else {
-                            break 'owner;
-                        };
+                        draw_or_break!('owner);
                         perf.maybe_log(&app);
                     }
                     continue;
@@ -1073,20 +1055,7 @@ pub async fn run(
                         }
                     };
                     if !fast_succeeded {
-                        let Some(_drew) = capture_owner_io_result(
-                            terminal_output.run_io(|deadline| {
-                                draw_full_app_frame(
-                                    terminal,
-                                    &mut app,
-                                    &mut perf,
-                                    &mut reducer_turn_unrendered,
-                                    deadline,
-                                )
-                            }),
-                            &mut owner_error,
-                        ) else {
-                            break 'owner;
-                        };
+                        draw_or_break!('owner);
                     }
                     perf.maybe_log(&app);
                     continue;
@@ -1292,20 +1261,7 @@ pub async fn run(
         // running it *after* the frame lags the OS/remote surfaces by well under one frame while
         // leaving the resting on-screen output identical.
         if app.dirty {
-            let Some(_drew) = capture_owner_io_result(
-                terminal_output.run_io(|deadline| {
-                    draw_full_app_frame(
-                        terminal,
-                        &mut app,
-                        &mut perf,
-                        &mut reducer_turn_unrendered,
-                        deadline,
-                    )
-                }),
-                &mut owner_error,
-            ) else {
-                break 'owner;
-            };
+            draw_or_break!('owner);
         }
 
         // Only a turn that can mutate projected state may toggle/rebuild OS metadata. Progress
