@@ -563,11 +563,7 @@ impl BridgeRuntime {
             return self.settle_playlist_readback(store_set, link, pending, remote);
         }
 
-        let current = remote
-            .entries()
-            .iter()
-            .map(|song| song.item.item_id().clone())
-            .collect::<Vec<_>>();
+        let current = remote_item_ids(&remote);
         let update = plan_remote_update(&current, &pending.ordered_item_ids)
             .map_err(|_| ServiceError::InvalidSetup)?;
         let additions = update
@@ -858,19 +854,12 @@ impl BridgeRuntime {
     fn observe_pending_remote_playlist(
         &self,
         store_set: &mut OpenSubsonicStoreSet,
-        mut link: PlaylistLink,
+        link: PlaylistLink,
         pending: PendingPlaylistProjection,
         remote: ServerPlaylistWriteSnapshot,
         final_state: PlaylistLinkState,
     ) -> Result<(), ServiceError> {
-        let previous = link
-            .shadow
-            .occurrences
-            .iter()
-            .map(|occurrence| {
-                LinkedPlaylistEntry::new(occurrence.entry_id.clone(), occurrence.item_id.clone())
-            })
-            .collect::<Vec<_>>();
+        let previous = shadow_entries(&link);
         let desired = pending
             .ordered_entry_ids
             .iter()
@@ -878,11 +867,7 @@ impl BridgeRuntime {
             .zip(pending.ordered_item_ids.iter().cloned())
             .map(|(entry_id, item_id)| LinkedPlaylistEntry::new(entry_id, item_id))
             .collect::<Vec<_>>();
-        let current = remote
-            .entries()
-            .iter()
-            .map(|song| song.item.item_id().clone())
-            .collect::<Vec<_>>();
+        let current = remote_item_ids(&remote);
         let mode = pending_remote_merge_mode(pending.stage)?;
         let plan = plan_pending_remote_merge(&previous, &desired, &current, mode)
             .map_err(|_| ServiceError::InvalidSetup)?;
@@ -894,7 +879,7 @@ impl BridgeRuntime {
         )
         .to_owned();
         let fingerprint = super::super::actor::playlist_snapshot_fingerprint(&remote);
-        let observation_revision = store_set.bridge_state.revision().saturating_add(1);
+        let observation_revision = next_observation_revision(store_set);
 
         let mut entry_by_remote = BTreeMap::new();
         for occurrence in plan.remote_occurrences() {
@@ -915,14 +900,7 @@ impl BridgeRuntime {
             };
             entry_by_remote.insert(remote_index, entry_id);
         }
-        let remote_entry_ids = (0..current.len())
-            .map(|index| {
-                entry_by_remote
-                    .get(&index)
-                    .cloned()
-                    .ok_or(ServiceError::InvalidSetup)
-            })
-            .collect::<Result<Vec<_>, _>>()?;
+        let remote_entry_ids = ordered_remote_entry_ids(&entry_by_remote, current.len())?;
         let mut remote_position_in_merged = BTreeMap::new();
         let merged_entry_ids = plan
             .ordered_occurrences()
@@ -962,21 +940,15 @@ impl BridgeRuntime {
             let merged_index = *remote_position_in_merged
                 .get(&remote_only.index)
                 .ok_or(ServiceError::InvalidSetup)?;
-            let song = remote
-                .entries()
-                .get(remote_only.index)
-                .ok_or(ServiceError::InvalidSetup)?;
-            operations.push(Operation::UpsertPlaylistEntry {
-                playlist_id: link.local_playlist_id.clone(),
-                entry_id: entry_by_remote
-                    .get(&remote_only.index)
-                    .cloned()
-                    .ok_or(ServiceError::InvalidSetup)?,
-                track: portable_server_track(song),
-                after_entry_id: merged_index
+            operations.push(upsert_remote_entry(
+                &link.local_playlist_id,
+                &remote,
+                remote_only.index,
+                &entry_by_remote,
+                merged_index
                     .checked_sub(1)
                     .and_then(|index| merged_entry_ids.get(index).cloned()),
-            });
+            )?);
         }
         let retained_existing = plan
             .ordered_occurrences()
@@ -1010,22 +982,14 @@ impl BridgeRuntime {
                 after_entry_id: expected_after,
             });
         }
-        let inputs = operations
-            .into_iter()
-            .enumerate()
-            .map(|(index, operation)| ExternalOperationInput {
-                acknowledgement_id: remote_operation_id(
-                    &link,
-                    &fingerprint,
-                    observation_revision,
-                    index,
-                ),
-                operation,
-                recorded_at_unix: observed_at_unix,
-            })
-            .collect::<Vec<_>>();
+        let inputs = observation_inputs(
+            &link,
+            &fingerprint,
+            observation_revision,
+            observed_at_unix,
+            operations,
+        );
 
-        let playlist_id = link.local_playlist_id.clone();
         let merged_differs_from_remote = merged_entry_ids != remote_entry_ids
             || plan.desired_remote() != current.as_slice()
             || merged_name != remote.name();
@@ -1036,84 +1000,31 @@ impl BridgeRuntime {
             stage: PendingPlaylistProjectionStage::Queued,
             base_remote_fingerprint: fingerprint.clone(),
         });
-        let exact_remote_shadow = remote_entry_ids
-            .into_iter()
-            .zip(current)
-            .map(|(entry_id, item_id)| PlaylistShadowOccurrence { entry_id, item_id })
-            .collect();
-        let before = store_set.bridge_state.clone();
-        let mutation = (|| {
-            if !inputs.is_empty() {
-                store_set
-                    .bridge_state
-                    .queue_playlist_import(PendingPlaylistImportBatch {
-                        operation_id: format!(
-                            "playlist-remote-batch-{}",
-                            digest_text(&format!(
-                                "{}\0{fingerprint}\0{observation_revision}",
-                                playlist_id.as_str(),
-                            ))
-                        ),
-                        local_playlist_id: playlist_id.clone(),
-                        purpose: PendingPlaylistImportPurpose::RemoteObservation,
-                        operations: inputs,
-                    })?;
-            }
-            store_set
-                .bridge_state
-                .remove_playlist_projection(&playlist_id);
-            if let Some(follow_up) = follow_up {
-                store_set
-                    .bridge_state
-                    .queue_playlist_projection(playlist_id.clone(), follow_up)?;
-            }
-            link.state = final_state;
-            link.shadow = PlaylistShadow {
-                name: remote.name().to_owned(),
-                occurrences: exact_remote_shadow,
-                verified_at_unix: observed_at_unix,
-            };
-            store_set.bridge_state.upsert_playlist_link(link)?;
-            Ok::<(), BridgeMutationError>(())
-        })();
-        if let Err(error) = mutation {
-            store_set.bridge_state = before;
-            return Err(error.into());
-        }
-        self.persist_or_restore(store_set, before)?;
-        self.emit_pending(store_set);
-        Ok(())
+        let batch = (!inputs.is_empty()).then(|| {
+            remote_observation_batch(
+                &link.local_playlist_id,
+                &fingerprint,
+                observation_revision,
+                inputs,
+            )
+        });
+        let shadow = remote_shadow(remote.name(), remote_entry_ids, current, observed_at_unix);
+        self.commit_remote_observation(store_set, link, final_state, shadow, batch, follow_up)
     }
 
     fn observe_changed_remote_playlist(
         &self,
         store_set: &mut OpenSubsonicStoreSet,
-        mut link: PlaylistLink,
+        link: PlaylistLink,
         remote: ServerPlaylistWriteSnapshot,
         final_state: PlaylistLinkState,
     ) -> Result<(), ServiceError> {
-        let previous = link
-            .shadow
-            .occurrences
-            .iter()
-            .map(|occurrence| {
-                LinkedPlaylistEntry::new(occurrence.entry_id.clone(), occurrence.item_id.clone())
-            })
-            .collect::<Vec<_>>();
-        let current = remote
-            .entries()
-            .iter()
-            .map(|song| song.item.item_id().clone())
-            .collect::<Vec<_>>();
+        let previous = shadow_entries(&link);
+        let current = remote_item_ids(&remote);
         let delta =
             plan_remote_delta(&previous, &current).map_err(|_| ServiceError::InvalidSetup)?;
         let fingerprint = super::super::actor::playlist_snapshot_fingerprint(&remote);
-        // A server can move from A → B → A more than once. The current fingerprint alone would
-        // reuse acknowledgement IDs on the second transition back to A, causing the personal
-        // ledger to deduplicate a real later observation. The bridge revision is the durable
-        // observation sequence: retries before a commit reuse it, while every committed remote
-        // transition advances it.
-        let observation_revision = store_set.bridge_state.revision().saturating_add(1);
+        let observation_revision = next_observation_revision(store_set);
         let mut entry_by_remote = delta
             .retained
             .iter()
@@ -1131,14 +1042,7 @@ impl BridgeRuntime {
                 )?,
             );
         }
-        let ordered_entry_ids = (0..current.len())
-            .map(|index| {
-                entry_by_remote
-                    .get(&index)
-                    .cloned()
-                    .ok_or(ServiceError::InvalidSetup)
-            })
-            .collect::<Result<Vec<_>, _>>()?;
+        let ordered_entry_ids = ordered_remote_entry_ids(&entry_by_remote, current.len())?;
         let observed_at_unix = crate::signals::unix_now();
         let mut operations = Vec::new();
         if link.shadow.name != remote.name() {
@@ -1158,22 +1062,16 @@ impl BridgeRuntime {
                 }),
         );
         for added in &delta.added {
-            let song = remote
-                .entries()
-                .get(added.index)
-                .ok_or(ServiceError::InvalidSetup)?;
-            operations.push(Operation::UpsertPlaylistEntry {
-                playlist_id: link.local_playlist_id.clone(),
-                entry_id: entry_by_remote
-                    .get(&added.index)
-                    .cloned()
-                    .ok_or(ServiceError::InvalidSetup)?,
-                track: portable_server_track(song),
-                after_entry_id: added
+            operations.push(upsert_remote_entry(
+                &link.local_playlist_id,
+                &remote,
+                added.index,
+                &entry_by_remote,
+                added
                     .index
                     .checked_sub(1)
                     .and_then(|index| entry_by_remote.get(&index).cloned()),
-            });
+            )?);
         }
         let retained_entry_ids = delta
             .retained
@@ -1192,52 +1090,60 @@ impl BridgeRuntime {
                     .and_then(|previous| ordered_entry_ids.get(previous).cloned()),
             });
         }
-        let inputs = operations
-            .into_iter()
-            .enumerate()
-            .map(|(index, operation)| ExternalOperationInput {
-                acknowledgement_id: remote_operation_id(
-                    &link,
-                    &fingerprint,
-                    observation_revision,
-                    index,
-                ),
-                operation,
-                recorded_at_unix: observed_at_unix,
-            })
-            .collect::<Vec<_>>();
+        let inputs = observation_inputs(
+            &link,
+            &fingerprint,
+            observation_revision,
+            observed_at_unix,
+            operations,
+        );
+        let batch = (!inputs.is_empty()).then(|| {
+            remote_observation_batch(
+                &link.local_playlist_id,
+                &fingerprint,
+                observation_revision,
+                inputs,
+            )
+        });
+        let shadow = remote_shadow(remote.name(), ordered_entry_ids, current, observed_at_unix);
+        self.commit_remote_observation(store_set, link, final_state, shadow, batch, None)
+    }
 
+    /// Single restore-on-error transaction shared by both remote-observation flavors: queue
+    /// the import batch, retire the superseded projection, queue the optional follow-up
+    /// write, verify the link against the exact remote shadow, then persist and emit once.
+    fn commit_remote_observation(
+        &self,
+        store_set: &mut OpenSubsonicStoreSet,
+        mut link: PlaylistLink,
+        final_state: PlaylistLinkState,
+        shadow: PlaylistShadow,
+        batch: Option<PendingPlaylistImportBatch>,
+        follow_up: Option<PendingPlaylistProjection>,
+    ) -> Result<(), ServiceError> {
+        let playlist_id = link.local_playlist_id.clone();
         let before = store_set.bridge_state.clone();
-        if !inputs.is_empty() {
+        let mutation = (|| {
+            if let Some(batch) = batch {
+                store_set.bridge_state.queue_playlist_import(batch)?;
+            }
             store_set
                 .bridge_state
-                .queue_playlist_import(PendingPlaylistImportBatch {
-                    operation_id: format!(
-                        "playlist-remote-batch-{}",
-                        digest_text(&format!(
-                            "{}\0{fingerprint}\0{observation_revision}",
-                            link.local_playlist_id.as_str(),
-                        ))
-                    ),
-                    local_playlist_id: link.local_playlist_id.clone(),
-                    purpose: PendingPlaylistImportPurpose::RemoteObservation,
-                    operations: inputs,
-                })?;
+                .remove_playlist_projection(&playlist_id);
+            if let Some(follow_up) = follow_up {
+                store_set
+                    .bridge_state
+                    .queue_playlist_projection(playlist_id.clone(), follow_up)?;
+            }
+            link.state = final_state;
+            link.shadow = shadow;
+            store_set.bridge_state.upsert_playlist_link(link)?;
+            Ok::<(), BridgeMutationError>(())
+        })();
+        if let Err(error) = mutation {
+            store_set.bridge_state = before;
+            return Err(error.into());
         }
-        link.state = final_state;
-        link.shadow = PlaylistShadow {
-            name: remote.name().to_owned(),
-            occurrences: ordered_entry_ids
-                .into_iter()
-                .zip(current)
-                .map(|(entry_id, item_id)| PlaylistShadowOccurrence { entry_id, item_id })
-                .collect(),
-            verified_at_unix: observed_at_unix,
-        };
-        store_set
-            .bridge_state
-            .remove_playlist_projection(&link.local_playlist_id);
-        store_set.bridge_state.upsert_playlist_link(link)?;
         self.persist_or_restore(store_set, before)?;
         self.emit_pending(store_set);
         Ok(())
@@ -1270,6 +1176,124 @@ fn pending_remote_merge_name<'a>(
                 desired
             }
         }
+    }
+}
+
+/// A server can move from A → B → A more than once. The current fingerprint alone would
+/// reuse acknowledgement IDs on the second transition back to A, causing the personal
+/// ledger to deduplicate a real later observation. The bridge revision is the durable
+/// observation sequence: retries before a commit reuse it, while every committed remote
+/// transition advances it.
+fn next_observation_revision(store_set: &OpenSubsonicStoreSet) -> u64 {
+    store_set.bridge_state.revision().saturating_add(1)
+}
+
+fn shadow_entries(link: &PlaylistLink) -> Vec<LinkedPlaylistEntry> {
+    link.shadow
+        .occurrences
+        .iter()
+        .map(|occurrence| {
+            LinkedPlaylistEntry::new(occurrence.entry_id.clone(), occurrence.item_id.clone())
+        })
+        .collect()
+}
+
+fn remote_item_ids(remote: &ServerPlaylistWriteSnapshot) -> Vec<ItemId> {
+    remote
+        .entries()
+        .iter()
+        .map(|song| song.item.item_id().clone())
+        .collect()
+}
+
+fn ordered_remote_entry_ids(
+    entry_by_remote: &BTreeMap<usize, PlaylistEntryId>,
+    len: usize,
+) -> Result<Vec<PlaylistEntryId>, ServiceError> {
+    (0..len)
+        .map(|index| {
+            entry_by_remote
+                .get(&index)
+                .cloned()
+                .ok_or(ServiceError::InvalidSetup)
+        })
+        .collect()
+}
+
+fn upsert_remote_entry(
+    playlist_id: &PlaylistId,
+    remote: &ServerPlaylistWriteSnapshot,
+    remote_index: usize,
+    entry_by_remote: &BTreeMap<usize, PlaylistEntryId>,
+    after_entry_id: Option<PlaylistEntryId>,
+) -> Result<Operation, ServiceError> {
+    let song = remote
+        .entries()
+        .get(remote_index)
+        .ok_or(ServiceError::InvalidSetup)?;
+    Ok(Operation::UpsertPlaylistEntry {
+        playlist_id: playlist_id.clone(),
+        entry_id: entry_by_remote
+            .get(&remote_index)
+            .cloned()
+            .ok_or(ServiceError::InvalidSetup)?,
+        track: portable_server_track(song),
+        after_entry_id,
+    })
+}
+
+fn observation_inputs(
+    link: &PlaylistLink,
+    fingerprint: &str,
+    observation_revision: u64,
+    observed_at_unix: i64,
+    operations: Vec<Operation>,
+) -> Vec<ExternalOperationInput> {
+    operations
+        .into_iter()
+        .enumerate()
+        .map(|(index, operation)| ExternalOperationInput {
+            acknowledgement_id: remote_operation_id(link, fingerprint, observation_revision, index),
+            operation,
+            recorded_at_unix: observed_at_unix,
+        })
+        .collect()
+}
+
+fn remote_observation_batch(
+    playlist_id: &PlaylistId,
+    fingerprint: &str,
+    observation_revision: u64,
+    operations: Vec<ExternalOperationInput>,
+) -> PendingPlaylistImportBatch {
+    PendingPlaylistImportBatch {
+        operation_id: format!(
+            "playlist-remote-batch-{}",
+            digest_text(&format!(
+                "{}\0{fingerprint}\0{observation_revision}",
+                playlist_id.as_str(),
+            ))
+        ),
+        local_playlist_id: playlist_id.clone(),
+        purpose: PendingPlaylistImportPurpose::RemoteObservation,
+        operations,
+    }
+}
+
+fn remote_shadow(
+    name: &str,
+    ordered_entry_ids: Vec<PlaylistEntryId>,
+    item_ids: Vec<ItemId>,
+    verified_at_unix: i64,
+) -> PlaylistShadow {
+    PlaylistShadow {
+        name: name.to_owned(),
+        occurrences: ordered_entry_ids
+            .into_iter()
+            .zip(item_ids)
+            .map(|(entry_id, item_id)| PlaylistShadowOccurrence { entry_id, item_id })
+            .collect(),
+        verified_at_unix,
     }
 }
 
