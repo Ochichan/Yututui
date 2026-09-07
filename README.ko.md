@@ -15,13 +15,15 @@
 
 매일 쓰기엔 충분히 안정적이지만, 아직 빠르게 움직이는 중입니다.
 
+[Atlas 지구본](#atlas-mode) · [DJ Gem과 모모링](#dj-gem) · [차근차근 사용 설명서](MANUAL.ko.md)
+
 ![가운데 앨범 아트와 하단 재생 컨트롤이 있는 플레이어](docs/media/hero.gif)
 
 [플레이어 정지 화면 보기](docs/media/player.png)
 
 ### [▶ 라이브 데모 · 기능 전체 둘러보기 → ochichan.github.io/Yututui](https://ochichan.github.io/Yututui/)
 
-**📖 터미널이 낯설다면?** [친절한 사용 설명서](MANUAL.ko.md)가 모든 모드를 — 음악, 라디오, 로컬 덱, Spotify 이사까지 — 전문 용어 없이 한 걸음씩 안내합니다.
+**📖 터미널이 낯설다면?** [친절한 사용 설명서](MANUAL.ko.md)가 모든 모드를 — 음악, 라디오와 Atlas, DJ Gem, 로컬 덱, Spotify 이사까지 — 전문 용어 없이 한 걸음씩 안내합니다.
 
 ---
 
@@ -143,7 +145,7 @@ ytt
 
 ## 둘러보기
 
-아래 모든 기능은 **[기능 둘러보기 페이지](https://ochichan.github.io/Yututui/)** 에서 라이브로, 자세히 볼 수 있어요.
+아래에서 주요 모드를 살펴보거나 **[대화형 기능 둘러보기](https://ochichan.github.io/Yututui/)** 를 체험해 보세요.
 
 ### 플레이어 — 진짜 앨범 아트 & 싱크 가사
 
@@ -155,21 +157,43 @@ ytt
 
 ![카탈로그 선택 메뉴를 펼친 검색 결과](docs/media/sources.png)
 
+### 라디오 모드 — 지금 나오는 곡 확인하기
+
+**`Alt+Shift+R`** 은 앱을 인터넷 라디오 튜너로 바꿉니다. 방송국 즐겨찾기와 청취 기록은 음악과 따로 관리됩니다. **`i`** 를 누르면 방송국이 보내는 곡 정보를 보여주며 Gemini 키는 필요 없습니다. 곡이 식별되면 카드 안의 **`f`** 로 음악 즐겨찾기에 저장할 수 있습니다. 방송국이 곡 정보를 보내지 않으면 제목을 표시할 수 없습니다.
+
+<a id="atlas-mode"></a>
+
+### Atlas 모드 — 지구본으로 듣는 세계
+
+라디오 모드에서 **`a`** 를 눌러 지구본 위의 방송국을 탐색하세요. 드래그로 돌리고, 휠로 확대하고, 방송국 표시를 눌러 바로 듣거나 나라를 골라 방송국 목록을 펼칠 수 있습니다. 옆 패널에서는 전 세계 방송국·즐겨찾기·최근 청취를 오갑니다.
+
+![동아시아 쪽으로 회전하고 확대되는 Atlas 지구본과 옆의 방송국 패널](docs/media/atlas.gif)
+
+*화면 녹화에서 가져온 8초 미리보기.* [27초 전체 영상 보기 (무음)](docs/media/atlas.mp4) · [Atlas 조작법과 설정](MANUAL.ko.md#atlas-mode)
+
+점자 또는 ASCII 문자로 그리므로 터미널 이미지 프로토콜은 필요 없습니다. **`/`** 로 검색, **`Tab`** 으로 지구본·패널 전환, **`q`** 로 닫습니다. 터미널을 넓히면 지구본과 방송국 목록을 함께 보기 편합니다.
+
 ### DJ Gem 스트리밍
 
 **`Ctrl+R`**은 지금 듣는 곡을 중심으로 끝없는 스테이션을 만듭니다. 추천 곡에는 큐와 Now Playing 옆에 클릭 가능한 **`?`**가 붙습니다. 큐를 연 상태에서 **`w`**를 누르면 선택한 행을 설명하고, 그 외에는 현재 곡을 설명합니다. 카드에는 추천 출처가 항상 표시되고, DJ Gem이 제공한 경우 역할·쉬운 말 이유·신뢰도가 함께 나옵니다. 모델 상세 정보 없이 고른 곡은 출처만 표시됩니다.
 
+<a id="dj-gem"></a>
+
 ### DJ Gem 어시스턴트 *(선택)*
 
-**`g`** 를 누르고 말로 시키세요: *"lo-fi 틀어줘", "비 오는 날 플레이리스트 만들어줘"*. 무료 Gemini 키가 필요하고, 나머지 기능은 키 없이도 전부 동작합니다.
+**`g`** 를 누르고 말로 부탁하세요: *"lo-fi 틀어줘", "비 오는 날 플레이리스트 만들어줘"*. **설정 → DJ Gem** 에 Gemini API 키를 넣고 **DJ Gem 채팅**을 켜면 됩니다. 음악 검색·재생, 라디오와 Atlas는 Gemini 키 없이도 사용할 수 있습니다.
+
+새 점자 마스코트 **모모링(Momoring)**도 만나 보세요. 대화를 시작하기 전 화면에서 음악을 듣는 동안 움직이며, 색은 선택한 테마를 따릅니다.
+
+<p align="center">
+  <img src="docs/media/dj-gem-momoring.gif" width="306" alt="DJ Gem 시작 화면에서 솥 옆의 모모링이 움직이는 모습을 확대한 장면">
+</p>
+
+*3초 마스코트 확대 녹화.* [설정, 채팅과 애니메이션 안내](MANUAL.ko.md#dj-gem).
 
 ### 터미널 위에 떠 있는 뮤직비디오
 
 **`v`** 를 누르면 작은 mpv 창에 뮤직비디오가 뜹니다. *영상 자동 이어재생*을 켜면 다음 곡의 영상으로 알아서 이어지고, mpv 창에서는 `Space`, `.`, `,`, `q`, `f`, `m`이 통합니다.
-
-### 라디오 모드 — 지금 나오는 곡까지 압니다
-
-**`Alt+Shift+R`** 은 앱 전체를 인터넷 라디오 튜너로 바꿉니다. **`i`** 를 누르면 Gemini가 생방송에서 지금 나오는 곡의 이름을 알려주고, **`f`** 로 바로 즐겨찾기. **`a`** 를 누르면 **아틀라스**: 점자 도트로 그린, 돌리고 확대하는 라이브 방송국 지구본 — 드래그·튕기기(애니메이션 켜짐)·휠, 점을 클릭해 듣고 국가를 클릭해 탐색 — 이미지 프로토콜 없이 동작합니다.
 
 ### 라이브러리, 큐 & 다운로드
 
@@ -187,7 +211,7 @@ ytt
 
 ### 내 마음대로
 
-테마 14종(색 역할 34개 전부 hex 편집), 애니메이션 40종 — 별똥별과 도는 ASCII 도넛부터 풀캔버스 쇼피스(불꽃놀이, 라이프 게임, 파이프, 플라즈마)까지 — 프리셋 있는 10밴드 EQ, 오디오 출력 장치 선택, 라우드니스 노멀라이즈까지. UI 자체도 English / 한국어 / 日本語 세 언어를 말합니다 — 설정 → 일반 → **언어**에서 차례로 전환돼요.
+테마 프리셋 14종과 Custom(색 역할 34개 전부 hex 편집), 애니메이션 40종 — 별똥별과 도는 ASCII 도넛부터 풀캔버스 쇼피스(불꽃놀이, 라이프 게임, 파이프, 플라즈마)까지 — 프리셋 있는 10밴드 EQ, 오디오 출력 장치 선택, 라우드니스 노멀라이즈까지. UI 자체도 English / 한국어 / 日本語 세 언어를 말합니다 — 설정 → 일반 → **언어**에서 차례로 전환돼요.
 
 ![비기너 모드 안내가 열린 플레이어 주변의 수족관 애니메이션](docs/media/animations.gif)
 
@@ -219,6 +243,8 @@ ytt
 
 ## 필수 키
 
+텍스트 입력 중이 아닐 때의 플레이어 기본 키입니다. [Atlas에서는 전용 조작표](MANUAL.ko.md#atlas-mode)를 참고하세요.
+
 앱에서 **`?`** 를 누르면 완전한 라이브 치트시트가 나옵니다 — *내가 바꾼* 키 그대로 반영되고, 앱 동작 키는 설정 → 핫키에서 바꿀 수 있어요(안전·모달 키는 고정). 핵심만:
 
 | 키 | 동작 |
@@ -241,6 +267,8 @@ ytt
 | `←` / `→` · `Ctrl+←` / `Ctrl+→` | 텍스트 입력칸에서 한 글자씩 · 단어씩 커서 이동 |
 | `Backspace` / `Ctrl+Backspace` | 텍스트 입력칸에서 한 글자 / 이전 단어 삭제 |
 | `Ctrl+H` | 플레이어로 복귀 (레거시 모호 터미널에서는 안전한 텍스트 편집 fallback이 우선) |
+| `Alt+Shift+R` | 라디오 모드 들어가기 / 나오기 |
+| `a` | 라디오 플레이어에서 Atlas 열기 / 닫기 |
 | `Ctrl+R` | DJ Gem 스트리밍 |
 | `w` | 선택한 큐 추천 곡 또는 현재 곡 설명 |
 | `g` | DJ Gem 어시스턴트 |
@@ -260,7 +288,7 @@ ytt
 | 아무것도 재생되지 않거나 재생 시 오류 | mpv 또는 yt-dlp가 없습니다 — `ytt doctor` 실행. |
 | 소리가 엉뚱한 장치로 나감 | 설정 → 재생 → **오디오 출력** 에서 감지된 로컬 출력 중 선택; **오디오 백엔드** 는 mpv 옵션을 노출합니다. |
 | 어제는 됐는데 오늘은 안 됨 | YouTube가 뭔가 바꿨어요 — `ytt tools update` 후 `ytt tools status --why`; 관리형 업데이트가 문제면 `ytt tools use system`. |
-| 여러 곡이 403/429 또는 "YouTube rejected the stream"으로 실패 | YouTube 봇 차단입니다. `ytt doctor --verbose`를 실행하고(이제 PO 토큰/oauth 준비 상태를 알려줍니다), [참고 자료](#참고-자료)의 쿠키 항목과 지원되는 JS 런타임을 확인하세요; 활성 yt-dlp는 `ytt tools status --why`로 확인. [PO 토큰 공급자](https://github.com/yt-dlp/yt-dlp?tab=readme-ov-file#po-token-guide)나 [oauth 플러그인](https://github.com/coletdjnz/yt-dlp-youtube-oauth2)을 쓰면 보통 확실히 해결됩니다. |
+| 여러 곡이 403/429 또는 "YouTube rejected the stream"으로 실패 | YouTube 봇 확인 또는 요청 제한일 수 있습니다. `ytt doctor --verbose`를 실행하고 [참고 자료](#참고-자료)의 쿠키 항목과 JS 런타임을 확인하세요. 활성 yt-dlp는 `ytt tools status --why`로 확인합니다. 토큰이 필요하면 공식 [PO 토큰 안내](https://github.com/yt-dlp/yt-dlp/wiki/PO-Token-Guide)를 따르세요. |
 | 특정 곡만 재생 안 됨 | 로그인이 필요할 수 있어요 — [참고 자료](#참고-자료)의 쿠키 항목 참고. |
 | 앱이 셸과 다른 yt-dlp를 실행함 | 의도된 동작입니다(관리형 복사본 vs `PATH`) — [참고 자료](#참고-자료)의 *yt-dlp 선택* 참고. |
 
@@ -308,7 +336,9 @@ ytt
 
 | 증상 | 해결 |
 | --- | --- |
-| DJ Gem이 응답 안 함 | 설정 → DJ Gem에 무료 Gemini 키를 넣고 **Enable DJ Gem**을 켜세요. |
+| DJ Gem이 응답 안 함 | 설정 → DJ Gem에 Gemini API 키를 넣고 **DJ Gem 채팅**을 켜세요. `GEMINI_API_KEY`가 지정되어 있으면 저장된 키보다 우선합니다. |
+| 모모링이 멈춰 있거나 안 보임 | 터미널을 넓히고 빈 DJ Gem 대화를 여세요. 큐의 곡을 재생 중이고 애니메이션이 켜져 있어야 움직입니다(플레이어에서 `A`). |
+| Atlas가 안 열리거나 패널이 안 보임 | 먼저 라디오 모드로 들어가고(`Alt+Shift+R`), 터미널을 넓힌 뒤 `a` 를 누르세요. 폭이 충분하면 `Tab` 으로 패널을 볼 수 있습니다. |
 | 키를 잘못 바꿔서 엉망이 됨 | 설정 → 일반 → **단축키 초기화**. |
 
 그래도 막히면? [이슈를 열고](https://github.com/Ochichan/Yututui/issues) OS를 알려주세요.
@@ -407,9 +437,9 @@ TUI 안에서도 됩니다: 설정 → **계정** → *Import from Spotify…* �
 <details>
 <summary><b>로그인 쿠키 & 파일 위치</b></summary>
 
-**PO 토큰 & oauth — 쿠키 너머의 해법.** YouTube가 *공개* 스트림까지 거부하기 시작하면(HTTP 403/429 "YouTube rejected the stream") 대개 **PO 토큰 공급자**가 해결책입니다: [`bgutil-ytdlp-pot-provider`](https://github.com/Brainicism/bgutil-ytdlp-pot-provider)를 설치하고 그 출력이 알려주는 yt-dlp 설정 줄을 추가하세요. 더 오래가는 로그인은 [`yt-dlp-youtube-oauth2`](https://github.com/coletdjnz/yt-dlp-youtube-oauth2) 플러그인입니다(`yt-dlp --plugin-dirs ... --username oauth --password ''`를 한 번 실행하면 이후 스스로 갱신합니다). `ytt doctor --verbose`가 이제 둘의 준비 상태를 알려줍니다.
+**YouTube 접근 설정.** 토큰 요구사항과 공급자 설정은 yt-dlp의 [PO 토큰 안내](https://github.com/yt-dlp/yt-dlp/wiki/PO-Token-Guide)를 참고하세요. yt-dlp의 YouTube OAuth 로그인은 더 이상 동작하지 않습니다. 계정 접근이 필요하면 공식 [쿠키 내보내기 안내](https://github.com/yt-dlp/yt-dlp/wiki/Extractors#exporting-youtube-cookies)를 따르세요. `ytt doctor --verbose`의 로컬 도구 진단에서 예전 OAuth 플러그인이 감지되더라도 로그인이 된다는 뜻은 아닙니다.
 
-**쿠키 (선택).** 공개 곡은 익명으로 잘 재생됩니다 — 멤버 전용/지역 제한 트랙과 계정 플레이리스트에만 필요해요. YouTube Music 쿠키를 **Netscape 형식**으로 `~/Music/yututui/cookies.txt`(Windows: `%USERPROFILE%\Music\yututui\cookies.txt`)에 내보내고 재시작하세요. **그 파일은 비밀번호처럼 다루고**, *시크릿 창 방식*으로 내보내세요: 시크릿 창에서 로그인하고, 그 탭에서 `cookies.txt`를 내보낸 뒤, 창을 닫습니다 — 브라우저가 사라진 세션은 로테이션되거나 로그아웃되지 않아요. 제대로 된 내보내기에는 `SAPISID`/`SID` 줄이 있습니다.
+**쿠키 (선택).** 계정이 필요한 콘텐츠는 YouTube Music 쿠키를 **Netscape 형식**으로 `~/Music/yututui/cookies.txt`(Windows: `%USERPROFILE%\Music\yututui\cookies.txt`)에 내보내고 재시작하세요. **파일은 비밀번호처럼 다루세요.** 위의 내보내기 안내를 따르되, 쿠키도 만료될 수 있으며 지역 제한 콘텐츠 접근을 보장하지는 않습니다.
 
 **설정 & 데이터.**
 

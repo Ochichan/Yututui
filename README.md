@@ -15,13 +15,15 @@ YouTube Music in your terminal — fast, keyboard-driven, no browser tab eating 
 
 Stable enough for daily use, still moving fast.
 
+[Atlas globe](#atlas-mode) · [DJ Gem & Momoring](#dj-gem) · [Step-by-step manual](MANUAL.md)
+
 ![The player with centered cover art and docked playback controls](docs/media/hero.gif)
 
 [View a static player screenshot](docs/media/player.png)
 
 ### [▶ Live demo & the full feature tour → ochichan.github.io/Yututui](https://ochichan.github.io/Yututui/)
 
-**📖 New to terminals?** The [friendly manual](MANUAL.md) walks through every mode — music, radio, the Local Deck, and the full Spotify move-in — step by step, no jargon. ([한국어](MANUAL.ko.md) · [日本語](MANUAL.ja.md))
+**📖 New to terminals?** The [friendly manual](MANUAL.md) walks through every mode — music, radio and Atlas, DJ Gem, the Local Deck, and the full Spotify move-in — step by step, no jargon. ([한국어](MANUAL.ko.md) · [日本語](MANUAL.ja.md))
 
 ---
 
@@ -147,7 +149,7 @@ That's it. Music.
 
 ## Tour
 
-Every feature below is shown live, in detail, on the **[feature tour](https://ochichan.github.io/Yututui/)**.
+Explore the main modes below, or try the **[interactive feature tour](https://ochichan.github.io/Yututui/)**.
 
 ### The player — real album art & time-synced lyrics
 
@@ -159,21 +161,43 @@ Actual cover images drawn right in the terminal (Kitty/Sixel/iTerm2, auto-detect
 
 ![Search results with the catalog picker open](docs/media/sources.png)
 
+### Radio mode — see what is playing
+
+**`Alt+Shift+R`** turns the app into an internet-radio tuner with separate favorites and listening history. Press **`i`** to see the song information supplied by the station; no Gemini key is needed. When a song is identified, **`f`** inside the card saves it to your music favorites. Stations that do not send song metadata cannot show a track name here.
+
+<a id="atlas-mode"></a>
+
+### Atlas mode — tune the world
+
+In Radio mode, press **`a`** to explore stations on an interactive globe. Drag to rotate, scroll to zoom, click a signal to listen, or pick a country and browse its stations. The side panel brings together world stations, favorites and recent listening.
+
+![Atlas globe rotating and zooming toward East Asia, with the station panel beside it](docs/media/atlas.gif)
+
+*8-second preview from the screen recording.* [Watch the full 27-second demo (silent)](docs/media/atlas.mp4) · [Atlas controls and settings](MANUAL.md#atlas-mode)
+
+Drawn with Braille or ASCII characters, Atlas needs no terminal image protocol. Use **`/`** to search, **`Tab`** to switch between globe and panel, and **`q`** to close. A larger terminal gives the globe and station list room to breathe.
+
 ### DJ Gem streaming
 
 **`Ctrl+R`** builds an endless station around what you're hearing. Recommended tracks carry a clickable **`?`** in the queue and beside Now Playing. Press **`w`** with the queue open to explain its selected row; anywhere else, it explains the current track. The card always names the recommendation source and, when DJ Gem supplied them, adds its role, plain-language reasons and confidence. Picks made without model detail show the source alone.
 
+<a id="dj-gem"></a>
+
 ### DJ Gem assistant *(optional)*
 
-**`g`**, then ask in plain words: *"play some lo-fi", "make me a rainy-day playlist"*. Needs a free Gemini key; everything else works without it.
+**`g`**, then ask in plain words: *"play some lo-fi", "make me a rainy-day playlist"*. Set a Gemini API key in **Settings → DJ Gem** and turn **DJ Gem chat** on. Music search, playback, radio and Atlas work without a Gemini key.
+
+Meet **Momoring**, DJ Gem's new animated Braille mascot. She keeps you company on the empty chat screen while music plays, with colors that follow your theme.
+
+<p align="center">
+  <img src="docs/media/dj-gem-momoring.gif" width="306" alt="Close-up of Momoring animating beside her cauldron on the DJ Gem start screen">
+</p>
+
+*3-second mascot close-up.* [Setup, chat and animation controls](MANUAL.md#dj-gem).
 
 ### The music video, floating over your terminal
 
 **`v`** opens it in a small mpv window; *Auto-continue videos* hands each video off to the next track's, and the mpv window answers `Space`, `.`, `,`, `q`, `f`, `m`.
-
-### Radio mode — and it knows the song
-
-**`Alt+Shift+R`** turns the whole app into an internet-radio tuner; press **`i`** and Gemini names what's playing on the live stream, **`f`** favorites it. Press **`a`** for **Atlas**: a rotatable, zoomable globe of live stations drawn in Braille dots — drag, flick (with animations on), wheel, click a signal to tune, click a country to browse — with no image protocol required.
 
 ### Library, queue & downloads
 
@@ -191,7 +215,7 @@ Media keys, macOS Control Center, Windows SMTC + tray mini player, Linux MPRIS, 
 
 ### Make it yours
 
-14 themes with all 34 color roles hex-editable, 40 animations — from shooting stars and a spinning ASCII donut up to full-canvas showpieces (fireworks, Game of Life, pipes, plasma) — a 10-band EQ with presets, your pick of audio-output device, plus loudness normalization. The UI itself speaks English, 한국어 and 日本語 — Settings → General → **Language** cycles through all three.
+14 theme presets plus Custom, with all 34 color roles hex-editable, 40 animations — from shooting stars and a spinning ASCII donut up to full-canvas showpieces (fireworks, Game of Life, pipes, plasma) — a 10-band EQ with presets, your pick of audio-output device, plus loudness normalization. The UI itself speaks English, 한국어 and 日本語 — Settings → General → **Language** cycles through all three.
 
 ![Aquarium animation around the player, with a Beginner Mode tip open](docs/media/animations.gif)
 
@@ -223,6 +247,8 @@ One toggle makes everything CP437-safe for a bare Linux console or a crusty SSH 
 
 ## Essential keys
 
+These are the default Player keys outside text fields; [Atlas has its own controls](MANUAL.md#atlas-mode).
+
 Press **`?`** in-app for the complete live cheat sheet — it reflects *your* bindings, and app actions can be changed in Settings → Hotkeys (safety and modal keys remain fixed). The core:
 
 | Key | Does |
@@ -245,6 +271,8 @@ Press **`?`** in-app for the complete live cheat sheet — it reflects *your* bi
 | `←` / `→` · `Ctrl+←` / `Ctrl+→` | Move by one character · one word in a text field |
 | `Backspace` / `Ctrl+Backspace` | Delete a character / previous word in a text field |
 | `Ctrl+H` | Return to the Player (on legacy ambiguous terminals, the safe text-edit fallback takes priority) |
+| `Alt+Shift+R` | Enter / leave Radio mode |
+| `a` | Open / close Atlas from the Radio Player |
 | `Ctrl+R` | DJ Gem streaming |
 | `w` | Explain the selected queue recommendation, or the current track |
 | `g` | DJ Gem assistant |
@@ -264,7 +292,7 @@ First aid, always: **`ytt doctor`** checks mpv, yt-dlp and ffmpeg and tells you 
 | Nothing plays, or it errors on play | mpv or yt-dlp missing — run `ytt doctor`. |
 | Sound goes to the wrong device | Settings → Playback → **Audio output** picks from the detected local outputs; **Audio backend** exposes the mpv options. |
 | Worked yesterday, not today | YouTube changed something — `ytt tools update`, then `ytt tools status --why`; if a managed update is bad, `ytt tools use system`. |
-| Several tracks fail with 403/429 or "YouTube rejected the stream" | YouTube's bot protection. Run `ytt doctor --verbose` (it now reports PO-token/oauth readiness), check the [cookies reference](#reference), and make sure a supported JS runtime is available; `ytt tools status --why` shows the active yt-dlp. A [PO-token provider](https://github.com/yt-dlp/yt-dlp?tab=readme-ov-file#po-token-guide) or the [oauth plugin](https://github.com/coletdjnz/yt-dlp-youtube-oauth2) usually fixes it for good. |
+| Several tracks fail with 403/429 or "YouTube rejected the stream" | YouTube may be applying a bot check or rate limit. Run `ytt doctor --verbose`, check the [cookies reference](#reference) and your JS runtime; `ytt tools status --why` shows the active yt-dlp. Follow the official [PO Token Guide](https://github.com/yt-dlp/yt-dlp/wiki/PO-Token-Guide) when a token is needed. |
 | A specific song won't play | It may need sign-in — see the cookies section in the [reference](#reference). |
 | The app runs a different yt-dlp than your shell | That's by design (managed copy vs `PATH`) — see *yt-dlp selection* in the [reference](#reference). |
 
@@ -312,7 +340,9 @@ Terminal support varies by emulator — YuTuTui! probes capabilities and falls b
 
 | Symptom | Fix |
 | --- | --- |
-| DJ Gem won't respond | Add a free Gemini key in Settings → DJ Gem and switch **Enable DJ Gem** on. |
+| DJ Gem won't respond | Set a Gemini API key in Settings → DJ Gem and turn **DJ Gem chat** on. `GEMINI_API_KEY`, if set, overrides the saved key. |
+| Momoring is still or missing | Open an empty DJ Gem chat in a wider terminal. Animation needs a playing queued track and animations enabled (`A` on the Player). |
+| Atlas will not open / panel missing | Enter Radio mode first (`Alt+Shift+R`), enlarge the terminal, then press `a`. `Tab` reveals the panel when there is room. |
 | Remapped a key into chaos | Settings → General → **Reset keybindings**. |
 
 Still stuck? [Open an issue](https://github.com/Ochichan/Yututui/issues) and mention your OS.
@@ -411,9 +441,9 @@ For a destructive, one-shot exact mirror, use an explicit playlist ID with `--to
 <details>
 <summary><b>Sign-in cookies & file locations</b></summary>
 
-**PO tokens & oauth — beyond cookies.** When YouTube starts rejecting *public* streams too (HTTP 403/429 "YouTube rejected the stream"), the fix is usually a **PO-token provider**: install [`bgutil-ytdlp-pot-provider`](https://github.com/Brainicism/bgutil-ytdlp-pot-provider) and add the yt-dlp config line it prints. A more durable sign-in is the [`yt-dlp-youtube-oauth2`](https://github.com/coletdjnz/yt-dlp-youtube-oauth2) plugin (`yt-dlp --plugin-dirs ... --username oauth --password ''` once, then it refreshes itself). `ytt doctor --verbose` now reports which of these are ready on your machine.
+**YouTube access.** For token requirements and provider setup, follow yt-dlp's [PO Token Guide](https://github.com/yt-dlp/yt-dlp/wiki/PO-Token-Guide). YouTube OAuth login no longer works with yt-dlp; use the official [cookie export instructions](https://github.com/yt-dlp/yt-dlp/wiki/Extractors#exporting-youtube-cookies) when account access is needed. `ytt doctor --verbose` reports local tool readiness; a detected legacy OAuth plugin does not establish that sign-in works.
 
-**Cookies (optional).** Public songs play anonymously — only members-only/region-locked tracks and account playlists need this. Export your YouTube Music cookies in **Netscape format** to `~/Music/yututui/cookies.txt` (Windows: `%USERPROFILE%\Music\yututui\cookies.txt`) and restart. **Treat that file like a password**, and export the *incognito way*: sign in inside a private window, export `cookies.txt` from that tab, then close the window — a session whose browser is gone never gets rotated or signed out. A good export has `SAPISID`/`SID` lines in it.
+**Cookies (optional).** For content requiring an account, export YouTube Music cookies in **Netscape format** to `~/Music/yututui/cookies.txt` (Windows: `%USERPROFILE%\Music\yututui\cookies.txt`) and restart. **Treat the file like a password.** Follow the export instructions above; cookies can expire, and they do not guarantee access to region-restricted content.
 
 **Config & data.**
 

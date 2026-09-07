@@ -6,7 +6,28 @@ This is the friendly, take-your-time guide to YuTuTui!. It's written for people 
 
 One thing before anything else: **you can always press `?` inside the app.** It opens a cheat sheet of every key, and it always matches *your* settings. If you remember one thing from this manual, remember `?`.
 
+[DJ Gem & Momoring](#dj-gem) · [Atlas globe](#atlas-mode) · [All chapters](#contents)
+
+<a id="contents"></a>
+
+<details>
+<summary>Contents</summary>
+
+1. [First steps](#chapter-1)
+2. [Everyday music (the normal mode)](#chapter-2)
+3. [Radio mode — the app becomes a radio tuner](#chapter-3)
+4. [Local Deck — your own music, beautifully](#chapter-4)
+5. [Moving in from Spotify — the full, gentle walkthrough](#chapter-5)
+6. [Backing up your personal data](#chapter-6)
+7. [Keeping two computers in step](#chapter-7)
+8. [Playing from your own music server](#chapter-8)
+9. [When something goes wrong (anywhere)](#chapter-9)
+
+</details>
+
 ---
+
+<a id="chapter-1"></a>
 
 ## 1. First steps
 
@@ -32,6 +53,10 @@ That's the whole launch. The player appears in the window.
 The first launch points to Search for ten seconds; press its displayed key (normally `s`) or click
 **Search**. If mpv, yt-dlp, or ffmpeg is missing, use the setup card's copy/guide buttons and choose
 **Check again** after installing it. The technical details remain available through `ytt doctor`.
+
+<details>
+<summary>Terminal closing and background playback</summary>
+
 On POSIX systems, guarded playback requires mpv 0.33 or newer. The interactive `ytt` player exits
 immediately for a definitive Unix terminal or multiplexer loss. An ambiguous cursor reply or
 unusable multiplexer query must be observed independently twice before shutdown. A liveness
@@ -40,6 +65,8 @@ deadline, and a worker that
 never returns is bounded by an eight-second watchdog. Retained Windows ConPTY/tmux-control brokers and repeated same-type tmux/Screen/Zellij nesting
 cannot be distinguished from an attached client; use `ytt daemon` or a host-side lifetime
 supervisor/lease there. The supported scope is in [terminal compatibility](docs/terminal-compatibility.md#terminal-lifetime-detection).
+
+</details>
 
 ### Play your first song
 
@@ -66,7 +93,9 @@ YuTuTui! is five screens, each one key away:
 | `o` | **Settings** | Everything adjustable, including accounts |
 | `g` | **DJ Gem** | Ask for music in plain words *(optional, see below)* |
 
-`Esc` generally backs you out of wherever you are. The mouse works everywhere too — click anything, scroll the wheel to change volume.
+The keys below are defaults outside text fields. Radio and Local Deck change the Player; Atlas is a globe view inside Radio mode. In Atlas, some keys have different meanings — see the [Atlas controls](#atlas-mode).
+
+`Esc` generally takes you back a step. Mouse actions depend on what is under the pointer: scrolling can move a list, change volume, or zoom the Atlas globe.
 
 ### The player bar follows you
 
@@ -82,6 +111,8 @@ miniplayer — title, progress, transport — then springs back to the full layo
 the window grows again. Nothing to configure; it just follows the window.
 
 ---
+
+<a id="chapter-2"></a>
 
 ## 2. Everyday music (the normal mode)
 
@@ -118,18 +149,27 @@ Press **`l`**. The Library has five tabs: **All**, **Favorites**, **History**, *
 
 On any song, press **`d`**: it's saved as a proper music file (cover art and title included) into your Music folder, and appears under Library → Downloads. **`Shift+D`** downloads a whole list or playlist at once. Downloaded songs play without internet — and they feed the Local Deck (chapter 4).
 
+<a id="dj-gem"></a>
+
 ### DJ Gem *(optional)*
 
-DJ Gem is the app's built-in music brain. It's optional and needs a free Gemini API key from Google — everything else in the app works without it.
+DJ Gem can help choose music and build playlists. Chat uses a Gemini API key; regular search, playback, radio and Atlas do not need one.
 
-- **Endless station:** press **`Ctrl+R`** and it keeps the queue filled with songs that fit what you're hearing.
-- **Ask in words:** press **`g`** and type things like *"play some quiet piano"* or *"make me a rainy-day playlist"* — it can build the playlist right into your Library.
+1. Open **Settings → DJ Gem**, enter your **API key**, and turn **DJ Gem chat** on. You can also set `GEMINI_API_KEY` before launching `ytt`; that value takes precedence over the saved key.
+2. From the Player, press **`g`**, type a request such as *"play some quiet piano"* or *"make me a rainy-day playlist"*, and send it with **`Enter`**. DJ Gem can create a playlist in your Library.
+3. Choose the Gemini model in Settings → DJ Gem, or click the model name at the bottom of the chat screen.
 
-Recommended tracks carry a clickable **`?`** in the queue and beside Now Playing. With the queue open, **`w`** explains the selected row; otherwise it explains the current track. The card always shows where the recommendation came from. When DJ Gem supplied model detail it also shows the track's role, plain-language reasons and optional confidence; local station picks and other recommendations without that detail show their source alone.
+**An endless station:** in normal music mode, **`Ctrl+R`** toggles streaming around the current song. It can keep the queue filled without a Gemini key using fallback recommendations. Streaming and repeat cannot be enabled together: turn repeat off with **`r`** before enabling streaming.
 
-To switch it on: get a free Gemini API key from Google, then paste it in **Settings → DJ Gem** and enable it.
+**Why this recommendation?** Recommended tracks carry a clickable **`?`** in the queue and beside Now Playing. With the queue open, **`w`** explains the selected row; otherwise it explains the current track. The card always names the recommendation source. When DJ Gem supplied model detail, it also shows the track's role, reasons and optional confidence; picks without that detail show their source alone.
+
+**Momoring, the new mascot:** the empty DJ Gem screen shows a Braille character beside the setup text when the terminal has enough room. She animates while a queued track is playing and animations are enabled; paused playback or disabled animations leaves her still. She hides once the conversation has messages, or when the window is too small. The mascot itself needs no API key or terminal image protocol. Toggle animations with **`A`** on the Player screen.
+
+[Watch the 3-second Momoring close-up](docs/media/dj-gem-momoring.gif).
 
 ---
+
+<a id="chapter-3"></a>
 
 ## 3. Radio mode — the app becomes a radio tuner
 
@@ -158,19 +198,49 @@ The best part: **press `i`** when a song catches your ear. A little card pops up
 
 There's also a recordings browser on **`Alt+Shift+E`**.
 
-### Atlas — the globe
+This card reads broadcast metadata, without a Gemini request. If the station sends no song metadata, it reports that rather than identifying audio. The card's DJ Gem action requires chat setup.
 
-Press **`a`** (or click *Atlas globe* under the radio set piece) and the Player becomes a spinning globe of live stations, drawn right in your terminal with Braille dots — no image support needed, it works wherever the app does. Every dot is a station; the panel beside it lists what's in view.
+<a id="atlas-mode"></a>
 
-- **Drag** to rotate, **flick** to send it coasting (with animations on), **wheel** to zoom. Keyboard: arrows or `h j k l` rotate, `+`/`-` zoom, `0` resets.
-- **Click a dot** to tune it. **Click a country** (or press **`c`**) to browse its top stations — the country lights up.
-- **`n`** / **`p`** step through the stations in view, **`Enter`** tunes the highlighted one, **`r`** tunes a random station you haven't heard lately, **`g`** jumps back to the one playing, **`f`** favorites it.
-- **`/`** searches by name, country, language or tag; **`Tab`** moves between the globe and the list; **`G`** toggles the grid lines; **`R`** lets the globe turn by itself.
-- **`q`** or **`Esc`** closes the globe. Space, `m`, `,` and `.` keep controlling playback while it's open.
+### Atlas mode — tune the world
 
-Stations come from Radio Browser and are cached for a day. Some have no published coordinates; those get an approximate spot inside their country and say so. Settings → Playback has the Atlas options (renderer, how many stations to load, panel, coasting, grid, follow-playing, autorotate); pick the *ASCII* renderer if your font has no Braille.
+On the **Radio Player**, press **`a`** (or click *Atlas globe* under the radio artwork). Enter Radio mode first with **`Alt+Shift+R`**. Atlas draws its globe in Braille or ASCII characters, so no image protocol is needed; it is unavailable in the tiny miniplayer layout.
+
+[Watch the 27-second Atlas recording](docs/media/atlas.mp4) · [Animated preview](docs/media/atlas.gif)
+
+**Start with the mouse:** drag the globe to rotate, flick to coast when animations and coasting are on, and scroll to zoom. Click a station marker to tune in, or click a country to browse its stations. Nearby stations can share a marker at this scale; zoom in or use the list to choose a station.
+
+The side panel has **World**, **Favorites** and **Recent** tabs. **`Tab`** switches focus between globe and panel. In the panel, **`↑` / `↓`** selects a row and **`←` / `→`** changes tabs. If the panel is hidden, `Tab` reveals it when there is enough width; enlarge the terminal if necessary.
+
+| Key | In Atlas |
+| --- | --- |
+| Arrows / `h j k l` | Rotate with globe focus; navigate with panel focus |
+| `Shift` + arrows | Rotate in larger steps with globe focus |
+| `+` / `-` | Zoom in / out (`=` also zooms in) |
+| `0` | Reset zoom and leave the country view; center on the playing station when available |
+| `n` / `p` | Highlight the next / previous visible signal |
+| `Enter` | Activate the selected signal or panel row |
+| `c` | Browse the country under the globe cursor |
+| `r` | Tune a random station, favoring ones not heard recently |
+| `g` | Return to the station playing from Atlas |
+| `f` | Toggle the selected station's radio favorite |
+| `/` | Search by name, country, language or tag; `Enter` fetches matching stations |
+| `Tab` / `Shift+Tab` | Switch globe / panel focus |
+| `G` / `R` | Toggle grid / autorotation (rotation needs animations on) |
+| `PageUp` / `PageDown` | Volume up / down |
+| `Space` / `m` / `,` / `.` | Pause / mute / previous / next |
+| `q` / `a` | Close Atlas when not typing in search |
+| `Esc` | Leave search editing or clear search, then highlight, then country view, then close |
+
+**Keys depend on the screen.** In Atlas, `g` returns to the playing station and `r` picks a random one. Close Atlas to use `g` for DJ Gem or `r` to return to the live edge. To enable animations with **`A`**, return to the Player first.
+
+In Radio mode, **Settings → Playback** includes the Atlas renderer, station limit, panel visibility, coasting, grid, follow-playing and autorotation options. The default world catalog loads up to **2,000 stations**, adjustable from **500 to 5,000**. Auto rendering uses Braille normally and ASCII in retro mode; choose ASCII yourself if your font lacks Braille glyphs.
+
+Station listings come from Radio Browser and are cached for **24 hours**. Stations without coordinates are marked as approximate locations within their country. Cached listings do not make the broadcasts offline: live playback and fresh searches still need a network connection.
 
 ---
+
+<a id="chapter-4"></a>
 
 ## 4. Local Deck — your own music, beautifully
 
@@ -216,6 +286,8 @@ One workflow crosses that boundary on purpose: from an **Import Sessions** row, 
 - Spotify imports can download straight into it — read on.
 
 ---
+
+<a id="chapter-5"></a>
 
 ## 5. Moving in from Spotify — the full, gentle walkthrough
 
@@ -307,6 +379,8 @@ The most common hiccups (403 "not allowlisted", INVALID_CLIENT, a busy port) all
 
 ---
 
+<a id="chapter-6"></a>
+
 ## 6. Backing up your personal data
 
 YuTuTui! can gather the portable parts of your setup and music taste into one versioned, human-readable JSON file. Inside the app, open **Settings (`o`) → General → Export personal data**. It writes to your computer's normal **Downloads** folder and tells you the completed filename.
@@ -350,6 +424,8 @@ Exports are written in schema 2 by default. `ytt data export --schema 1` writes 
 YuTuTui! creates a new owner-only file and never overwrites an existing one. It also rejects a destination where an untrusted local account could create, replace, or delete the completed path. If the destination filesystem cannot enforce and verify these private permissions or ACLs, the export fails instead of leaving a broadly readable copy.
 
 ---
+
+<a id="chapter-7"></a>
 
 ## 7. Keeping two computers in step
 
@@ -424,6 +500,8 @@ Removing a device is real: it re-locks your data so the removed machine cannot r
 
 ---
 
+<a id="chapter-8"></a>
+
 ## 8. Playing from your own music server
 
 YuTuTui! can also play from one **OpenSubsonic** or **Navidrome** server — your own library, on your own hardware, alongside everything else in the app.
@@ -464,6 +542,8 @@ It needs a second password of its own. Turning it off never affects ordinary ser
 
 ---
 
+<a id="chapter-9"></a>
+
 ## 9. When something goes wrong (anywhere)
 
 First, always: quit the app and run
@@ -474,10 +554,7 @@ ytt doctor
 
 It checks all the helper programs and tells you exactly what's missing and how to get it. For everything else — songs that won't play, missing album art, scrobbles, Spotify errors — the **[README troubleshooting tables](README.md#troubleshooting)** cover the known cases, sorted by symptom.
 
-**YouTube suddenly rejects streams (403/429)?** That's YouTube's bot protection. Two things fix it for good, and `ytt doctor --verbose` now shows whether you have them:
-
-- a **PO-token provider** ([`bgutil-ytdlp-pot-provider`](https://github.com/Brainicism/bgutil-ytdlp-pot-provider)) — install it and add the yt-dlp config line it prints; or
-- the **oauth plugin** ([`yt-dlp-youtube-oauth2`](https://github.com/coletdjnz/yt-dlp-youtube-oauth2)) — run `yt-dlp --plugin-dirs … --username oauth --password ''` once and it keeps itself signed in.
+**YouTube rejects a stream (403/429)?** Run `ytt doctor --verbose` and follow the [playback troubleshooting steps](README.md#playback). Include the error and diagnostic results when reporting a problem; redact any personal paths or credentials.
 
 Still stuck? [Open an issue](https://github.com/Ochichan/Yututui/issues) and just describe what you saw — mention your operating system.
 
