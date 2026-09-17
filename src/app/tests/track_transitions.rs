@@ -1,4 +1,5 @@
 use super::*;
+use crate::crossfade::TrackHandoff;
 
 fn player_batch(cmds: &[Cmd]) -> Vec<&PlayerCmd> {
     cmds.iter().flat_map(Cmd::player_commands).collect()
@@ -653,4 +654,68 @@ fn cold_toggle_pause_and_startup_autoplay_wait_for_load_admission() {
             .count(),
         1
     );
+}
+
+/// The `Load` this transition sends to the player, and the handoff riding on it.
+fn loaded_handoff(cmds: &[Cmd]) -> TrackHandoff {
+    player_batch(cmds)
+        .into_iter()
+        .find_map(|cmd| match cmd {
+            PlayerCmd::Load(load) => Some(load.handoff()),
+            _ => None,
+        })
+        .expect("a Load command")
+}
+
+/// Two local files queued back to back, playing the first.
+fn local_pair_playing() -> (App, Vec<std::path::PathBuf>) {
+    let paths = vec![temp_audio_file("xfade-a"), temp_audio_file("xfade-b")];
+    let songs = paths
+        .iter()
+        .enumerate()
+        .map(|(i, path)| bare_local(&path.to_string_lossy(), &format!("local {i}")))
+        .collect();
+    let mut app = App::new(100);
+    app.queue.set(songs, 0);
+    app.mode = Mode::Player;
+    let mut cmds = app.load_song(app.queue.current().cloned());
+    admit_player_transition(&mut app, &mut cmds);
+    app.playback.duration = Some(240.0);
+    (app, paths)
+}
+
+#[test]
+fn the_transition_path_carries_the_crossfade_decision_for_two_local_files() {
+    let (mut app, paths) = local_pair_playing();
+    app.audio.local_crossfade = crate::crossfade::LocalCrossfade::from_tenths(15);
+
+    // This build cannot overlap, so the wiring must still produce today's replace.
+    app.audio.overlap_support = crate::crossfade::overlap_support();
+    assert!(!app.audio.overlap_support.is_available());
+    let mut cmds = app.update(Msg::Key(key(KeyCode::Char('.'))));
+    assert_eq!(loaded_handoff(&cmds), TrackHandoff::Cut);
+    admit_player_transition(&mut app, &mut cmds);
+    app.playback.duration = Some(240.0);
+
+    app.audio.overlap_support = crate::crossfade::OverlapSupport::Available;
+    let cmds = app.update(Msg::Key(key(KeyCode::Char(','))));
+    match loaded_handoff(&cmds) {
+        TrackHandoff::Overlap { fade } => assert!((fade.as_secs_f64() - 1.5).abs() < 1e-9),
+        other => panic!("expected an overlap, got {other:?}"),
+    }
+
+    for path in paths {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+#[test]
+fn a_remote_transition_cuts_even_with_overlap_available() {
+    let mut app = app_playing(3, 0);
+    app.audio.local_crossfade = crate::crossfade::LocalCrossfade::from_tenths(15);
+    app.audio.overlap_support = crate::crossfade::OverlapSupport::Available;
+    app.playback.duration = Some(240.0);
+
+    let cmds = app.update(Msg::Key(key(KeyCode::Char('.'))));
+    assert_eq!(loaded_handoff(&cmds), TrackHandoff::Cut);
 }

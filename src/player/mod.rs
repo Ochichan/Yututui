@@ -89,6 +89,7 @@ impl MediaSourceContext {
 pub struct PlaybackLoad {
     destination: crate::playback_target::PlaybackDestination,
     source_context: MediaSourceContext,
+    handoff: crate::crossfade::TrackHandoff,
 }
 
 impl PlaybackLoad {
@@ -106,7 +107,17 @@ impl PlaybackLoad {
         Self {
             destination,
             source_context,
+            handoff: crate::crossfade::TrackHandoff::Cut,
         }
+    }
+
+    /// Attach the owner's handoff decision.
+    ///
+    /// Both constructors default to [`crate::crossfade::TrackHandoff::Cut`], so every existing
+    /// construction site (tests, daemon, recovery, restore) keeps today's replace semantics.
+    pub fn with_handoff(mut self, handoff: crate::crossfade::TrackHandoff) -> Self {
+        self.handoff = handoff;
+        self
     }
 
     /// Compatibility accessor for direct targets. Credentialed targets never expose an upstream
@@ -128,6 +139,10 @@ impl PlaybackLoad {
     pub const fn source_context(&self) -> MediaSourceContext {
         self.source_context
     }
+
+    pub const fn handoff(&self) -> crate::crossfade::TrackHandoff {
+        self.handoff
+    }
 }
 
 impl std::fmt::Debug for PlaybackLoad {
@@ -136,6 +151,7 @@ impl std::fmt::Debug for PlaybackLoad {
             .debug_struct("PlaybackLoad")
             .field("destination", &self.destination)
             .field("source_context", &self.source_context)
+            .field("handoff", &self.handoff)
             .finish()
     }
 }

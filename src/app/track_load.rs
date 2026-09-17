@@ -60,6 +60,7 @@ impl App {
         &mut self,
         load: PreparedTrackLoad,
     ) -> Vec<Cmd> {
+        self.playback.loaded = Some(load.as_playback_load());
         let PreparedTrackLoad {
             song,
             destination: _,
@@ -141,6 +142,7 @@ impl App {
         self.playback.duration = None;
         self.playback.paused = true;
         self.playback.stream_now_playing = None;
+        self.playback.loaded = None;
         self.playback.cache_time = None;
         self.playback.cache_time_at = None;
         self.anim.last_shown_sec = -1;

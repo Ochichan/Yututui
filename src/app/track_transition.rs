@@ -77,6 +77,17 @@ pub(in crate::app) struct PreparedTrackLoad {
     pub(in crate::app) invalid_prefetch: Option<(String, String)>,
 }
 
+impl PreparedTrackLoad {
+    /// What mpv will be told to load. Built here so the intent that goes to the player and the
+    /// projection kept for the next handoff decision cannot describe different media.
+    pub(in crate::app) fn as_playback_load(&self) -> crate::player::PlaybackLoad {
+        crate::player::PlaybackLoad::from_destination(
+            self.destination.clone(),
+            crate::player::MediaSourceContext::from_live(self.song.is_radio_station()),
+        )
+    }
+}
+
 #[derive(Clone)]
 pub(in crate::app) struct SkippedCandidate {
     pub(in crate::app) song: Song,
@@ -572,10 +583,15 @@ impl App {
         plan.recorder = Some(recorder);
         match &plan.kind {
             TrackTransitionKind::Load { load, .. } => {
-                commands.push(PlayerCmd::load_destination(
-                    load.destination.clone(),
-                    crate::player::MediaSourceContext::from_live(load.song.is_radio_station()),
-                ));
+                let incoming = load.as_playback_load();
+                let handoff = crate::crossfade::handoff(
+                    self.playback.loaded.as_ref(),
+                    self.playback.duration,
+                    &incoming,
+                    self.audio.local_crossfade,
+                    self.audio.overlap_support,
+                );
+                commands.push(PlayerCmd::Load(incoming.with_handoff(handoff)));
                 if let Some(af) = self.track_audio_filter() {
                     commands.push(PlayerCmd::SetAudioFilter(af));
                 }
