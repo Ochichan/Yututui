@@ -340,3 +340,29 @@ fn local_deck_bracket_keys_nudge_crossfade_and_leave_player_speed_alone() {
     );
     assert!(app.audio.local_crossfade.is_off());
 }
+
+#[test]
+fn the_xfade_chip_appears_only_when_the_machine_can_actually_overlap() {
+    let _guard = crate::i18n::lock_for_test();
+    crate::i18n::set_language(crate::i18n::Language::English);
+    let mut app = app_playing(3, 0);
+    app.audio.local_crossfade = crate::crossfade::LocalCrossfade::from_tenths(15);
+
+    app.audio.overlap_support = crate::crossfade::overlap_support();
+    assert_eq!(app.crossfade_chip(), None);
+    assert!(
+        !buffer_contains(&render_app_buffer(&app, 120, 26), "xfade"),
+        "a chip here would promise a fade this build cannot perform"
+    );
+
+    app.audio.overlap_support = crate::crossfade::OverlapSupport::Available;
+    assert_eq!(app.crossfade_chip().as_deref(), Some("1.5s"));
+    assert!(buffer_contains(
+        &render_app_buffer(&app, 120, 26),
+        "xfade 1.5s"
+    ));
+
+    app.audio.local_crossfade = crate::crossfade::LocalCrossfade::Off;
+    assert_eq!(app.crossfade_chip(), None);
+    assert!(!buffer_contains(&render_app_buffer(&app, 120, 26), "xfade"));
+}

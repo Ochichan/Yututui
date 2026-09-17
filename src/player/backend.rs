@@ -43,6 +43,11 @@ pub struct AudioRuntimeStatus {
     pub extra_args_count: usize,
     pub gapless: bool,
     pub media_controls_disabled_by_yututui: bool,
+    pub local_crossfade: crate::crossfade::LocalCrossfade,
+    /// Whether this build can overlap two local files, and why not when it cannot. Carried as
+    /// the probe's own answer rather than a `supports_` bool beside `supports_gapless`, so the
+    /// capability line and the reason line cannot disagree about it.
+    pub overlap: crate::crossfade::OverlapSupport,
 }
 
 pub fn runtime_status(cfg: &Config) -> AudioRuntimeStatus {
@@ -71,5 +76,7 @@ pub fn runtime_status(cfg: &Config) -> AudioRuntimeStatus {
         extra_args_count: audio.mpv.extra_args.len(),
         gapless: cfg.effective_gapless(),
         media_controls_disabled_by_yututui: super::mpv::media_controls_flag_supported(),
+        local_crossfade: cfg.effective_local_crossfade(),
+        overlap: crate::crossfade::overlap_support(),
     }
 }

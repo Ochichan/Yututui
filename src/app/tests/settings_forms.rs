@@ -443,6 +443,29 @@ fn local_crossfade_slider_runs_off_to_three_seconds_and_survives_a_save() {
 }
 
 #[test]
+fn the_crossfade_row_admits_that_this_build_cannot_overlap() {
+    let _guard = crate::i18n::lock_for_test();
+    crate::i18n::set_language(crate::i18n::Language::English);
+    let mut app = app_playing(1, 0);
+    app.open_settings();
+
+    focus_settings_field(&mut app, SettingsTab::Playback, Field::Speed);
+    let buffer = render_app_buffer(&app, 120, 40);
+    assert!(
+        !buffer_contains(&buffer, "cannot overlap"),
+        "the caveat belongs to the crossfade row, not to every Playback row"
+    );
+
+    focus_settings_field(&mut app, SettingsTab::Playback, Field::LocalCrossfade);
+    let buffer = render_app_buffer(&app, 120, 40);
+    assert!(
+        crate::crossfade::overlap_support().is_available()
+            || buffer_contains(&buffer, "this build cannot overlap two files"),
+        "an unsupported build must say so where the slider is"
+    );
+}
+
+#[test]
 fn settings_reset_all_turns_local_crossfade_off() {
     let mut app = app_playing(1, 0);
     app.config.local_crossfade_secs = Some(2.0);

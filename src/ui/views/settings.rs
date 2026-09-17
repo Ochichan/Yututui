@@ -74,6 +74,18 @@ fn footer_hint(app: &App, st: &SettingsState) -> String {
                 "エクスポート · 暗号化されないJSON · 個人の再生履歴を含む"
             )
         )
+    } else if matches!(st.current_field(), Some(Field::LocalCrossfade))
+        && !crate::crossfade::overlap_support().is_available()
+    {
+        // The slider saves and travels either way, but a build that cannot overlap two files
+        // will not fade between them. Said here rather than in the row label, whose column
+        // width every other Playback row pays for.
+        t!(
+            "saved, but this build cannot overlap two files  ·  transitions stay as today",
+            "저장되지만 이 빌드는 두 파일을 겹쳐 재생할 수 없어요  ·  전환은 지금과 같아요",
+            "保存されますがこのビルドは2つのファイルを重ねられません  ·  切替は今のままです"
+        )
+        .to_owned()
     } else if st.tab == SettingsTab::Sync {
         format!(
             "{}/{} {}  ·  {} {}  ·  {} {}  ·  {} {}",

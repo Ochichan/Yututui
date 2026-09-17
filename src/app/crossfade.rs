@@ -1,6 +1,7 @@
-//! The reducer's crossfade behaviors: the Local Deck nudge keys.
+//! The reducer's crossfade behaviors. The Local Deck nudge keys and the status chip.
 
 use super::*;
+use crate::crossfade::LocalCrossfade;
 
 impl App {
     /// `[` / `]` in Local Deck. `None` when the chord is not a nudge, so `on_key_local` keeps
@@ -35,5 +36,19 @@ impl App {
         vec![Cmd::Persist(PersistCmd::Config(Box::new(
             self.config.clone(),
         )))]
+    }
+
+    /// `Some("1.5s")` when the chip should be drawn.
+    ///
+    /// Suppressed when this machine cannot overlap, because a chip claiming a fade that will
+    /// not happen is the one thing acceptance rules out. The settings row and `ytt doctor
+    /// audio` carry the unsupported note instead.
+    pub fn crossfade_chip(&self) -> Option<String> {
+        self.audio
+            .overlap_support
+            .is_available()
+            .then(|| self.audio.local_crossfade)
+            .filter(|setting| !setting.is_off())
+            .map(LocalCrossfade::label)
     }
 }
