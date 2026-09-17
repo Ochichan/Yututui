@@ -306,3 +306,37 @@ fn seek_keys_use_the_configured_interval() {
     }
     app.admit_player_intents_for_test(&cmds);
 }
+
+#[test]
+fn local_deck_bracket_keys_nudge_crossfade_and_leave_player_speed_alone() {
+    let mut app = app_playing(3, 0);
+    app.mode = Mode::Library;
+    app.local_dedicated_mode = true;
+
+    let cmds = app.update(Msg::Key(key(KeyCode::Char(']'))));
+    assert_eq!(app.audio.local_crossfade.label(), "0.1s");
+    assert_eq!(
+        save_config(&cmds).map(|cfg| cfg.local_crossfade_secs),
+        Some(Some(0.1)),
+        "the nudge persists without a Settings save"
+    );
+    assert!(app.status.text.contains("0.1s"), "{}", app.status.text);
+    assert_eq!(app.playback.speed, 1.0, "speed is untouched in Local Deck");
+
+    app.update(Msg::Key(key(KeyCode::Char('['))));
+    app.update(Msg::Key(key(KeyCode::Char('['))));
+    assert!(
+        app.audio.local_crossfade.is_off(),
+        "the nudge saturates at off instead of wrapping"
+    );
+
+    app.mode = Mode::Player;
+    app.local_dedicated_mode = false;
+    let cmds = app.update(Msg::Key(key(KeyCode::Char(']'))));
+    app.admit_player_intents_for_test(&cmds);
+    assert!(
+        (app.playback.speed - 1.1).abs() < 1e-9,
+        "Player `]` still means speed up"
+    );
+    assert!(app.audio.local_crossfade.is_off());
+}

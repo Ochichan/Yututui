@@ -162,6 +162,10 @@ pub fn default_bindings() -> Vec<(KeyContext, Action, Chord)> {
         (C::Library, A::Back, ch('q')),
         (C::LocalDeck, A::AcceptAllImportReview, ch('A')),
         (C::LocalDeck, A::OpenLocalFind, ctrl('f')),
+        // Appended to the Local Deck run so `groups()`, which is consecutive-only, keeps one
+        // Local Deck help group.
+        (C::LocalDeck, A::LocalCrossfadeDown, ch('[')),
+        (C::LocalDeck, A::LocalCrossfadeUp, ch(']')),
         // Playlists tab (root list of playlists + opened-playlist drill-down).
         (C::Playlists, A::Confirm, key(KeyCode::Enter)),
         (C::Playlists, A::PlayAll, ch('a')),
