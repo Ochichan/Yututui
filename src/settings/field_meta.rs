@@ -109,9 +109,11 @@ impl Field {
             | Field::PlayerBarPosition
             | Field::SpotifyImportMode
             | Field::StreamingMode => FieldKind::Select,
-            Field::Speed | Field::SeekInterval | Field::Band(_) | Field::AnimFps => {
-                FieldKind::Slider
-            }
+            Field::Speed
+            | Field::SeekInterval
+            | Field::LocalCrossfade
+            | Field::Band(_)
+            | Field::AnimFps => FieldKind::Slider,
             Field::ExportPersonalData
             | Field::ResetKeybindings
             | Field::ResetAll
@@ -287,6 +289,12 @@ impl Field {
             Field::BigText => t!("Large text", "큰 글자 모드", "大きな文字モード").to_owned(),
             Field::Speed => t!("Playback speed", "재생 속도", "再生速度").to_owned(),
             Field::SeekInterval => t!("Seek interval", "탐색 간격", "シーク間隔").to_owned(),
+            Field::LocalCrossfade => t!(
+                "Local crossfade",
+                "로컬 크로스페이드",
+                "ローカルクロスフェード"
+            )
+            .to_owned(),
             Field::MouseWheelVolume => {
                 t!("Wheel volume", "휠 볼륨 조절", "ホイール音量調節").to_owned()
             }

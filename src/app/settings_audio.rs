@@ -475,6 +475,7 @@ fn reset_settings_state(state: &mut SettingsState, local_dedicated_mode: bool) {
     draft.enqueue_next = defaults.effective_enqueue_next();
     draft.speed = defaults.effective_speed();
     draft.seek_seconds = defaults.effective_seek_seconds();
+    draft.local_crossfade = defaults.effective_local_crossfade();
     draft.gapless = defaults.effective_gapless();
     draft.long_form_seek_optimization = defaults.audio.mpv.long_form_seek_optimization;
     draft.autoplay_streaming = defaults.effective_autoplay_streaming();

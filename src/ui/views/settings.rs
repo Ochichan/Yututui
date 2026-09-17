@@ -540,6 +540,14 @@ fn field_value_text(
             &bar(st.draft.seek_seconds, SEEK_SECONDS_MIN, SEEK_SECONDS_MAX),
             &format!("{:.0}s", st.draft.seek_seconds),
         ),
+        (Field::LocalCrossfade, _) => slider_str(
+            &bar(
+                f64::from(st.draft.local_crossfade.tenths()),
+                0.0,
+                f64::from(crate::crossfade::CrossfadeSecs::MAX.tenths()),
+            ),
+            &st.draft.local_crossfade.label(),
+        ),
         (Field::Band(i), _) => slider_str(
             &bar(st.draft.eq_bands[i], BAND_GAIN_MIN, BAND_GAIN_MAX),
             &format!("{:+.0} dB", st.draft.eq_bands[i]),

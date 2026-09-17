@@ -34,6 +34,7 @@ impl SettingsDraft {
             | Field::SearchRadioBrowser => self.value_display_search(field),
             Field::Speed
             | Field::SeekInterval
+            | Field::LocalCrossfade
             | Field::MouseWheelVolume
             | Field::Gapless
             | Field::MediaControls
@@ -214,6 +215,7 @@ impl SettingsDraft {
             Field::RadioRecording => self.recording_mode.label(),
             Field::Speed => format!("{:.1}x", self.speed),
             Field::SeekInterval => format!("{:.0}s", self.seek_seconds),
+            Field::LocalCrossfade => self.local_crossfade.label(),
             Field::MouseWheelVolume => toggle_str(self.mouse_wheel_volume),
             Field::Gapless => toggle_str(self.gapless),
             Field::MediaControls => toggle_str(self.media_controls),

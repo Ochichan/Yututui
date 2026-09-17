@@ -335,6 +335,10 @@ pub struct Config {
     pub speed: Option<f64>,
     /// Seek step in seconds for the seek-back/-forward keys. `None` → 10s.
     pub seek_seconds: Option<f64>,
+    /// Crossfade length in seconds between two local files. `None` → off. Seconds rather than
+    /// tenths because a hand-edited `config.json` should read `1.5`; the value is parsed into
+    /// [`crate::crossfade::LocalCrossfade`] at read time, never trusted raw.
+    pub local_crossfade_secs: Option<f64>,
     /// Adjust volume with the mouse wheel over the player volume cluster. `None` → on.
     pub mouse_wheel_volume: Option<bool>,
     /// Text zoom level in percent (one of 100/125/150/175/200/250/300), rendered via
@@ -588,6 +592,7 @@ impl Default for Config {
             normalize: None,
             speed: None,
             seek_seconds: None,
+            local_crossfade_secs: None,
             mouse_wheel_volume: None,
             text_zoom: None,
             zoom_wheel_lock: None,
@@ -903,6 +908,11 @@ impl Config {
     /// Seek step in seconds, clamped to the supported range (default 10s).
     pub fn effective_seek_seconds(&self) -> f64 {
         clamp_seek_seconds(self.seek_seconds.unwrap_or(SEEK_SECONDS_DEFAULT))
+    }
+
+    /// Local-file crossfade length, clamped to the supported range (default off).
+    pub fn effective_local_crossfade(&self) -> crate::crossfade::LocalCrossfade {
+        crate::crossfade::LocalCrossfade::from_secs(self.local_crossfade_secs.unwrap_or(0.0))
     }
 
     /// Whether the mouse wheel changes volume over the player volume cluster (default on).

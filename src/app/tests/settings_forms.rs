@@ -378,6 +378,99 @@ fn recordings_browser_moves_saves_discards_and_closes() {
 }
 
 #[test]
+fn local_crossfade_slider_runs_off_to_three_seconds_and_survives_a_save() {
+    let _guard = crate::i18n::lock_for_test();
+    crate::i18n::set_language(crate::i18n::Language::English);
+    let mut app = app_playing(1, 0);
+
+    app.open_settings();
+    focus_settings_field(&mut app, SettingsTab::Playback, Field::LocalCrossfade);
+    assert_eq!(
+        app.settings.as_ref().unwrap().draft.local_crossfade,
+        crate::crossfade::LocalCrossfade::Off,
+        "a config without the key opens at Off"
+    );
+    assert_eq!(
+        app.settings
+            .as_ref()
+            .unwrap()
+            .draft
+            .value_display(Field::LocalCrossfade),
+        "Off"
+    );
+
+    // Off is the bottom of the range, and 3.0s is the top: 40 presses cannot overshoot either.
+    assert!(app.settings_change(-1).is_empty());
+    assert_eq!(
+        app.settings.as_ref().unwrap().draft.local_crossfade,
+        crate::crossfade::LocalCrossfade::Off
+    );
+    for _ in 0..40 {
+        assert!(app.settings_change(1).is_empty());
+    }
+    assert_eq!(
+        app.settings
+            .as_ref()
+            .unwrap()
+            .draft
+            .value_display(Field::LocalCrossfade),
+        "3.0s"
+    );
+    for _ in 0..15 {
+        app.settings_change(-1);
+    }
+    assert_eq!(
+        app.settings
+            .as_ref()
+            .unwrap()
+            .draft
+            .value_display(Field::LocalCrossfade),
+        "1.5s"
+    );
+
+    let mut cmds = app.update(Msg::Key(key(KeyCode::Esc)));
+    admit_player_transition(&mut app, &mut cmds);
+    assert_eq!(
+        app.audio.local_crossfade,
+        crate::crossfade::LocalCrossfade::from_tenths(15)
+    );
+    assert_eq!(
+        save_config(&cmds)
+            .expect("crossfade save persists config")
+            .effective_local_crossfade(),
+        crate::crossfade::LocalCrossfade::from_tenths(15)
+    );
+}
+
+#[test]
+fn settings_reset_all_turns_local_crossfade_off() {
+    let mut app = app_playing(1, 0);
+    app.config.local_crossfade_secs = Some(2.0);
+    app.audio.local_crossfade = app.config.effective_local_crossfade();
+
+    app.open_settings();
+    let mut reset = app.settings_reset_all();
+    admit_player_transition(&mut app, &mut reset);
+    assert_eq!(
+        app.settings.as_ref().unwrap().draft.local_crossfade,
+        crate::crossfade::LocalCrossfade::Off
+    );
+
+    let mut cmds = app.update(Msg::Key(key(KeyCode::Esc)));
+    admit_player_transition(&mut app, &mut cmds);
+    assert_eq!(
+        app.audio.local_crossfade,
+        crate::crossfade::LocalCrossfade::Off
+    );
+    assert_eq!(
+        save_config(&cmds)
+            .expect("reset save persists config")
+            .effective_local_crossfade(),
+        crate::crossfade::LocalCrossfade::Off
+    );
+}
+
+#[test]
 fn settings_change_updates_stored_selectors_and_toggles_across_tabs() {
     let mut app = App::new(100);
     app.open_settings();
@@ -471,6 +564,11 @@ fn settings_change_updates_stored_selectors_and_toggles_across_tabs() {
 
     change_stored!(SettingsTab::Playback, Field::SeekInterval);
     assert_eq!(app.settings.as_ref().unwrap().draft.seek_seconds, 11.0);
+    change_stored!(SettingsTab::Playback, Field::LocalCrossfade);
+    assert_eq!(
+        app.settings.as_ref().unwrap().draft.local_crossfade,
+        crate::crossfade::LocalCrossfade::from_tenths(1)
+    );
     change_stored!(SettingsTab::Playback, Field::MouseWheelVolume);
     assert!(!app.settings.as_ref().unwrap().draft.mouse_wheel_volume);
     change_stored!(SettingsTab::Playback, Field::Gapless);

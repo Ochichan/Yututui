@@ -278,6 +278,7 @@ fn json_round_trips() {
         normalize: Some(true),
         speed: Some(1.5),
         seek_seconds: Some(15.0),
+        local_crossfade_secs: Some(1.5),
         mouse_wheel_volume: Some(false),
         text_zoom: Some(150),
         zoom_wheel_lock: Some(true),

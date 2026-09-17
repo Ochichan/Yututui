@@ -22,6 +22,7 @@ fn base_draft() -> SettingsDraft {
         atlas: crate::config::AtlasConfig::default(),
         speed: 1.0,
         seek_seconds: 10.0,
+        local_crossfade: crate::crossfade::LocalCrossfade::Off,
         big_text: false,
         big_text_percent: 150,
         mouse_wheel_volume: true,
@@ -255,8 +256,9 @@ fn playback_tab_groups_now_playing_and_eq() {
     crate::i18n::set_language(crate::i18n::Language::English);
     let f = SettingsTab::Playback.fields();
     // Speed + SeekInterval + WheelVolume + Gapless + MediaControls + AutoContinueVideos +
-    // VideoLayout + AlbumArtQuality + RadioRecording (radio-only), then audio controls and EQ.
-    assert_eq!(f.len(), 9 + AtlasField::ALL.len() + 3 + eq::BANDS + 2);
+    // VideoLayout + AlbumArtQuality + LocalCrossfade + RadioRecording (radio-only), then audio
+    // controls and EQ.
+    assert_eq!(f.len(), 10 + AtlasField::ALL.len() + 3 + eq::BANDS + 2);
     assert_eq!(f[0], Field::Speed);
     assert_eq!(f[1], Field::SeekInterval);
     assert_eq!(f[2], Field::MouseWheelVolume);
@@ -265,10 +267,11 @@ fn playback_tab_groups_now_playing_and_eq() {
     assert_eq!(f[5], Field::AutoContinueVideos);
     assert_eq!(f[6], Field::VideoLayout);
     assert_eq!(f[7], Field::AlbumArtQuality);
-    assert_eq!(f[8], Field::RadioRecording);
+    assert_eq!(f[8], Field::LocalCrossfade);
+    assert_eq!(f[9], Field::RadioRecording);
     // The Atlas rows follow the recording entry (all radio-only, hidden together).
-    let after_atlas = 9 + AtlasField::ALL.len();
-    assert_eq!(f[9], Field::Atlas(AtlasField::Renderer));
+    let after_atlas = 10 + AtlasField::ALL.len();
+    assert_eq!(f[10], Field::Atlas(AtlasField::Renderer));
     assert_eq!(f[after_atlas], Field::AudioBackend);
     assert_eq!(f[after_atlas + 1], Field::AudioOutput);
     assert_eq!(f[after_atlas + 2], Field::LongFormSeekOptimization);
@@ -292,7 +295,7 @@ fn playback_tab_groups_now_playing_and_eq() {
     );
     assert_eq!(Field::LongFormSeekOptimization.kind(), FieldKind::Select);
     let sections = SettingsTab::Playback.sections();
-    assert_eq!(sections[0].1, 9 + AtlasField::ALL.len());
+    assert_eq!(sections[0].1, 10 + AtlasField::ALL.len());
     assert_eq!(sections[1].1, 3);
     let total: usize = sections.iter().map(|(_, n)| n).sum();
     assert_eq!(total, f.len());
@@ -544,6 +547,7 @@ fn apply_to_persists_every_settings_field() {
         atlas: crate::config::AtlasConfig::default(),
         speed: 1.7,
         seek_seconds: 25.0,
+        local_crossfade: crate::crossfade::LocalCrossfade::from_tenths(18),
         big_text: false,
         big_text_percent: 150,
         mouse_wheel_volume: false,
@@ -651,6 +655,7 @@ fn apply_to_persists_every_settings_field() {
     assert!(!cfg.update_check_enabled);
     assert_eq!(cfg.speed, Some(1.7));
     assert_eq!(cfg.seek_seconds, Some(25.0));
+    assert_eq!(cfg.local_crossfade_secs, Some(1.8));
     assert_eq!(cfg.mouse_wheel_volume, Some(false));
     assert_eq!(cfg.gapless, Some(false));
     assert_eq!(cfg.media_controls, Some(false));

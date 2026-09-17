@@ -65,6 +65,12 @@ pub struct AudioEq {
     pub normalize: bool,
     /// Seconds jumped per seek-back/-forward key (configurable; default 10s).
     pub seek_seconds: f64,
+    /// Live crossfade length. Seeded from `Config::effective_local_crossfade`, written by a
+    /// settings save and by the `[`/`]` nudge, exactly like `seek_seconds`.
+    pub local_crossfade: crate::crossfade::LocalCrossfade,
+    /// Whether this build and host can overlap two files at all. Resolved once at startup
+    /// beside the recorder capability; [`crate::crossfade::OverlapSupport::Untried`] until then.
+    pub overlap_support: crate::crossfade::OverlapSupport,
 }
 
 impl Default for AudioEq {
@@ -76,6 +82,8 @@ impl Default for AudioEq {
             bands: [0.0; eq::BANDS],
             normalize: false,
             seek_seconds: crate::config::SEEK_SECONDS_DEFAULT,
+            local_crossfade: crate::crossfade::LocalCrossfade::Off,
+            overlap_support: crate::crossfade::OverlapSupport::Untried,
         }
     }
 }
@@ -358,6 +366,11 @@ pub struct Playback {
     /// Chapter boundaries of the loaded media, from mpv's `chapter-list` (empty when the
     /// media has none). Drives the seekbar markers and the `!`/`@` jumps.
     pub chapters: Vec<crate::player::Chapter>,
+    /// Exactly what mpv was last told to load. `prepare_track_load` already produces it and
+    /// `commit_prepared_track_load` used to discard it, so retaining it replaces a
+    /// re-derivation rather than adding a second source of truth. Cleared by
+    /// `commit_playback_cleared`.
+    pub loaded: Option<crate::player::PlaybackLoad>,
 }
 
 /// Prefetch / load tracking: the pre-resolved stream-URL cache, whether the current track
