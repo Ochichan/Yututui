@@ -368,7 +368,14 @@ mod tests {
     #[test]
     fn two_spellings_of_one_file_are_a_self_reload() {
         let pair = LocalPair::create("spellings");
-        let redundant = pair.first.replace("/a.flac", "/./a.flac");
+        let first = std::path::Path::new(&pair.first);
+        let redundant = first
+            .parent()
+            .expect("temp file has a parent")
+            .join(".")
+            .join(first.file_name().expect("temp file has a name"))
+            .to_string_lossy()
+            .into_owned();
         assert_ne!(redundant, pair.first);
         assert_eq!(
             decide(Some(&on_demand(&pair.first)), &on_demand(&redundant)),
