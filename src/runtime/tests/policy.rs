@@ -40,6 +40,13 @@ fn runtime_event_policy_covers_representative_events() {
             key: EventKey::PlayerTimePos
         }
     );
+    assert_eq!(
+        RuntimeEvent::App(Msg::MouseMove { col: 1, row: 2 }).policy(),
+        EventPolicy::CoalesceLatest {
+            lane: EventLane::Telemetry,
+            key: EventKey::MouseMove
+        }
+    );
 
     let (reply, _rx) = tokio::sync::oneshot::channel();
     assert_eq!(

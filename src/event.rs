@@ -143,11 +143,14 @@ impl Translator {
                     row: m.row / rs,
                 })
             }
-            Event::Mouse(m) if m.kind == MouseEventKind::Moved && self.left_down => {
-                Some(Msg::MouseDrag {
-                    col: m.column / cs,
-                    row: m.row / rs,
-                })
+            Event::Mouse(m) if m.kind == MouseEventKind::Moved => {
+                let col = m.column / cs;
+                let row = m.row / rs;
+                if self.left_down {
+                    Some(Msg::MouseDrag { col, row })
+                } else {
+                    Some(Msg::MouseMove { col, row })
+                }
             }
             Event::Mouse(m) if m.kind == MouseEventKind::Up(MouseButton::Left) => {
                 self.left_down = false;
@@ -622,7 +625,10 @@ mod tests {
                 modifiers: KeyModifiers::NONE,
             })
         };
-        assert!(t.translate(moved(7, 3), 1, 1).is_none());
+        assert!(matches!(
+            t.translate(moved(7, 3), 1, 1),
+            Some(Msg::MouseMove { col: 7, row: 3 })
+        ));
 
         assert!(matches!(
             t.translate(
@@ -654,7 +660,10 @@ mod tests {
             ),
             Some(Msg::MouseLeftUp)
         ));
-        assert!(t.translate(moved(9, 5), 1, 1).is_none());
+        assert!(matches!(
+            t.translate(moved(9, 5), 1, 1),
+            Some(Msg::MouseMove { col: 9, row: 5 })
+        ));
     }
 
     #[test]

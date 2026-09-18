@@ -547,3 +547,158 @@ fn panel_tabs_cycle_with_left_and_right_and_a_toggles_closed() {
     app.update(Msg::Key(key(KeyCode::Char('a'))));
     assert!(!app.radio_mode.atlas.open, "`a` toggles Atlas closed again");
 }
+
+#[test]
+fn mouse_move_over_a_pin_sets_hover_without_keyboard_highlight() {
+    let mut app = atlas_app();
+    app.config.animations.master = true;
+    app.config.animations.radio_master = Some(true);
+    let (col, row) = globe_centre_cell(&app);
+    app.update(Msg::MouseMove { col, row });
+    assert_eq!(app.radio_mode.atlas.hover, Some(0));
+    assert!(app.radio_mode.atlas.highlight.is_none());
+    let buf = render_app_buffer(&app, 120, 40);
+    assert!(buffer_contains(&buf, "Centre FM"));
+    assert!(buffer_contains(&buf, "Centre FM · KR"));
+}
+
+#[test]
+fn mouse_move_with_animations_off_latches_motion_but_skips_hover_chrome() {
+    let mut app = atlas_app();
+    app.config.animations.master = false;
+    app.config.animations.radio_master = Some(false);
+    let (col, row) = globe_centre_cell(&app);
+    app.update(Msg::MouseMove { col, row });
+    assert!(app.interaction.pointer_motion);
+    assert!(app.radio_mode.atlas.hover.is_none());
+    let buf = render_app_buffer(&app, 120, 40);
+    assert!(
+        !buffer_contains(&buf, "Centre FM · KR"),
+        "animations off must not paint the hover tip"
+    );
+}
+
+#[test]
+fn keyboard_next_and_enter_tune_without_mouse_move_or_hover() {
+    let mut app = atlas_app();
+    assert!(!app.interaction.pointer_motion);
+    app.update(Msg::Key(key(KeyCode::Char('n'))));
+    assert_eq!(app.radio_mode.atlas.highlight, Some(0));
+    assert!(app.radio_mode.atlas.hover.is_none());
+    let mut cmds = app.update(Msg::Key(key(KeyCode::Enter)));
+    admit_player_transition(&mut app, &mut cmds);
+    assert_eq!(
+        app.queue.current().map(|s| s.video_id.as_str()),
+        Some("rad:centre-1")
+    );
+    assert!(app.radio_mode.atlas.hover.is_none());
+    assert!(!app.interaction.pointer_motion);
+}
+
+#[test]
+fn right_click_pin_opens_a_four_item_menu_without_prior_motion() {
+    let _guard = crate::i18n::lock_for_test();
+    crate::i18n::set_language(crate::i18n::Language::English);
+    let mut app = atlas_app();
+    let (col, row) = globe_centre_cell(&app);
+    app.update(Msg::MouseRightClick { col, row });
+    assert!(
+        !app.interaction.pointer_motion,
+        "right-click is not hover chrome"
+    );
+    let menu = app.overlays.context_menu.as_ref().expect("atlas pin menu");
+    let labels: Vec<String> = menu
+        .items
+        .iter()
+        .map(|item| item.label(menu.target_count()))
+        .collect();
+    assert_eq!(
+        labels,
+        vec![
+            "Play now",
+            "Favorite / unfavorite",
+            "Copy stream url",
+            "Open country list",
+        ]
+    );
+
+    let mut play = atlas_app();
+    let (col, row) = globe_centre_cell(&play);
+    play.update(Msg::MouseRightClick { col, row });
+    let mut cmds = choose_context_menu_item(&mut play, 0);
+    admit_player_transition(&mut play, &mut cmds);
+    assert_eq!(
+        play.queue.current().map(|s| s.video_id.as_str()),
+        Some("rad:centre-1")
+    );
+
+    let mut favorite = atlas_app();
+    let (col, row) = globe_centre_cell(&favorite);
+    favorite.update(Msg::MouseRightClick { col, row });
+    let cmds = choose_context_menu_item(&mut favorite, 1);
+    assert!(favorite.library.is_radio_favorite("rad:centre-1"));
+    assert!(
+        cmds.iter()
+            .any(|c| matches!(c, Cmd::Persist(PersistCmd::Library)))
+    );
+
+    let mut copy = atlas_app();
+    let (col, row) = globe_centre_cell(&copy);
+    copy.update(Msg::MouseRightClick { col, row });
+    choose_context_menu_item(&mut copy, 2);
+    assert_eq!(copy.status.text, "✓ Stream URL copied to clipboard");
+
+    let mut country = atlas_app();
+    let (col, row) = globe_centre_cell(&country);
+    country.update(Msg::MouseRightClick { col, row });
+    let cmds = choose_context_menu_item(&mut country, 3);
+    assert!(cmds.iter().any(|c| matches!(
+        c,
+        Cmd::Atlas(AtlasCmd::Country { code, .. }) if code.eq_ignore_ascii_case("KR")
+    )));
+}
+
+#[test]
+fn atlas_pin_menu_ignores_search_mouse_bindings() {
+    let mut app = atlas_app();
+    app.mousemap
+        .set(
+            crate::mousemap::MouseContext::Search,
+            crate::mousemap::MouseGesture::RightClick,
+            crate::mousemap::MouseAction::Enqueue,
+        )
+        .unwrap();
+    let (col, row) = globe_centre_cell(&app);
+    app.update(Msg::MouseRightClick { col, row });
+    assert_eq!(
+        app.overlays
+            .context_menu
+            .as_ref()
+            .map(|menu| menu.items.len()),
+        Some(4),
+        "Search mouse remaps must not steal the Atlas pin menu"
+    );
+    assert_eq!(app.queue.len(), 0);
+}
+
+#[test]
+fn enter_and_f_still_work_with_the_atlas_menu_closed() {
+    let mut app = atlas_app();
+    assert!(app.overlays.context_menu.is_none());
+    app.update(Msg::Key(key(KeyCode::Char('n'))));
+    let mut cmds = app.update(Msg::Key(key(KeyCode::Enter)));
+    admit_player_transition(&mut app, &mut cmds);
+    assert_eq!(
+        app.queue.current().map(|s| s.video_id.as_str()),
+        Some("rad:centre-1")
+    );
+
+    let mut fav = atlas_app();
+    fav.update(Msg::Key(key(KeyCode::Char('n'))));
+    let cmds = fav.update(Msg::Key(key(KeyCode::Char('f'))));
+    assert!(fav.library.is_radio_favorite("rad:centre-1"));
+    assert!(
+        cmds.iter()
+            .any(|c| matches!(c, Cmd::Persist(PersistCmd::Library)))
+    );
+}

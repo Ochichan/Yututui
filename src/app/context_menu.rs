@@ -86,6 +86,10 @@ enum ContextTarget {
         id: crate::local::find::LocalFindHitId,
         drill_source: Option<crate::local::find::LocalFindHitId>,
     },
+    Atlas {
+        index: usize,
+        uuid: Box<str>,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -120,14 +124,15 @@ impl ServerLibraryRowIdentity {
 }
 
 impl ContextTarget {
-    const fn mouse_context(&self) -> MouseContext {
+    const fn mouse_context(&self) -> Option<MouseContext> {
         match self {
-            Self::Search { .. } => MouseContext::Search,
+            Self::Atlas { .. } => None,
+            Self::Search { .. } => Some(MouseContext::Search),
             Self::LibrarySongs { .. }
             | Self::LibraryPlaylist { .. }
-            | Self::ServerLibrary { .. } => MouseContext::Library,
-            Self::Queue { .. } => MouseContext::Queue,
-            Self::Local { .. } | Self::LocalFind { .. } => MouseContext::Local,
+            | Self::ServerLibrary { .. } => Some(MouseContext::Library),
+            Self::Queue { .. } => Some(MouseContext::Queue),
+            Self::Local { .. } | Self::LocalFind { .. } => Some(MouseContext::Local),
         }
     }
 }
@@ -154,6 +159,8 @@ pub(crate) enum ContextCommand {
     OpenArtist,
     PublishToServer,
     Remove,
+    CopyStreamUrl,
+    BrowseCountry,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -287,6 +294,9 @@ impl ContextMenuItem {
                 )
             }
             ContextCommand::Remove => t!("Remove", "제거", "削除").to_owned(),
+            ContextCommand::CopyStreamUrl | ContextCommand::BrowseCountry => {
+                super::atlas::atlas_context_command_label(self.command)
+            }
         }
     }
 }
@@ -300,7 +310,8 @@ impl ContextTarget {
             Self::ServerLibrary { .. }
             | Self::LibraryPlaylist { .. }
             | Self::Local { .. }
-            | Self::LocalFind { .. } => 1,
+            | Self::LocalFind { .. }
+            | Self::Atlas { .. } => 1,
         }
     }
 }
@@ -329,9 +340,10 @@ impl App {
             && menu.anchor_col == col
             && menu.anchor_row == row
         {
-            let action = self
-                .mousemap
-                .action(menu.target.mouse_context(), MouseGesture::RightClick);
+            let Some(ctx) = menu.target.mouse_context() else {
+                return Vec::new();
+            };
+            let action = self.mousemap.action(ctx, MouseGesture::RightClick);
             if matches!(action, MouseAction::ContextMenu | MouseAction::Disabled) {
                 return Vec::new();
             }
@@ -343,12 +355,16 @@ impl App {
         if self.overlays.context_menu.take().is_some() {
             self.dirty = true;
         }
+        if let Some((index, uuid)) = self.atlas_pin_at(col, row) {
+            return self.open_context_target_menu(col, row, ContextTarget::Atlas { index, uuid });
+        }
         let Some(target) = self.context_target_at(col, row) else {
             return Vec::new();
         };
-        let action = self
-            .mousemap
-            .action(target.mouse_context(), MouseGesture::RightClick);
+        let Some(ctx) = target.mouse_context() else {
+            return Vec::new();
+        };
+        let action = self.mousemap.action(ctx, MouseGesture::RightClick);
         match action {
             MouseAction::ContextMenu => self.open_context_target_menu(col, row, target),
             MouseAction::Activate | MouseAction::Enqueue => {
@@ -369,9 +385,10 @@ impl App {
             && menu.anchor_col == col
             && menu.anchor_row == row
         {
-            let action = self
-                .mousemap
-                .action(menu.target.mouse_context(), MouseGesture::RightDoubleClick);
+            let Some(ctx) = menu.target.mouse_context() else {
+                return Vec::new();
+            };
+            let action = self.mousemap.action(ctx, MouseGesture::RightDoubleClick);
             if action == MouseAction::Disabled {
                 return Vec::new();
             }
@@ -390,9 +407,10 @@ impl App {
         let Some(target) = target else {
             return Vec::new();
         };
-        let action = self
-            .mousemap
-            .action(target.mouse_context(), MouseGesture::RightDoubleClick);
+        let Some(ctx) = target.mouse_context() else {
+            return Vec::new();
+        };
+        let action = self.mousemap.action(ctx, MouseGesture::RightDoubleClick);
         match action {
             MouseAction::Activate | MouseAction::Enqueue => {
                 self.execute_mouse_action(target, action)
@@ -821,6 +839,7 @@ impl App {
                 self.local_find_select(*index, *generation);
                 self.local_mode.find.focus = LocalFindFocus::Results;
             }
+            ContextTarget::Atlas { .. } => {}
         }
         self.dirty = true;
     }
@@ -993,6 +1012,12 @@ impl App {
                 }
                 commands
             }
+            ContextTarget::Atlas { .. } => vec![
+                C::PlayNow,
+                C::ToggleFavorite,
+                C::CopyStreamUrl,
+                C::BrowseCountry,
+            ],
         };
         commands.into_iter().map(ContextMenuItem::new).collect()
     }
@@ -1061,6 +1086,9 @@ impl App {
                 drill_source,
                 command,
             ),
+            ContextTarget::Atlas { index, uuid } => {
+                self.execute_atlas_context_command(index, uuid, command)
+            }
         }
     }
 

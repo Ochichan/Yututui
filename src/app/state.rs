@@ -920,6 +920,7 @@ pub struct Interaction {
     pub(in crate::app) recording_drag: Option<(usize, Rect)>,
     /// Held-key auto-repeat accelerator for list navigation (see [`NavRepeat`]). Idle at rest.
     pub(in crate::app) nav_repeat: NavRepeat,
+    pub(in crate::app) pointer_motion: bool,
 }
 
 #[derive(Clone)]

@@ -26,7 +26,7 @@ use crate::config::{AtlasPanel, AtlasRenderer};
 use crate::keymap::{Action, Chord, KeyContext};
 use crate::t;
 
-use super::{App, Cmd, Mode, PersistCmd, StatusKind};
+use super::{App, Cmd, ContextCommand, Mode, PersistCmd, StatusKind, copy_to_clipboard};
 
 /// Messages the atlas domain receives from the runtime.
 #[derive(Debug)]
@@ -132,6 +132,7 @@ pub struct AtlasState {
     pub selected: Option<usize>,
     /// Keyboard cursor / landing highlight (marker `○`).
     pub highlight: Option<usize>,
+    pub hover: Option<usize>,
     pub active_country: Option<[u8; 2]>,
     pub active_country_name: String,
     pub active_mask: Option<LandMask>,
@@ -189,6 +190,21 @@ fn song_video_id(uuid: &str) -> String {
         "{}:{uuid}",
         crate::search_source::SearchSource::RadioBrowser.id_prefix()
     )
+}
+
+pub(in crate::app) fn atlas_context_command_label(command: ContextCommand) -> String {
+    match command {
+        ContextCommand::CopyStreamUrl => t!(
+            "Copy stream url",
+            "스트림 URL 복사",
+            "ストリームURLをコピー"
+        )
+        .to_owned(),
+        ContextCommand::BrowseCountry => {
+            t!("Open country list", "국가 목록 열기", "国リストを開く").to_owned()
+        }
+        _ => String::new(),
+    }
 }
 
 impl App {
@@ -265,6 +281,7 @@ impl App {
         atlas.generation += 1;
         atlas.kinetic = Kinetic::default();
         atlas.press = None;
+        atlas.hover = None;
         atlas.focus = AtlasFocus::Globe;
         atlas.search_editing = false;
         atlas.grid = self.config.atlas.grid;
@@ -299,6 +316,7 @@ impl App {
         atlas.generation += 1;
         atlas.kinetic = Kinetic::default();
         atlas.press = None;
+        atlas.hover = None;
         atlas.search_editing = false;
         atlas.loading = false;
         atlas.follow_uuid = None;
@@ -324,12 +342,35 @@ impl App {
         ))
     }
 
+    pub fn atlas_hover_chrome(&self) -> bool {
+        self.atlas_active() && self.interaction.pointer_motion && self.animations().master
+    }
+
+    pub fn atlas_hover_tip(&self) -> Option<String> {
+        if !self.atlas_hover_chrome() {
+            return None;
+        }
+        let idx = self.radio_mode.atlas.hover?;
+        let st = self.radio_mode.atlas.catalog.get(idx)?;
+        let country = if !st.country.is_empty() {
+            st.country.as_ref()
+        } else {
+            country_code_str(&st.country_code)
+        };
+        Some(format!("{} · {}", st.name, country))
+    }
+
     pub fn atlas_markers(&self) -> Vec<Marker> {
         let atlas = &self.radio_mode.atlas;
+        let highlight = if self.atlas_hover_chrome() {
+            atlas.hover.or(atlas.highlight)
+        } else {
+            atlas.highlight
+        };
         let library = &self.library;
         atlas
             .catalog
-            .markers(atlas.selected, atlas.highlight, &|uuid: &str| {
+            .markers(atlas.selected, highlight, &|uuid: &str| {
                 library.is_radio_favorite(&song_video_id(uuid))
             })
     }
@@ -834,8 +875,18 @@ impl App {
             AtlasFocus::Panel => self.atlas_panel_catalog_index(atlas.panel_selected),
             AtlasFocus::Globe => atlas.highlight.or(atlas.selected),
         };
-        let Some(song) = idx
-            .and_then(|i| atlas.catalog.get(i))
+        match idx {
+            Some(idx) => self.atlas_favorite_at(idx),
+            None => Vec::new(),
+        }
+    }
+
+    fn atlas_favorite_at(&mut self, idx: usize) -> Vec<Cmd> {
+        let Some(song) = self
+            .radio_mode
+            .atlas
+            .catalog
+            .get(idx)
             .map(AtlasStation::to_song)
         else {
             return Vec::new();
@@ -943,6 +994,7 @@ impl App {
                 atlas.search_editing = false;
                 atlas.velocity = VelocityTracker::default();
                 atlas.drag_clock = 0.0;
+                atlas.hover = None;
                 atlas.press = Some(PressSession {
                     col,
                     row,
@@ -1308,5 +1360,100 @@ impl App {
             generation: atlas.generation,
             uuids: missing,
         })]
+    }
+
+    pub(in crate::app) fn on_mouse_move(&mut self, col: u16, row: u16) -> Vec<Cmd> {
+        self.interaction.pointer_motion = true;
+        if !self.atlas_active() || self.radio_mode.atlas.press.is_some() {
+            return Vec::new();
+        }
+        if !self.animations().master {
+            if self.radio_mode.atlas.hover.take().is_some() {
+                self.dirty = true;
+            }
+            return Vec::new();
+        }
+        let on_globe = self.atlas_globe_rect().is_some_and(|rect| {
+            col >= rect.x
+                && col < rect.x + rect.width
+                && row >= rect.y
+                && row < rect.y + rect.height
+        });
+        let next = on_globe
+            .then(|| self.atlas_station_at_cell(col, row))
+            .flatten();
+        if self.radio_mode.atlas.hover != next {
+            self.radio_mode.atlas.hover = next;
+            self.dirty = true;
+        }
+        Vec::new()
+    }
+
+    pub(in crate::app) fn atlas_pin_at(&self, col: u16, row: u16) -> Option<(usize, Box<str>)> {
+        if !self.atlas_active() {
+            return None;
+        }
+        let index = self.atlas_station_at_cell(col, row)?;
+        let uuid = self.radio_mode.atlas.catalog.get(index)?.uuid.clone();
+        Some((index, uuid))
+    }
+
+    pub(in crate::app) fn execute_atlas_context_command(
+        &mut self,
+        index: usize,
+        uuid: Box<str>,
+        command: ContextCommand,
+    ) -> Vec<Cmd> {
+        let Some(st) = self.radio_mode.atlas.catalog.get(index) else {
+            return Vec::new();
+        };
+        if st.uuid != uuid {
+            return Vec::new();
+        }
+        match command {
+            ContextCommand::PlayNow => self.atlas_tune(index),
+            ContextCommand::ToggleFavorite => self.atlas_favorite_at(index),
+            ContextCommand::CopyStreamUrl => self.atlas_copy_stream_url(index),
+            ContextCommand::BrowseCountry => self.atlas_browse_station_country(index),
+            _ => Vec::new(),
+        }
+    }
+
+    fn atlas_copy_stream_url(&mut self, idx: usize) -> Vec<Cmd> {
+        let Some(url) = self
+            .radio_mode
+            .atlas
+            .catalog
+            .get(idx)
+            .map(|st| st.url.to_string())
+        else {
+            return Vec::new();
+        };
+        copy_to_clipboard(&url);
+        self.atlas_toast(
+            t!(
+                "✓ Stream URL copied to clipboard",
+                "✓ 스트림 URL이 클립보드에 복사됐어요",
+                "✓ ストリームURLをクリップボードにコピーしました"
+            )
+            .to_owned(),
+        );
+        Vec::new()
+    }
+
+    fn atlas_browse_station_country(&mut self, idx: usize) -> Vec<Cmd> {
+        let Some(code) = self
+            .radio_mode
+            .atlas
+            .catalog
+            .get(idx)
+            .map(|st| st.country_code)
+        else {
+            return Vec::new();
+        };
+        match world().by_code(country_code_str(&code)) {
+            Some(country) => self.atlas_browse_country(country),
+            None => Vec::new(),
+        }
     }
 }

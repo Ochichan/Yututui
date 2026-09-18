@@ -498,11 +498,11 @@ rm -f "$tmp"
 
 # C3: the Msg/Cmd wrapper enums stay small and the M3 sub-enums stay present, so a large domain
 # can't be re-flattened back into the top-level enums. Ceilings sit just above the current counts.
-# (Msg 47: Atlas(AtlasMsg) is the globe's domain wrapper, 2026-09-06. Msg 46: SleepTick joined the flat owner-loop tick family in 1.7.4 — StatusTick, LyricsTick,
+# (Msg 48: MouseMove is unpressed pointer motion for Atlas hover, coalesced as telemetry. Msg 47: Atlas(AtlasMsg) is the globe's domain wrapper, 2026-09-06. Msg 46: SleepTick joined the flat owner-loop tick family in 1.7.4 — StatusTick, LyricsTick,
 # RecordingTick, and AnimTick already live flat; the ceiling exists to block re-flattening, not
 # one more tick of the same class.)
 count_variants() { awk -v e="$1" '$0 ~ "^pub enum "e" \\{"{f=1;next} f&&/^\}/{exit} f&&/^    [A-Z]/{c++} END{print c+0}' src/app/types.rs; }
-[ "$(count_variants Msg)" -le 47 ] || { echo "error: enum Msg exceeds 47 wrappers — new flat cross-domain variant? bucket it." >&2; fail=1; }
+[ "$(count_variants Msg)" -le 48 ] || { echo "error: enum Msg exceeds 48 wrappers — new flat cross-domain variant? bucket it." >&2; fail=1; }
 [ "$(count_variants Cmd)" -le 33 ] || { echo "error: enum Cmd exceeds 33 wrappers." >&2; fail=1; }
 for e in PlayerMsg AiMsg StreamingMsg PersistCmd; do
   grep -q "enum $e" src/app/*.rs || { echo "error: sub-enum $e missing (M3 regressed)" >&2; fail=1; }
