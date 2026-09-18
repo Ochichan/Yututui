@@ -128,6 +128,11 @@ pub enum Msg {
         col: u16,
         row: u16,
     },
+    /// Unpressed pointer motion.
+    MouseMove {
+        col: u16,
+        row: u16,
+    },
     /// The left mouse button was released. Used to end the current drag-selection
     /// session so a later drag starts a fresh range instead of extending stale state.
     MouseLeftUp,

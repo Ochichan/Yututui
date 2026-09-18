@@ -78,6 +78,10 @@ pub(super) fn app_msg_policy(msg: &Msg) -> EventPolicy {
         | Msg::SleepTick => EventPolicy::BestEffort {
             reason: "loop-owned ticks and inert messages are redraw/status hints",
         },
+        Msg::MouseMove { .. } => EventPolicy::CoalesceLatest {
+            lane: Lane::Telemetry,
+            key: Key::MouseMove,
+        },
         Msg::Key(_)
         | Msg::MouseClick { .. }
         | Msg::MouseDoubleClick { .. }

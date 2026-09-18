@@ -1017,6 +1017,7 @@ impl App {
                     | Msg::MouseRightClick { .. }
                     | Msg::MouseRightDoubleClick { .. }
                     | Msg::MouseDrag { .. }
+                    | Msg::MouseMove { .. }
                     | Msg::MouseLeftUp
                     | Msg::MouseScroll { .. }
             )
@@ -1032,6 +1033,7 @@ impl App {
                 | Msg::MouseRightClick { .. }
                 | Msg::MouseRightDoubleClick { .. }
                 | Msg::MouseDrag { .. }
+                | Msg::MouseMove { .. }
                 | Msg::MouseScroll { .. } => return Vec::new(),
                 _ => {}
             }
@@ -1042,6 +1044,7 @@ impl App {
                 | Msg::MouseRightClick { .. }
                 | Msg::MouseRightDoubleClick { .. }
                 | Msg::MouseDrag { .. }
+                | Msg::MouseMove { .. }
                 | Msg::MouseScroll { .. } => return Vec::new(),
                 _ => {}
             }
@@ -1069,6 +1072,7 @@ impl App {
                 Msg::MouseRightClick { .. }
                 | Msg::MouseRightDoubleClick { .. }
                 | Msg::MouseDrag { .. }
+                | Msg::MouseMove { .. }
                 | Msg::MouseLeftUp => return Vec::new(),
                 _ => {}
             }
@@ -1083,6 +1087,7 @@ impl App {
                 return self.on_mouse_right_double_click(col, row);
             }
             Msg::MouseDrag { col, row } => return self.on_mouse_drag(col, row),
+            Msg::MouseMove { col, row } => return self.on_mouse_move(col, row),
             Msg::MouseLeftUp => return self.on_mouse_left_up(),
             Msg::MouseScroll { up, col, row, ctrl } => {
                 return self.on_mouse_scroll(up, col, row, ctrl);

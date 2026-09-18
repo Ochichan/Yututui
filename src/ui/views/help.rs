@@ -579,6 +579,27 @@ fn mouse_help_groups(app: &App) -> Vec<(String, Vec<(String, String)>)> {
             ],
         ),
         (
+            t!("Atlas", "아틀라스", "アトラス").to_owned(),
+            vec![
+                mouse_row(
+                    "Hover pin",
+                    "핀 호버",
+                    "ピンにホバー",
+                    "Show the station name and restyle the pin.",
+                    "방송국 이름을 보여주고 핀 모양을 바꿉니다.",
+                    "局名を表示し、ピンの見た目を変えます。",
+                ),
+                mouse_row(
+                    "Right click pin",
+                    "핀 우클릭",
+                    "ピンを右クリック",
+                    "Open play, favorite, copy stream url, and country list.",
+                    "재생, 즐겨찾기, 스트림 URL 복사, 국가 목록을 엽니다.",
+                    "再生、お気に入り、ストリームURLコピー、国リストを開きます。",
+                ),
+            ],
+        ),
+        (
             t!("Queue window", "대기열 창", "キューウィンドウ").to_owned(),
             vec![
                 mouse_row(
@@ -1278,6 +1299,24 @@ mod tests {
         for gesture in ["Lyric line", "Lyrics [±]", "Lyrics −/+"] {
             assert!(
                 player.iter().any(|(label, _)| label == gesture),
+                "mouse cheat-sheet should list {gesture}"
+            );
+        }
+    }
+
+    #[test]
+    fn atlas_mouse_help_lists_hover_and_right_click() {
+        let _guard = crate::i18n::lock_for_test();
+        crate::i18n::set_language(crate::i18n::Language::English);
+        let app = App::new(100);
+        let atlas = mouse_help_groups(&app)
+            .into_iter()
+            .find_map(|(title, rows)| (title == "Atlas").then_some(rows))
+            .expect("atlas mouse group");
+
+        for gesture in ["Hover pin", "Right click pin"] {
+            assert!(
+                atlas.iter().any(|(label, _)| label == gesture),
                 "mouse cheat-sheet should list {gesture}"
             );
         }

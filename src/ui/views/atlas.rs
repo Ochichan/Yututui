@@ -205,8 +205,11 @@ fn marker_glyph(m: &MarkerCell, ascii: bool) -> (char, R) {
 
 fn render_globe_status(frame: &mut Frame, app: &App, row: Rect, visible: usize) {
     let atlas = &app.radio_mode.atlas;
+    let hover_tip = app.atlas_hover_tip();
     let left = if let Some(err) = &atlas.error {
         err.clone()
+    } else if let Some(tip) = hover_tip {
+        tip
     } else if !atlas.context.is_empty() {
         atlas.context.clone()
     } else if atlas.catalog.is_empty() && atlas.loading {
