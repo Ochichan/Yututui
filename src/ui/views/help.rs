@@ -996,6 +996,24 @@ mod tests {
     }
 
     #[test]
+    fn station_group_pins_the_three_streaming_chords() {
+        let _guard = crate::i18n::lock_for_test();
+        crate::i18n::set_language(crate::i18n::Language::English);
+        let app = App::new(100);
+        let station = help_groups(&app)
+            .into_iter()
+            .find_map(|(title, rows)| (title == "Radio station (while streaming)").then_some(rows))
+            .expect("station group");
+        for row in [
+            ("⇧B".to_owned(), "Ban this track".to_owned()),
+            ("⇧A".to_owned(), "Ban this artist".to_owned()),
+            ("e".to_owned(), "Open station card".to_owned()),
+        ] {
+            assert!(station.contains(&row), "cheat-sheet should list {row:?}");
+        }
+    }
+
+    #[test]
     fn search_enter_rows_are_listed_as_fixed_help_rows() {
         let _guard = crate::i18n::lock_for_test();
         let app = App::new(100);
