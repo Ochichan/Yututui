@@ -26,6 +26,7 @@ pub(in crate::app) const ART_OVERLAY_TOOL_SETUP_BIT: u32 = 1 << 17;
 // masks can be ORed without making an onboarding transition indistinguishable from that popup.
 pub(in crate::app) const ART_OVERLAY_BEGINNER_BIT: u32 = 1 << 19;
 pub(in crate::app) const ART_OVERLAY_AUDIO_OUTPUT_BIT: u32 = 1 << 20;
+pub(in crate::app) const ART_OVERLAY_STATION_CARD_BIT: u32 = 1 << 21;
 
 // INVARIANT(ART-MASK-001): every art-covering surface owns a unique u32 bit; check the risk
 // map before replacing, sharing, or widening any allocation.
@@ -51,6 +52,7 @@ pub(in crate::app) const ART_OVERLAY_BITS: &[(&str, u32)] = &[
     ("tool_setup", ART_OVERLAY_TOOL_SETUP_BIT),
     ("beginner", ART_OVERLAY_BEGINNER_BIT),
     ("audio_output", ART_OVERLAY_AUDIO_OUTPUT_BIT),
+    ("station_card", ART_OVERLAY_STATION_CARD_BIT),
 ];
 
 const fn flag(on: bool, bit: u32) -> u32 {
@@ -739,6 +741,10 @@ impl App {
             | flag(
                 self.overlays.audio_output_picker.is_some(),
                 ART_OVERLAY_AUDIO_OUTPUT_BIT,
+            )
+            | flag(
+                self.overlays.station_card.is_some(),
+                ART_OVERLAY_STATION_CARD_BIT,
             )
     }
 

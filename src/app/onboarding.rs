@@ -290,6 +290,7 @@ impl App {
             || self.overlays.mouse_help_visible
             || self.overlays.about_visible
             || self.overlays.why_gem_video_id.is_some()
+            || self.overlays.station_card.is_some()
             || self.overlays.now_playing_overlay.is_some()
             || self.overlays.key_conflict.is_some()
             || self.overlays.pending_settings_confirm.is_some()

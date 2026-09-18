@@ -6,7 +6,9 @@
 //! replies aligned with the command lane's authoritative acceptance result.
 
 use super::*;
-use crate::queue::{QueueMutationPlan, QueueRemovalPlayback, QueueReplacementDraft};
+use crate::queue::{
+    QueueMutationPlan, QueueRemovalOutcome, QueueRemovalPlayback, QueueReplacementDraft,
+};
 
 mod why_gem;
 
@@ -42,17 +44,21 @@ impl CursorTransition {
 }
 
 #[derive(Clone, Default)]
-struct TrackPostCommit {
-    close_queue_popup: bool,
-    queue_removal_cursor: Option<usize>,
-    force_autoplay_extend: bool,
-    player_mode: bool,
-    romanize_songs: Vec<Song>,
-    persist_playback_modes: bool,
-    clear_heal_video_id: Option<String>,
-    mode_switch: Option<super::mode_transition::ModeSwitchPlan>,
-    why_gem: Option<super::why_gem::WhyGemCommit>,
-    recommendation_queued: Option<why_gem::RecommendationQueuedCommit>,
+pub(in crate::app) struct TrackPostCommit {
+    pub(in crate::app) close_queue_popup: bool,
+    pub(in crate::app) queue_removal_cursor: Option<usize>,
+    pub(in crate::app) force_autoplay_extend: bool,
+    pub(in crate::app) player_mode: bool,
+    pub(in crate::app) romanize_songs: Vec<Song>,
+    pub(in crate::app) persist_playback_modes: bool,
+    pub(in crate::app) clear_heal_video_id: Option<String>,
+    pub(in crate::app) mode_switch: Option<super::mode_transition::ModeSwitchPlan>,
+    pub(in crate::app) why_gem: Option<super::why_gem::WhyGemCommit>,
+    pub(in crate::app) recommendation_queued: Option<why_gem::RecommendationQueuedCommit>,
+    /// Applied only after the player admits the queue mutation this edit justified.
+    pub(in crate::app) taste: Option<crate::streaming::TasteEdit>,
+    /// Forced refill seed when a current-inclusive purge Stops (the queue may be empty).
+    pub(in crate::app) detached_refill: Option<Song>,
 }
 
 /// Caller-owned reducer projections which become valid only with an accepted queue replacement.
@@ -403,6 +409,7 @@ impl App {
                 )),
                 ..TrackPostCommit::default()
             },
+            None,
         )
     }
 
@@ -422,6 +429,7 @@ impl App {
                 why_gem: Some(super::why_gem::WhyGemCommit::Clear),
                 ..TrackPostCommit::default()
             },
+            None,
         );
         let intent = cmds.iter_mut().find_map(|cmd| match cmd {
             Cmd::PlayerControl(PlayerControl::Intent(intent)) => Some(intent),
@@ -447,27 +455,40 @@ impl App {
         cmds
     }
 
-    /// Apply a current-inclusive queue removal only after its Load/Stop batch is admitted.
-    /// The caller handles `Unchanged` removals synchronously because they emit no player work.
-    pub(in crate::app) fn load_prepared_queue_removal(
+    /// Commit a prepared removal, immediate or player-gated, with the caller's post-commit
+    /// projections. Shared by the queue window's range delete and by a station ban, which is
+    /// the same operation with a different predicate and a skip signal attached.
+    ///
+    /// Owns `queue_removal_cursor` from `outcome`, so no caller restates it.
+    pub(in crate::app) fn apply_queue_removal(
         &mut self,
         mutation: QueueMutationPlan,
-        playback: QueueRemovalPlayback,
-        popup_cursor: usize,
+        outcome: QueueRemovalOutcome,
+        mut post_commit: TrackPostCommit,
+        outgoing: Option<bool>,
     ) -> Vec<Cmd> {
-        let post_commit = TrackPostCommit {
-            queue_removal_cursor: Some(popup_cursor),
-            ..TrackPostCommit::default()
-        };
-        match playback {
+        debug_assert!(outcome.removed() > 0);
+        post_commit.queue_removal_cursor = Some(outcome.popup_cursor());
+        match outcome.playback() {
             QueueRemovalPlayback::Unchanged => {
-                unreachable!("non-current queue removal does not need player admission")
+                self.queue.commit_mutation(mutation);
+                if let Some(edit) = post_commit.taste.take() {
+                    let _ = self.streaming.taste.apply(edit);
+                }
+                self.commit_queue_removal_ui(outcome.popup_cursor());
+                self.reconcile_why_gem();
+                self.dirty = true;
+                if post_commit.force_autoplay_extend {
+                    self.force_autoplay_extend()
+                } else {
+                    Vec::new()
+                }
             }
             QueueRemovalPlayback::LoadSelected => {
-                self.prepare_queue_mutation_track_transition(mutation, post_commit)
+                self.prepare_queue_mutation_track_transition(mutation, post_commit, outgoing)
             }
             QueueRemovalPlayback::Stop => {
-                self.prepare_queue_mutation_stop_transition(mutation, post_commit)
+                self.prepare_queue_mutation_stop_transition(mutation, post_commit, outgoing)
             }
         }
     }
@@ -476,6 +497,7 @@ impl App {
         &self,
         mutation: QueueMutationPlan,
         post_commit: TrackPostCommit,
+        outgoing: Option<bool>,
     ) -> Vec<Cmd> {
         self.track_transition_intent(TrackTransitionPlan {
             expected_queue_rev: self.queue.rev(),
@@ -486,7 +508,7 @@ impl App {
             kind: TrackTransitionKind::End {
                 target_cursor: None,
             },
-            outgoing: None,
+            outgoing,
             skipped: Vec::new(),
             status_after_commit: None,
             video_follow_up: None,
@@ -498,6 +520,7 @@ impl App {
         &mut self,
         mut mutation: QueueMutationPlan,
         post_commit: TrackPostCommit,
+        outgoing: Option<bool>,
     ) -> Vec<Cmd> {
         let expected_queue_rev = self.queue.rev();
         let expected_cursor = self.queue.cursor_pos();
@@ -512,7 +535,7 @@ impl App {
                 kind: TrackTransitionKind::End {
                     target_cursor: None,
                 },
-                outgoing: None,
+                outgoing,
                 skipped: Vec::new(),
                 status_after_commit: None,
                 video_follow_up: None,
@@ -540,7 +563,7 @@ impl App {
                             cursor: CursorTransition::MoveTo { cursor },
                             load: Box::new(load),
                         },
-                        outgoing: None,
+                        outgoing,
                         skipped,
                         status_after_commit: None,
                         video_follow_up: None,
@@ -565,7 +588,7 @@ impl App {
             kind: TrackTransitionKind::End {
                 target_cursor: Some(last_cursor),
             },
-            outgoing: None,
+            outgoing,
             skipped,
             status_after_commit: None,
             video_follow_up: None,
@@ -769,7 +792,10 @@ impl App {
                     )
                     .to_owned();
                 }
-                effects.extend(self.maybe_autoplay_extend());
+                // Ban post-commit owns the refill so it sees the new taste.
+                if !(post_commit.force_autoplay_extend || post_commit.detached_refill.is_some()) {
+                    effects.extend(self.maybe_autoplay_extend());
+                }
             }
         }
 
@@ -784,7 +810,12 @@ impl App {
         if let Some(cursor) = post_commit.queue_removal_cursor {
             self.commit_queue_removal_ui(cursor);
         }
-        if post_commit.force_autoplay_extend {
+        if let Some(edit) = post_commit.taste.take() {
+            let _ = self.streaming.taste.apply(edit);
+        }
+        if let Some(seed) = post_commit.detached_refill.take() {
+            effects.extend(self.force_autoplay_extend_from(&seed));
+        } else if post_commit.force_autoplay_extend {
             effects.extend(self.force_autoplay_extend());
         }
         if post_commit.player_mode {

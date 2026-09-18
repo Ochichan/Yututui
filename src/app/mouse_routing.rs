@@ -10,6 +10,7 @@ impl App {
             || self.overlays.mouse_help_visible
             || self.overlays.about_visible
             || self.overlays.why_gem_video_id.is_some()
+            || self.overlays.station_card.is_some()
             || self.overlays.key_conflict.is_some()
             || self.overlays.pending_settings_confirm.is_some()
             || self.overlays.spotify_picker.is_some()
@@ -117,6 +118,15 @@ impl App {
                 Some(MouseTarget::WhyGemCard)
             ) {
                 self.close_why_gem();
+            }
+            return Vec::new();
+        }
+        if self.overlays.station_card.is_some() {
+            if !matches!(
+                self.mouse_target_at(col, row),
+                Some(MouseTarget::StationCard)
+            ) {
+                self.close_station_card();
             }
             return Vec::new();
         }
@@ -534,6 +544,7 @@ impl App {
             | MouseTarget::ToolSetupLater) => self.activate_tool_setup(target),
             MouseTarget::Onboarding(action) => self.activate_onboarding(action),
             MouseTarget::WhyGemCard => Vec::new(),
+            MouseTarget::StationCard => self.open_station_card(),
             MouseTarget::Global(Action::ToggleHelp) => {
                 self.overlays.help_visible = true;
                 self.overlays.mouse_help_visible = false;

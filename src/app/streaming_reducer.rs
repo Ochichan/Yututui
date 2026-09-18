@@ -174,10 +174,18 @@ impl App {
     }
 
     pub(in crate::app) fn force_autoplay_extend(&mut self) -> Vec<Cmd> {
-        self.autoplay_extend(true)
+        self.autoplay_extend_seeded(true, None)
+    }
+
+    pub(in crate::app) fn force_autoplay_extend_from(&mut self, seed: &Song) -> Vec<Cmd> {
+        self.autoplay_extend_seeded(true, Some(seed))
     }
 
     fn autoplay_extend(&mut self, force: bool) -> Vec<Cmd> {
+        self.autoplay_extend_seeded(force, None)
+    }
+
+    fn autoplay_extend_seeded(&mut self, force: bool, seed: Option<&Song>) -> Vec<Cmd> {
         // Queue mutations can call this again in the same owner turn, before the top-level
         // reducer's post-dispatch reconciliation. Retire that stale generation first so it does
         // not block the replacement request. A canceled in-flight request also gets this one
@@ -203,7 +211,7 @@ impl App {
             } else {
                 self.streaming.last_extend.map(|t| t.elapsed())
             },
-            self.queue.current(),
+            seed.or_else(|| self.queue.current()),
         ) else {
             return Vec::new();
         };
@@ -308,6 +316,7 @@ impl App {
             skip_streak,
             profile_version: profile.profile_version,
             prompt_recipe_hash: recipe_hash,
+            taste_epoch: self.streaming.taste.epoch(),
         });
         if let Some(cached) = self.ai_cache_lookup(cache_key) {
             tracing::debug!("streaming DJ Gem cache hit → replaying cached order");

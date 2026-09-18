@@ -1,5 +1,6 @@
 //! Queue-popup reducer methods.
 
+use super::track_transition::TrackPostCommit;
 use super::*;
 
 impl App {
@@ -52,19 +53,7 @@ impl App {
         let Some((mutation, outcome)) = self.queue.prepare_remove_range(lo, hi) else {
             return Vec::new();
         };
-        debug_assert!(outcome.removed() > 0);
-        match outcome.playback() {
-            crate::queue::QueueRemovalPlayback::Unchanged => {
-                self.queue.commit_mutation(mutation);
-                self.commit_queue_removal_ui(outcome.popup_cursor());
-                self.reconcile_why_gem();
-                self.dirty = true;
-                Vec::new()
-            }
-            playback => {
-                self.load_prepared_queue_removal(mutation, playback, outcome.popup_cursor())
-            }
-        }
+        self.apply_queue_removal(mutation, outcome, TrackPostCommit::default(), None)
     }
 
     /// Apply the queue-window projection shared by immediate and admission-gated removals.

@@ -31,6 +31,7 @@ impl App {
                 why_gem: Some(crate::app::why_gem::WhyGemCommit::Forget(manual_video_ids)),
                 ..TrackPostCommit::default()
             },
+            None,
         )
     }
 
@@ -55,6 +56,7 @@ impl App {
                 }),
                 ..TrackPostCommit::default()
             },
+            None,
         )
     }
 

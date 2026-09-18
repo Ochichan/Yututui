@@ -429,6 +429,7 @@ pub struct AiCacheKeyParts<'a> {
     pub skip_streak: usize,
     pub profile_version: u32,
     pub prompt_recipe_hash: u64,
+    pub taste_epoch: u64,
 }
 
 /// A stable key for caching a DJ Gem rerank's result. The candidate set is order-independent
@@ -446,6 +447,7 @@ pub fn ai_cache_key(parts: AiCacheKeyParts<'_>) -> u64 {
     parts.skip_streak.hash(&mut h);
     parts.profile_version.hash(&mut h);
     parts.prompt_recipe_hash.hash(&mut h);
+    parts.taste_epoch.hash(&mut h);
     let mut sorted: Vec<&String> = parts.candidate_ids.iter().collect();
     sorted.sort();
     sorted.hash(&mut h);
@@ -944,6 +946,7 @@ mod tests {
             skip_streak: 0,
             profile_version: mode.profile(&StreamingConfig::default()).profile_version,
             prompt_recipe_hash: ai_recipe_hash(mode.profile(&StreamingConfig::default()).ai_recipe),
+            taste_epoch: 0,
         })
     }
 

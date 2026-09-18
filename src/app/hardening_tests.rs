@@ -203,6 +203,11 @@ fn art_overlay_mask_bits_are_unique_and_fit_u32() {
         1 << 20,
         "audio output picker owns bit 20"
     );
+    assert_eq!(
+        super::artwork::ART_OVERLAY_STATION_CARD_BIT,
+        1 << 21,
+        "station card owns bit 21"
+    );
     let mut seen = 0u32;
     for (name, bit) in ART_OVERLAY_BITS {
         assert_ne!(*bit, 0, "{name} bit must be non-zero");
@@ -215,11 +220,11 @@ fn art_overlay_mask_bits_are_unique_and_fit_u32() {
     }
     assert_eq!(
         ART_OVERLAY_BITS.len(),
-        20,
+        21,
         "all assigned u32 overlay bits are inventoried"
     );
     assert!(
-        seen & super::artwork::ART_OVERLAY_AUDIO_OUTPUT_BIT != 0,
+        seen & super::artwork::ART_OVERLAY_STATION_CARD_BIT != 0,
         "highest allocated bit is tracked"
     );
     assert_eq!(

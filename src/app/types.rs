@@ -683,6 +683,8 @@ pub enum MouseTarget {
     /// Inert coverage for the open per-track WhyGem card; outside clicks close it while clicks
     /// inside are consumed without reaching the covered queue/player surface.
     WhyGemCard,
+    /// The `banned N · seeds M` status chip, and inert coverage for the open station card.
+    StationCard,
     /// A visible synced-lyric row. The owning track ID and original LRC index make stale frame
     /// targets fail closed instead of seeking a newly loaded track.
     LyricsLine {

@@ -15,7 +15,9 @@ use serde::{Deserialize, Serialize};
 pub use yututui_core::Repeat;
 
 pub(crate) mod mutation;
-pub(crate) use mutation::{QueueMutationPlan, QueueRemovalPlayback, QueueReplacementDraft};
+pub(crate) use mutation::{
+    QueueMutationPlan, QueueRemovalOutcome, QueueRemovalPlayback, QueueReplacementDraft,
+};
 
 /// Hard cap on queued tracks (priority #1: bounded memory).
 const MAX_QUEUE_LEN: usize = 999;

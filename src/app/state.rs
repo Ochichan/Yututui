@@ -1284,6 +1284,8 @@ pub struct Overlays {
     /// Queue revision paired with `why_gem_queue_index`. Any membership/order mutation closes the
     /// card rather than silently retargeting an indistinguishable duplicate occurrence.
     pub(crate) why_gem_queue_revision: Option<u64>,
+    /// The `e` station card. `None` = closed.
+    pub station_card: Option<StationCard>,
     /// The "what's playing" (지듣노) overlay — the radio identify card with favorite /
     /// ask-DJ Gem actions. `None` = closed. Opened by `Action::IdentifyNowPlaying` (`i`).
     pub now_playing_overlay: Option<NowPlayingOverlay>,
@@ -1293,4 +1295,16 @@ pub struct Overlays {
     /// Identify epoch: replies must carry the open overlay's snapshot of this counter or
     /// they're stale (overlay closed / stream title moved on).
     pub(in crate::app) now_playing_seq: u64,
+}
+
+/// The station card's own state. One live text field, so there are no focus modes to get
+/// wrong: every typeable key edits the term, Up/Down move the list selection, Delete lifts,
+/// Enter commits, Esc closes.
+#[derive(Default)]
+pub struct StationCard {
+    /// A leading `-` means exclude. The card renders the parse result live.
+    pub input: String,
+    pub cursor: TextCursor,
+    /// Index into `SessionTaste::entries()`, clamped at render.
+    pub selected: usize,
 }
