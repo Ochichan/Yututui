@@ -153,6 +153,7 @@ impl SettingsTab {
                     Field::AutoContinueVideos,
                     Field::VideoLayout,
                     Field::AlbumArtQuality,
+                    Field::LocalCrossfade,
                     // Radio-only entry (the recording popup); filtered out by
                     // `SettingsState::fields` when not in radio mode. Keep it last in the
                     // "Now Playing" section so the static count below stays partition-correct.
@@ -267,12 +268,9 @@ impl SettingsTab {
 
 fn playback_sections() -> Vec<(&'static str, usize)> {
     vec![
-        // 9 = the 8 Now-Playing controls + the radio-only recording entry. When not
-        // in radio mode, `SettingsState::sections` decrements this back to 8 in
-        // lockstep with `SettingsState::fields` hiding `RadioRecording`.
         (
             t!("Now Playing", "현재 재생", "再生中"),
-            9 + AtlasField::ALL.len(),
+            10 + AtlasField::ALL.len(),
         ),
         (
             t!("Audio backend", "오디오 백엔드", "オーディオバックエンド"),
@@ -403,6 +401,8 @@ pub enum Field {
     VideoLayout,
     /// Detail level for remote album art rendered inside the terminal.
     AlbumArtQuality,
+    /// Crossfade between two local files, off to 3.0s.
+    LocalCrossfade,
     /// Opens the radio-recording settings popup. Radio-mode only — hidden outside it by
     /// [`SettingsState::fields`]; lives in the "Now Playing" section.
     RadioRecording,
@@ -737,6 +737,8 @@ pub struct SettingsDraft {
     pub speed: f64,
     /// Seek step (seconds) for the seek-back/-forward keys.
     pub seek_seconds: f64,
+    /// Local-file crossfade length.
+    pub local_crossfade: crate::crossfade::LocalCrossfade,
     /// The "large text" toggle (see [`Field::BigText`]). `big_text_percent` is the
     /// level it enables — seeded from the detected zoom mode when Settings opens, since
     /// the draft itself has no terminal access.
@@ -870,6 +872,7 @@ impl SettingsDraft {
         cfg.enqueue_next = Some(self.enqueue_next);
         cfg.speed = Some(self.speed);
         cfg.seek_seconds = Some(self.seek_seconds);
+        cfg.local_crossfade_secs = Some(self.local_crossfade.as_secs_f64());
         // Large text: ON keeps an existing custom zoom level (Ctrl+wheel may have set
         // 250%, say) and otherwise enables the mode's big level; OFF always returns to
         // normal size.

@@ -66,11 +66,10 @@ pub(crate) fn player_event_policy(event: &crate::player::PlayerEvent) -> EventPo
         | crate::player::PlayerEvent::Error(_)
         | crate::player::PlayerEvent::TransportClosed(_)
         | crate::player::PlayerEvent::CacheEmergency { .. }
-        | crate::player::PlayerEvent::CacheReplacementEmergency { .. } => {
-            EventPolicy::MustDeliver {
-                lane: Lane::Control,
-            }
-        }
+        | crate::player::PlayerEvent::CacheReplacementEmergency { .. }
+        | crate::player::PlayerEvent::OverlapUnavailable(_) => EventPolicy::MustDeliver {
+            lane: Lane::Control,
+        },
         crate::player::PlayerEvent::AudioDeviceChanged(_) => EventPolicy::CoalesceLatest {
             lane: Lane::Telemetry,
             key: Key::PlayerAudioDevice,

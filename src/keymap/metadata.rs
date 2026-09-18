@@ -41,6 +41,9 @@ pub enum Action {
     OpenSearch,
     /// Open the collection-wide Local Find surface while dedicated Local Deck mode is active.
     OpenLocalFind,
+    /// Nudge the local-file crossfade length without leaving Local Deck.
+    LocalCrossfadeDown,
+    LocalCrossfadeUp,
     Quit,
     Home,
     // Shared navigation (interpreted per context).
@@ -533,6 +536,20 @@ const ACTION_META: &[(Action, &str, &str, &str, &str)] = &[
         "ローカル検索を開く",
     ),
     (
+        Action::LocalCrossfadeDown,
+        "local_crossfade_down",
+        "Shorten local crossfade",
+        "로컬 크로스페이드 줄이기",
+        "ローカルクロスフェードを短く",
+    ),
+    (
+        Action::LocalCrossfadeUp,
+        "local_crossfade_up",
+        "Lengthen local crossfade",
+        "로컬 크로스페이드 늘리기",
+        "ローカルクロスフェードを長く",
+    ),
+    (
         Action::QueueRemove,
         "queue_remove",
         "Remove from queue",
@@ -1008,6 +1025,20 @@ impl Action {
                     "Find across Local Deck",
                     "로컬 덱 전체에서 찾기",
                     "ローカルデッキ全体を検索"
+                )
+            }
+            (KeyContext::LocalDeck, Action::LocalCrossfadeDown) => {
+                t!(
+                    "Crossfade −0.1s",
+                    "크로스페이드 −0.1초",
+                    "クロスフェード −0.1秒"
+                )
+            }
+            (KeyContext::LocalDeck, Action::LocalCrossfadeUp) => {
+                t!(
+                    "Crossfade +0.1s",
+                    "크로스페이드 +0.1초",
+                    "クロスフェード +0.1秒"
                 )
             }
             (KeyContext::Playlists, Action::Confirm) => {

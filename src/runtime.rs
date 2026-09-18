@@ -443,6 +443,9 @@ impl From<RuntimeEvent> for Msg {
                 crate::player::PlayerEvent::CacheReplacementEmergency { reason } => {
                     Msg::Player(PlayerMsg::CacheReplacementEmergency { reason })
                 }
+                crate::player::PlayerEvent::OverlapUnavailable(blocker) => {
+                    Msg::Player(PlayerMsg::OverlapUnavailable(blocker))
+                }
                 crate::player::PlayerEvent::FileScoped { .. } => {
                     unreachable!("audio file event was unscoped before conversion")
                 }

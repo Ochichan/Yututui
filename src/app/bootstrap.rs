@@ -133,6 +133,8 @@ impl App {
         self.audio.normalize = cfg.effective_normalize();
         self.playback.speed = cfg.effective_speed();
         self.audio.seek_seconds = cfg.effective_seek_seconds();
+        self.audio.local_crossfade = cfg.effective_local_crossfade();
+        self.audio.overlap_support = crate::crossfade::overlap_support();
         self.queue.set_shuffle(cfg.effective_shuffle());
         self.queue.repeat = cfg.effective_repeat();
         // Music-mode invariant (single-sourced with the daemon): streaming and repeat can't

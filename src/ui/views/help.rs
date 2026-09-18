@@ -1165,6 +1165,25 @@ mod tests {
     }
 
     #[test]
+    fn local_deck_group_lists_the_crossfade_nudge_keys() {
+        let _guard = crate::i18n::lock_for_test();
+        let app = App::new(100);
+        let local_deck = help_groups(&app)
+            .into_iter()
+            .find_map(|(title, rows)| (title == "Local Deck").then_some(rows))
+            .expect("local deck group");
+        for row in [
+            ("[".to_owned(), "Crossfade −0.1s".to_owned()),
+            ("]".to_owned(), "Crossfade +0.1s".to_owned()),
+        ] {
+            assert!(
+                local_deck.contains(&row),
+                "missing {row:?} in {local_deck:?}"
+            );
+        }
+    }
+
+    #[test]
     fn active_local_find_help_lists_its_fixed_result_actions() {
         let _guard = crate::i18n::lock_for_test();
         let mut app = App::new(100);

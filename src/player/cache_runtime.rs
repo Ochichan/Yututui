@@ -150,6 +150,18 @@ impl CacheRuntime {
         )
     }
 
+    pub(crate) fn for_standby_process(
+        support: CacheSpawnSupport,
+        requested: LongFormSeekOptimization,
+    ) -> Self {
+        Self::with_session(
+            support,
+            requested,
+            Arc::new(OwnerSessionAccounting::new()),
+            benchmark_fixture_rate_bound(),
+        )
+    }
+
     #[cfg(test)]
     pub(crate) fn new(support: CacheSpawnSupport, requested: LongFormSeekOptimization) -> Self {
         Self::with_session(

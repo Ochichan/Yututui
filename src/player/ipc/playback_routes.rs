@@ -55,11 +55,16 @@ async fn begin_or_dispatch_command(
     Ok(None)
 }
 
+fn inherit_owner_file_generation(state: &mut DispatchState, published: u64) {
+    state.admitted_file_generation = published;
+    state.issued_file_generation = published;
+}
+
 fn reserve_file_generation(state: &mut DispatchState) -> u64 {
-    state.admitted_file_generation = state
+    let local = state
         .admitted_file_generation
-        .max(state.issued_file_generation)
-        .wrapping_add(1);
+        .max(state.issued_file_generation);
+    state.admitted_file_generation = local.wrapping_add(1);
     state.admitted_file_generation
 }
 

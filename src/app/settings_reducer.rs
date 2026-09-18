@@ -124,6 +124,7 @@ impl App {
             atlas: self.config.atlas.clone(),
             speed: self.playback.speed,
             seek_seconds: self.audio.seek_seconds,
+            local_crossfade: self.audio.local_crossfade,
             big_text: self.config.effective_text_zoom() > 100,
             big_text_percent: self.zoom.mode().big_percent(),
             mouse_wheel_volume: self.config.effective_mouse_wheel_volume(),
@@ -808,6 +809,11 @@ impl App {
                     s.draft.seek_seconds + f64::from(dir) * settings::SEEK_SECONDS_STEP,
                 );
                 // Stored only — affects the next seek key, nothing to push to mpv now.
+                Vec::new()
+            }
+            Field::LocalCrossfade => {
+                let s = self.settings_mut();
+                s.draft.local_crossfade = s.draft.local_crossfade.nudge(dir.clamp(-1, 1) as i8);
                 Vec::new()
             }
             Field::AnimFps => {

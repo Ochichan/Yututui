@@ -557,6 +557,7 @@ impl DaemonEngine {
                 };
                 self.attempt_transport_recovery(generation).await
             }
+            PlayerEvent::OverlapUnavailable(_) => Vec::new(),
             PlayerEvent::FileScoped { .. } => {
                 unreachable!("daemon player event was unscoped before reduction")
             }

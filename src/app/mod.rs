@@ -147,6 +147,7 @@ pub use atlas::{AtlasFocus, AtlasMsg, AtlasState, AtlasTarget, PanelRows, PanelT
 mod clipboard;
 mod context_menu;
 pub use context_menu::*;
+mod crossfade;
 mod download;
 mod keys;
 mod library;

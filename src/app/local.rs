@@ -138,6 +138,9 @@ impl App {
         {
             return cmds;
         }
+        if let Some(cmds) = self.local_crossfade_key(chord) {
+            return cmds;
+        }
         if k.modifiers.is_empty() {
             match k.code {
                 KeyCode::Char(' ') => return self.on_player_action(Action::TogglePause),

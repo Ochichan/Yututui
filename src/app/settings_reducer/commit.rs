@@ -272,6 +272,7 @@ impl App {
         let d = &st.draft;
         self.playback.speed = d.speed;
         self.audio.seek_seconds = d.seek_seconds;
+        self.audio.local_crossfade = d.local_crossfade;
         self.audio.bands = d.eq_bands;
         self.audio.preset = d.eq_preset;
         self.audio.normalize = d.normalize;

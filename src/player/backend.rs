@@ -43,6 +43,9 @@ pub struct AudioRuntimeStatus {
     pub extra_args_count: usize,
     pub gapless: bool,
     pub media_controls_disabled_by_yututui: bool,
+    pub local_crossfade: crate::crossfade::LocalCrossfade,
+    /// Whether overlap is possible.
+    pub overlap: crate::crossfade::OverlapSupport,
 }
 
 pub fn runtime_status(cfg: &Config) -> AudioRuntimeStatus {
@@ -71,5 +74,7 @@ pub fn runtime_status(cfg: &Config) -> AudioRuntimeStatus {
         extra_args_count: audio.mpv.extra_args.len(),
         gapless: cfg.effective_gapless(),
         media_controls_disabled_by_yututui: super::mpv::media_controls_flag_supported(),
+        local_crossfade: cfg.effective_local_crossfade(),
+        overlap: crate::crossfade::overlap_support(),
     }
 }

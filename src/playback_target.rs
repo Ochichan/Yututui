@@ -65,6 +65,22 @@ impl PlaybackDestination {
             Self::Credentialed(target) => Some(target),
         }
     }
+
+    /// The filesystem path mpv would open directly, if this is one.
+    ///
+    /// `Credentialed` targets and every parseable URL return `None`. A Windows `C:` path is a
+    /// drive, not a `Url` scheme.
+    pub fn local_file_path(&self) -> Option<&str> {
+        let target = self.direct_target()?.trim();
+        if target.is_empty() {
+            return None;
+        }
+        #[cfg(windows)]
+        if is_windows_drive_path(target) {
+            return Some(target);
+        }
+        Url::parse(target).is_err().then_some(target)
+    }
 }
 
 impl From<String> for PlaybackDestination {
@@ -842,5 +858,50 @@ mod tests {
             validate_playback_target_for_handoff(url).await.unwrap(),
             url
         );
+    }
+
+    #[test]
+    fn local_file_path_accepts_exactly_what_the_handoff_guard_waves_through() {
+        for path in [
+            "/home/me/Music/track.flac",
+            "./track.flac",
+            "relative/track.flac",
+            "/home/me/Music/weird name (1).mp3",
+        ] {
+            assert_eq!(
+                PlaybackDestination::direct(path).local_file_path(),
+                Some(path),
+                "{path}"
+            );
+        }
+        for url in [
+            "https://rr3---sn-x.googlevideo.com/videoplayback?id=1",
+            "http://127.0.0.1:32123/stream/token",
+            "https://stream.example/live.mp3",
+            "file:///home/me/Music/track.flac",
+        ] {
+            assert_eq!(
+                PlaybackDestination::direct(url).local_file_path(),
+                None,
+                "{url}"
+            );
+        }
+        assert_eq!(PlaybackDestination::direct("   ").local_file_path(), None);
+        assert_eq!(
+            PlaybackDestination::Credentialed(credentialed_target()).local_file_path(),
+            None
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn local_file_path_keeps_a_windows_drive_letter_off_the_url_path() {
+        for path in [r"C:\Users\me\Music\track.flac", "D:/Music/track.flac"] {
+            assert_eq!(
+                PlaybackDestination::direct(path).local_file_path(),
+                Some(path),
+                "{path}"
+            );
+        }
     }
 }

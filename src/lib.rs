@@ -12,6 +12,7 @@ pub mod atlas;
 pub mod auth_cli;
 pub mod cli_capability;
 pub mod config;
+pub mod crossfade;
 pub mod daemon;
 pub mod data_export;
 pub mod data_import;

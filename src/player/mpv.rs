@@ -216,6 +216,26 @@ pub fn video_ipc_path(generation: u64) -> Result<String> {
     }
 }
 
+pub fn deck_ipc_path(generation: u64) -> Result<String> {
+    let pid = std::process::id();
+    #[cfg(windows)]
+    {
+        Ok(format!(r"\\.\pipe\yututui-mpv-deck-{pid}-{generation}"))
+    }
+    #[cfg(unix)]
+    {
+        Ok(runtime::app_runtime_dir()
+            .context("prepare mpv IPC runtime dir")?
+            .join(format!("yututui-mpv-deck-{pid}-{generation}.sock"))
+            .to_string_lossy()
+            .into_owned())
+    }
+}
+
+pub fn second_deck_supported() -> bool {
+    crate::deps::on_path(&crate::tools::mpv_program()) && lifeline_supported()
+}
+
 /// Spawn mpv listening on `ipc_path` behind the same-binary guardian. The guardian owns the
 /// process tree and a heartbeat/native IPC lease; [`super::Mpv`] owns and boundedly reaps that
 /// guardian. Signal, panic, terminal-loss, and disk-recovery backstops live in
@@ -319,6 +339,35 @@ pub(crate) fn spawn(
 
     super::guardian::spawn(&crate::tools::mpv_program(), args, false)
         .context("failed to spawn protected mpv")
+}
+
+pub(crate) fn spawn_standby(
+    ipc_path: &str,
+    audio: &MpvAudioRuntimeConfig,
+) -> Result<super::guardian::GuardedSpawn> {
+    super::lifetime::ensure_media_start_allowed()?;
+    ensure_lifeline_supported()?;
+    let mut args = vec![
+        "--no-video".to_owned(),
+        "--no-terminal".to_owned(),
+        "--idle=yes".to_owned(),
+        "--keep-open=yes".to_owned(),
+        "--no-config".to_owned(),
+        "--audio-display=no".to_owned(),
+        "--gapless-audio=no".to_owned(),
+        "--cache=yes".to_owned(),
+        "--volume=0".to_owned(),
+        format!("--input-ipc-server={ipc_path}"),
+    ];
+    args.extend(structured_audio_args(audio));
+    if flag_supported("--audio-exclusive=no") {
+        args.push("--audio-exclusive=no".to_owned());
+    }
+    if media_controls_flag_supported() {
+        args.push("--media-controls=no".to_owned());
+    }
+    super::guardian::spawn(&crate::tools::mpv_program(), args, false)
+        .context("failed to spawn protected standby mpv")
 }
 
 pub(crate) fn structured_audio_args(audio: &MpvAudioRuntimeConfig) -> Vec<String> {

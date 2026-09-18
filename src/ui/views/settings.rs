@@ -74,6 +74,15 @@ fn footer_hint(app: &App, st: &SettingsState) -> String {
                 "エクスポート · 暗号化されないJSON · 個人の再生履歴を含む"
             )
         )
+    } else if matches!(st.current_field(), Some(Field::LocalCrossfade))
+        && !crate::crossfade::overlap_support().is_available()
+    {
+        t!(
+            "saved, but this build cannot overlap two files  ·  transitions stay as today",
+            "저장되지만 이 빌드는 두 파일을 겹쳐 재생할 수 없어요  ·  전환은 지금과 같아요",
+            "保存されますがこのビルドは2つのファイルを重ねられません  ·  切替は今のままです"
+        )
+        .to_owned()
     } else if st.tab == SettingsTab::Sync {
         format!(
             "{}/{} {}  ·  {} {}  ·  {} {}  ·  {} {}",
@@ -539,6 +548,14 @@ fn field_value_text(
         (Field::SeekInterval, _) => slider_str(
             &bar(st.draft.seek_seconds, SEEK_SECONDS_MIN, SEEK_SECONDS_MAX),
             &format!("{:.0}s", st.draft.seek_seconds),
+        ),
+        (Field::LocalCrossfade, _) => slider_str(
+            &bar(
+                f64::from(st.draft.local_crossfade.tenths()),
+                0.0,
+                f64::from(crate::crossfade::CrossfadeSecs::MAX.tenths()),
+            ),
+            &st.draft.local_crossfade.label(),
         ),
         (Field::Band(i), _) => slider_str(
             &bar(st.draft.eq_bands[i], BAND_GAIN_MIN, BAND_GAIN_MAX),

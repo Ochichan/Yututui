@@ -53,6 +53,9 @@ pub(super) fn status_line_parts_with_labels_reusing(
     if !minimal && (app.playback.speed - 1.0).abs() > f64::EPSILON {
         parts.push((None, Cow::Owned(format!("{gap}{:.1}x", app.playback.speed))));
     }
+    if !minimal && let Some(fade) = app.crossfade_chip() {
+        parts.push((None, Cow::Owned(format!("{gap}xfade {fade}"))));
+    }
     push_eq(&mut parts, app, labels, gap, retro);
     // Faux VU bars trail the EQ label when the EQ-bars animation is on (no-op otherwise).
     if !minimal

@@ -194,6 +194,7 @@ pub(super) fn player_msg_policy(msg: &PlayerMsg) -> EventPolicy {
         | PlayerMsg::TransportClosed(_)
         | PlayerMsg::CacheEmergency { .. }
         | PlayerMsg::CacheReplacementEmergency { .. }
+        | PlayerMsg::OverlapUnavailable(_)
         | PlayerMsg::IntentAdmitted(_) => EventPolicy::MustDeliver {
             lane: Lane::Control,
         },

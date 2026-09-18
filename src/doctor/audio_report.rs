@@ -69,6 +69,10 @@ pub(super) fn run(verbose: bool) -> i32 {
     super::long_form_seek::print(&cfg.audio.mpv, verbose);
     println!("  gapless: {}", enabled_label(status.gapless));
     println!(
+        "  local crossfade: {}",
+        overlap_report(status.local_crossfade, status.overlap)
+    );
+    println!(
         "  media controls: {}",
         if status.media_controls_disabled_by_yututui {
             "mpv disabled; yututui owns OS session"
@@ -101,6 +105,7 @@ pub(super) fn run(verbose: bool) -> i32 {
             }
         );
         println!("  gapless: {}", yes_no(status.caps.supports_gapless));
+        println!("  overlap: {}", yes_no(status.overlap.is_available()));
         println!("  eq: {}", yes_no(status.caps.supports_eq));
         println!(
             "  device selection: {}",
@@ -165,9 +170,68 @@ fn enabled_label(value: bool) -> &'static str {
     if value { "enabled" } else { "disabled" }
 }
 
+fn overlap_report(
+    setting: crate::crossfade::LocalCrossfade,
+    support: crate::crossfade::OverlapSupport,
+) -> String {
+    use crate::crossfade::OverlapSupport;
+
+    if setting.is_off() {
+        return setting.label();
+    }
+    let reason = match support {
+        OverlapSupport::Available => return format!("{} · overlap ready", setting.label()),
+        OverlapSupport::Untried => "not probed yet",
+        OverlapSupport::Unavailable(blocker) => blocker.reason(),
+    };
+    format!(
+        "{} · unsupported here ({reason}) · transitions stay as today, no fade",
+        setting.label()
+    )
+}
+
 #[cfg(test)]
 mod tests {
-    use super::mpv_lifetime_report;
+    use super::{mpv_lifetime_report, overlap_report};
+    use crate::crossfade::{LocalCrossfade, OverlapBlocker, OverlapSupport, overlap_support};
+
+    #[test]
+    fn the_crossfade_line_never_promises_a_fade_this_build_cannot_perform() {
+        let _guard = crate::i18n::lock_for_test();
+        crate::i18n::set_language(crate::i18n::Language::English);
+        let on = LocalCrossfade::from_tenths(15);
+
+        assert_eq!(
+            overlap_report(LocalCrossfade::Off, overlap_support()),
+            "Off"
+        );
+        assert_eq!(
+            overlap_report(on, OverlapSupport::Available),
+            "1.5s · overlap ready"
+        );
+        assert_eq!(
+            overlap_report(on, OverlapSupport::Unavailable(OverlapBlocker::OutputBusy)),
+            "1.5s · unsupported here (the audio output refused a second open) · transitions stay as today, no fade"
+        );
+        assert_eq!(
+            overlap_report(on, OverlapSupport::Untried),
+            "1.5s · unsupported here (not probed yet) · transitions stay as today, no fade"
+        );
+        assert_eq!(
+            overlap_report(on, overlap_support()),
+            match overlap_support() {
+                OverlapSupport::Available => "1.5s · overlap ready".to_owned(),
+                OverlapSupport::Unavailable(blocker) => format!(
+                    "1.5s · unsupported here ({}) · transitions stay as today, no fade",
+                    blocker.reason()
+                ),
+                OverlapSupport::Untried => {
+                    "1.5s · unsupported here (not probed yet) · transitions stay as today, no fade"
+                        .to_owned()
+                }
+            },
+        );
+    }
 
     #[test]
     fn mpv_lifetime_report_distinguishes_ready_and_unusable() {

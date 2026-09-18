@@ -10,6 +10,7 @@ pub mod backend;
 pub(crate) mod cache_budget;
 pub(crate) mod cache_runtime;
 pub mod cache_support;
+pub(crate) mod decks;
 pub(crate) mod diagnostics;
 pub mod guardian;
 pub mod ipc;
@@ -89,6 +90,7 @@ impl MediaSourceContext {
 pub struct PlaybackLoad {
     destination: crate::playback_target::PlaybackDestination,
     source_context: MediaSourceContext,
+    handoff: crate::crossfade::TrackHandoff,
 }
 
 impl PlaybackLoad {
@@ -106,7 +108,13 @@ impl PlaybackLoad {
         Self {
             destination,
             source_context,
+            handoff: crate::crossfade::TrackHandoff::Cut,
         }
+    }
+
+    pub fn with_handoff(mut self, handoff: crate::crossfade::TrackHandoff) -> Self {
+        self.handoff = handoff;
+        self
     }
 
     /// Compatibility accessor for direct targets. Credentialed targets never expose an upstream
@@ -128,6 +136,10 @@ impl PlaybackLoad {
     pub const fn source_context(&self) -> MediaSourceContext {
         self.source_context
     }
+
+    pub const fn handoff(&self) -> crate::crossfade::TrackHandoff {
+        self.handoff
+    }
 }
 
 impl std::fmt::Debug for PlaybackLoad {
@@ -136,6 +148,7 @@ impl std::fmt::Debug for PlaybackLoad {
             .debug_struct("PlaybackLoad")
             .field("destination", &self.destination)
             .field("source_context", &self.source_context)
+            .field("handoff", &self.handoff)
             .finish()
     }
 }
@@ -360,6 +373,9 @@ pub enum PlayerEvent {
     CacheReplacementEmergency {
         reason: long_form_seek::CacheReason,
     },
+    /// The transport tried to overlap and this machine refused. Sticky: the owner stops planning
+    /// later overlaps.
+    OverlapUnavailable(crate::crossfade::OverlapBlocker),
     /// Per-file mpv state tagged at the ordered `start-file` boundary. Owners compare this
     /// generation with the latest admitted Load/Stop before reducing the enclosed event.
     FileScoped {
@@ -439,6 +455,10 @@ impl SharedLongFormSeekStatus {
                 HISTORY.get_or_init(|| Arc::new(Mutex::new(LongFormSeekHistory::default()))),
             ),
         )
+    }
+
+    pub(crate) fn isolated(status: long_form_seek::CacheStatus) -> Self {
+        Self::with_history(status, Arc::new(Mutex::new(LongFormSeekHistory::default())))
     }
 
     fn with_history(
@@ -1013,6 +1033,18 @@ impl Drop for Mpv {
     }
 }
 
+impl Mpv {
+    pub(super) fn from_guarded(guarded: guardian::GuardedSpawn, ipc_path: String) -> Self {
+        let (child_tree, child, guardian_lease, _mpv_pid) = guarded.into_parts();
+        Self {
+            child_tree,
+            child: Some(child),
+            guardian_lease: Some(guardian_lease),
+            ipc_path,
+        }
+    }
+}
+
 /// Spawn guarded mpv and wire up the IPC actor. `emit` receives player events; `data_dir` marks a
 /// mutation-owning process which may use the managed cache; `cookies_file` (if any) is forwarded
 /// to mpv's yt-dlp for authenticated streams.
@@ -1096,28 +1128,42 @@ where
         .await
         .context("could not connect to the mpv IPC endpoint")?;
 
-    let (tx, rx) =
+    let emit: EventSink = Arc::new(emit);
+    let (owner_tx, owner_rx) =
+        crate::util::backpressure::bounded_channel(crate::util::backpressure::PLAYER_CMD_QUEUE);
+    let (lead_tx, lead_rx) =
         crate::util::backpressure::bounded_channel(crate::util::backpressure::PLAYER_CMD_QUEUE);
     let intentional_close = Arc::new(AtomicBool::new(false));
     let admitted_file_generation = Arc::new(AtomicU64::new(0));
     let expected_media_generation = Arc::new(AtomicU64::new(0));
     let (file_generation_tx, file_generation_rx) = tokio::sync::watch::channel(0);
     let route_revocations = Arc::new(RouteRevocationRegistry::default());
+    let gate = decks::EventGate::new(Arc::clone(&admitted_file_generation));
+    let primary_sink = gate.sink(false, Arc::clone(&emit));
     tokio::spawn(ipc::run_actor(ipc::ActorInput {
         conn,
-        cmd_rx: rx,
-        emit: Arc::new(emit),
+        cmd_rx: lead_rx,
+        emit: primary_sink,
         intentional_close: Arc::clone(&intentional_close),
-        file_generation_rx,
+        file_generation_rx: file_generation_rx.clone(),
         route_provider,
         route_revocations: Arc::clone(&route_revocations),
         cache_runtime,
         cache_status: Arc::clone(&long_form_seek_status),
     }));
+    tokio::spawn(decks::run_conductor(decks::ConductorInput {
+        cmd_rx: owner_rx,
+        lead_tx,
+        emit,
+        audio: audio.mpv,
+        gate,
+        intentional_close: Arc::clone(&intentional_close),
+        file_generation_rx,
+    }));
 
     Ok((
         PlayerHandle {
-            tx,
+            tx: owner_tx,
             pending: Arc::new(Mutex::new(PlayerPending::default())),
             intentional_close,
             admitted_file_generation,

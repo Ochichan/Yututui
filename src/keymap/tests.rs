@@ -1460,6 +1460,29 @@ fn local_deck_accept_all_shadows_global_animation_toggle_on_a() {
 }
 
 #[test]
+fn local_deck_crossfade_nudges_are_rebindable_and_leave_player_speed_alone() {
+    let mut km = KeyMap::default();
+    let (open, close) = (parse_chord("[").unwrap(), parse_chord("]").unwrap());
+    for (chord, local, player) in [
+        (open, Action::LocalCrossfadeDown, Action::SpeedDown),
+        (close, Action::LocalCrossfadeUp, Action::SpeedUp),
+    ] {
+        assert_eq!(km.action(KeyContext::LocalDeck, chord), Some(local));
+        assert_eq!(km.action(KeyContext::Player, chord), Some(player));
+    }
+
+    let f9 = parse_chord("f9").unwrap();
+    km.rebind(KeyContext::LocalDeck, Action::LocalCrossfadeUp, f9)
+        .unwrap();
+    assert_eq!(
+        km.action(KeyContext::LocalDeck, f9),
+        Some(Action::LocalCrossfadeUp)
+    );
+    assert_eq!(km.action(KeyContext::LocalDeck, close), None);
+    assert_eq!(km.action(KeyContext::Player, close), Some(Action::SpeedUp));
+}
+
+#[test]
 fn editable_entries_cover_every_binding() {
     assert_eq!(editable_entries().len(), default_bindings().len());
     assert!(
