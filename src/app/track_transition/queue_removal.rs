@@ -2,11 +2,6 @@ use super::*;
 use crate::queue::{QueueMutationPlan, QueueRemovalOutcome, QueueRemovalPlayback};
 
 impl App {
-    /// Commit a prepared removal, immediate or player-gated, with the caller's post-commit
-    /// projections. Shared by the queue window's range delete and by a station ban, which is
-    /// the same operation with a different predicate and a skip signal attached.
-    ///
-    /// Owns `queue_removal_cursor` from `outcome`, so no caller restates it.
     pub(in crate::app) fn apply_queue_removal(
         &mut self,
         mutation: QueueMutationPlan,

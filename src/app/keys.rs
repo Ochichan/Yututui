@@ -314,10 +314,6 @@ impl App {
             return self.on_key_local(k);
         }
 
-        // The Ctrl+R station owns B / Shift+A / e while it is actually playing. Routed before
-        // globals for the same reason Local Deck routes Shift+A early, and gated on the same
-        // `streaming_active()` predicate that draws the `banned N · seeds M` chip, so what the
-        // listener can see and what the keys do can never disagree. Station off, globals win.
         if self.streaming_active()
             && !(self.in_text_entry() && chord.is_typeable())
             && let Some(action) = self.keymap.context_action(KeyContext::Station, chord)
@@ -368,9 +364,6 @@ impl App {
     }
 
     fn route_modal_key_contexts(&mut self, k: KeyEvent, chord: Chord) -> Option<Vec<Cmd>> {
-        // The station card captures the keyboard while open, like the search results-filter
-        // popup: its input is always live, so every typeable key belongs to it. Quit still
-        // works; Delete lifts the selected ban/seed; Esc closes.
         if self.overlays.station_card.is_some() {
             if matches!(self.keymap.global_action(chord), Some(Action::Quit)) {
                 return Some(self.quit_app());

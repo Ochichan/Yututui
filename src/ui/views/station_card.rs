@@ -1,5 +1,3 @@
-//! The session station card: bans, seeds, and one live term field over the Ctrl+R radio.
-
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::Modifier;

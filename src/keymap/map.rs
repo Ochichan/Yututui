@@ -20,9 +20,6 @@ pub struct Conflict {
     pub chord: Chord,
 }
 
-/// Contexts whose dispatch deliberately runs before `Global` (see `App::on_key`), so a chord
-/// they share with a global action is a shadow rather than a conflict. Settings › Keys must
-/// agree with the router, and one table is easier to keep true than one boolean per pair.
 pub const PRE_GLOBAL_CONTEXTS: &[KeyContext] = &[
     KeyContext::LocalDeck,
     KeyContext::Station,

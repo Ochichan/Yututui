@@ -1,47 +1,21 @@
-//! Session-local listener taste for the Ctrl+R station: the tracks and artists the listener
-//! banned this session, and the soft "more like" / "exclude" terms they typed.
-//!
-//! Pure and synchronous, like the rest of `src/streaming`. Both playback owners hold one of
-//! these and project it into `StationState` through [`project_taste`], so the interactive App
-//! and the permanently-Gem-off daemon rank against the same rules by construction.
-//!
-//! Lifetime is the process. Nothing here is persisted, synced, or shared with
-//! `StationProfile`, `Signals`, or `session_events`, all of which outlive a session or mean
-//! something else.
-
 use std::collections::HashSet;
 
 use crate::api::Song;
 use crate::signals::normalize_artist;
 use crate::streaming::candidate::Candidate;
 
-/// Most seed terms a session may hold. Every term is tested against every candidate on every
-/// refill, and the card has to render them, so the ceiling is real rather than defensive.
-/// Bans are uncapped: they are a guarantee, and evicting one would silently un-ban a track.
 pub const SEED_TERMS_MAX: usize = 12;
 
-/// Longest accepted seed term, in characters.
 const SEED_TERM_CHARS_MAX: usize = 48;
 
-/// How hard a seed term may push a candidate's `base_score`. One matching term moves a score
-/// by half of this, two by all of it. Sized against `GATE_DEMOTE_PENALTY` (0.18) so a seed
-/// reorders a near-tie but never outruns a strong co-occurrence or watch-playlist signal.
-/// Seeds are a bias. Bans are the guarantee.
 pub const SEED_BIAS_WEIGHT: f32 = 0.22;
 
-/// A non-empty `video_id`. The scorer already drops candidates with no id, so an empty ban
-/// would be a silent no-op; refusing it at construction makes that unrepresentable.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct TrackId(String);
 
-/// A non-empty normalized artist key, matching `signals::normalize_artist`. Refusing the empty
-/// key matters: `StationState.banned_artist_keys.contains("")` would ban every candidate whose
-/// artist did not normalize, which is a fleet of unrelated tracks rather than one artist.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ArtistKey(String);
 
-/// A normalized soft-match term: trimmed, lowercased, inner whitespace collapsed, non-empty,
-/// at most [`SEED_TERM_CHARS_MAX`] characters.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct SeedTerm(String);
 
@@ -60,7 +34,6 @@ impl TrackId {
 }
 
 impl ArtistKey {
-    /// Normalize and brand. `None` when the song's artist normalizes to nothing.
     pub fn from_song(song: &Song) -> Option<Self> {
         Self::from_raw(&song.artist)
     }
@@ -79,7 +52,6 @@ impl ArtistKey {
 }
 
 impl SeedTerm {
-    /// The parse boundary for user-typed text. `None` for empty, whitespace-only, or overlong.
     pub fn new(raw: &str) -> Option<Self> {
         let collapsed = raw
             .split_whitespace()
@@ -96,14 +68,11 @@ impl SeedTerm {
         &self.0
     }
 
-    /// Case-insensitive substring test against one metadata field.
     fn matches(&self, haystack: &str) -> bool {
         haystack.to_lowercase().contains(&self.0)
     }
 }
 
-/// Why a taste constructor refused the input. Distinct variants so the toast (and tests) can
-/// name the missing piece instead of collapsing every failure into `None`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TasteError {
     MissingTrackId,
@@ -111,27 +80,21 @@ pub enum TasteError {
     EmptyTerm,
 }
 
-/// Which way a seed term pushes. A term holds exactly one of these, so "more like jazz" and
-/// "exclude jazz" cannot both be in effect. Re-adding a term with the other polarity flips it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SeedPolarity {
     MoreLike,
     Exclude,
 }
 
-/// A banned track. The label is captured at ban time because the song leaves the queue
-/// immediately and the station card still has to name what was banned.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BannedTrack {
     pub id: TrackId,
-    /// `"Title — Artist"`, display only.
     pub label: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BannedArtist {
     pub key: ArtistKey,
-    /// The artist as the catalog spelled it, display only.
     pub display: String,
 }
 
@@ -141,12 +104,6 @@ pub struct Seed {
     pub polarity: SeedPolarity,
 }
 
-/// Everything the listener told the station this session.
-///
-/// Ordered vectors rather than sets: the station card lists them oldest-first and lets the
-/// listener lift one by position, while the hot path (per-candidate rejection) reads the
-/// hashed sets that [`project_taste`] derives once per refill. One representation, derived
-/// views, nothing to keep in sync.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SessionTaste {
     banned_tracks: Vec<BannedTrack>,
@@ -155,30 +112,21 @@ pub struct SessionTaste {
     epoch: u64,
 }
 
-/// The one mutation vocabulary. A ban is applied inside the track-transition commit (see
-/// `TrackPostCommit`), so it has to be a value that can be built now and applied later; a seed
-/// applies immediately. Same type either way, so a reader learns one thing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TasteEdit {
     BanTrack(BannedTrack),
     BanArtist(BannedArtist),
-    /// Add or re-polarize a term.
     SetSeed(Seed),
 }
 
-/// What `apply` did. Exhaustive so the caller's toast cannot silently miss a case.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[must_use]
 pub enum TasteOutcome {
     Applied,
-    /// The edit was already in effect, byte for byte. `B` on the same track twice is one ban.
     AlreadyApplied,
-    /// At [`SEED_TERMS_MAX`]. Nothing changed; the caller explains.
     SeedLimitReached,
 }
 
-/// One row of the station card, borrowed from the taste. The card's selection is an index into
-/// this list, so bans-then-seeds ordering lives here rather than in the view.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TasteEntry<'a> {
     BannedTrack(&'a BannedTrack),
@@ -186,9 +134,6 @@ pub enum TasteEntry<'a> {
     Seed(&'a Seed),
 }
 
-/// The two numbers the status line prints. `banned` counts track bans and artist bans
-/// together, because the listener banned N things and does not care which kind. `seeds` counts
-/// terms of either polarity. Derived on read, never stored.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct TasteCounts {
     pub banned: usize,
@@ -206,7 +151,6 @@ fn track_label(song: &Song) -> String {
 }
 
 impl TasteEdit {
-    /// Ban this exact track. `Err` when the song has no usable id.
     pub fn ban_track(song: &Song) -> Result<Self, TasteError> {
         let id = TrackId::new(&song.video_id).ok_or(TasteError::MissingTrackId)?;
         Ok(Self::BanTrack(BannedTrack {
@@ -215,7 +159,6 @@ impl TasteEdit {
         }))
     }
 
-    /// Ban this song's artist. `Err` when the artist normalizes to nothing.
     pub fn ban_artist(song: &Song) -> Result<Self, TasteError> {
         let key = ArtistKey::from_song(song).ok_or(TasteError::MissingArtist)?;
         Ok(Self::BanArtist(BannedArtist {
@@ -224,7 +167,6 @@ impl TasteEdit {
         }))
     }
 
-    /// The station card's empty-field Enter: "more like this artist".
     pub fn seed_current_artist(song: &Song) -> Result<Self, TasteError> {
         let term = SeedTerm::new(&song.artist).ok_or(TasteError::MissingArtist)?;
         Ok(Self::SetSeed(Seed {
@@ -233,8 +175,6 @@ impl TasteEdit {
         }))
     }
 
-    /// Parse a typed line. A leading `-` means exclude, anything else means more-like.
-    /// The single boundary where untrusted text becomes a domain value.
     pub fn parse_seed(raw: &str) -> Result<Self, TasteError> {
         let trimmed = raw.trim();
         let (polarity, rest) = match trimmed.strip_prefix('-') {
@@ -245,9 +185,6 @@ impl TasteEdit {
         Ok(Self::SetSeed(Seed { term, polarity }))
     }
 
-    /// Whether this pending edit rejects `song`. The purge predicate for the queue, derived
-    /// from the edit alone so the transaction never needs the post-mutation state. Seeds are
-    /// soft and reject nothing; the compiler will ask about any variant added later.
     pub fn rejects(&self, song: &Song) -> bool {
         match self {
             Self::BanTrack(banned) => TrackId::new(&song.video_id).as_ref() == Some(&banned.id),
@@ -262,8 +199,6 @@ impl SessionTaste {
         self.epoch = self.epoch.wrapping_add(1);
     }
 
-    /// Apply an edit. Idempotent by construction: applying the same edit twice leaves the same
-    /// value, which is what a listener leaning on `B` expects.
     pub fn apply(&mut self, edit: TasteEdit) -> TasteOutcome {
         match edit {
             TasteEdit::BanTrack(banned) => {
@@ -301,8 +236,6 @@ impl SessionTaste {
         }
     }
 
-    /// Whether a hard ban rejects this song. The single predicate behind the queue purge, the
-    /// final queue-admission gate, and (via [`project_taste`]) the scorer's hard filter.
     pub fn rejects_song(&self, song: &Song) -> bool {
         if let Some(id) = TrackId::new(&song.video_id)
             && self.banned_tracks.iter().any(|row| row.id == id)
@@ -317,7 +250,6 @@ impl SessionTaste {
         false
     }
 
-    /// Card rows, bans first then seeds, each group oldest-first.
     pub fn entries(&self) -> impl ExactSizeIterator<Item = TasteEntry<'_>> {
         let mut rows = Vec::with_capacity(
             self.banned_tracks.len() + self.banned_artists.len() + self.seeds.len(),
@@ -328,8 +260,6 @@ impl SessionTaste {
         rows.into_iter()
     }
 
-    /// Lift the entry at `index` in [`Self::entries`] order. Out of range is a no-op, so a
-    /// stale card cursor cannot lift the wrong row or panic.
     pub fn forget_at(&mut self, index: usize) -> bool {
         if index < self.banned_tracks.len() {
             self.banned_tracks.remove(index);
@@ -358,8 +288,6 @@ impl SessionTaste {
         }
     }
 
-    /// Monotonic revision of this taste. The DJ Gem rerank cache keys on it so a ban or seed
-    /// cannot replay an ordering computed before the edit.
     pub fn epoch(&self) -> u64 {
         self.epoch
     }
@@ -369,8 +297,6 @@ impl SessionTaste {
     }
 }
 
-/// The matcher `StationState` carries. Built once per refill from the session's seed terms, so
-/// per-candidate scoring is a slice walk rather than a re-normalization.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct SeedBias {
     terms: Vec<Seed>,
@@ -381,9 +307,6 @@ impl SeedBias {
         self.terms.is_empty()
     }
 
-    /// A signed nudge in `[-1.0, 1.0]`. Positive when more-like terms hit the candidate's
-    /// title, artist, or album; negative when exclude terms do. Never a rejection, so a narrow
-    /// pool cannot be starved by a typo.
     pub fn score(&self, candidate: &Candidate) -> f32 {
         if self.terms.is_empty() {
             return 0.0;
@@ -412,24 +335,12 @@ impl SeedBias {
     }
 }
 
-/// The taste-derived slice of a [`crate::streaming::StationState`].
 pub struct TasteProjection {
     pub banned_track_ids: HashSet<String>,
     pub banned_artist_keys: HashSet<String>,
     pub seed_bias: SeedBias,
 }
 
-/// Merge the session's taste with the durable station profile's avoid list into the fields the
-/// ranking reads.
-///
-/// The two sources stay separate everywhere else. The session's bans live in the owner's
-/// streaming runtime and die with the process; `StationProfile.avoid_artist_keys` lives on disk
-/// and is DJ-Gem-authored. They are independent writers of "artists to avoid", so they are
-/// merged here at the read boundary rather than sharing one mutable set.
-///
-/// Called by `App::build_station_state` and `DaemonEngine::build_station_state`, which are the
-/// only two places a `StationState` is built. Owner drift is therefore impossible rather than
-/// tested for.
 pub fn project_taste(taste: &SessionTaste, avoid_artist_keys: &[String]) -> TasteProjection {
     let banned_track_ids = taste
         .banned_tracks

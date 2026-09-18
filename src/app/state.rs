@@ -659,10 +659,6 @@ pub struct StreamingRuntime {
     /// Cached co-occurrence graph keyed by [`Signals::play_log_generation`], so streaming refills don't
     /// rebuild the same nested HashMap when listening history has not changed.
     pub cooc_cache: Option<(u64, Cooc)>,
-    /// What the listener banned and seeded this session. Created empty at process start and
-    /// only ever changed by `SessionTaste::apply`. Turning autoplay off, switching mode, and
-    /// the 20-minute idle-session reset all leave it alone, because a ban the listener has to
-    /// re-enter is worse than one that outstays its welcome.
     pub taste: crate::streaming::SessionTaste,
     /// True while an off-path feedback summary is handed off to the assistant actor, awaiting its
     /// `AiMsg::StationPatch`. A single-flight guard so a skip streak can't fan out duplicate calls.
@@ -1284,7 +1280,6 @@ pub struct Overlays {
     /// Queue revision paired with `why_gem_queue_index`. Any membership/order mutation closes the
     /// card rather than silently retargeting an indistinguishable duplicate occurrence.
     pub(crate) why_gem_queue_revision: Option<u64>,
-    /// The `e` station card. `None` = closed.
     pub station_card: Option<StationCard>,
     /// The "what's playing" (지듣노) overlay — the radio identify card with favorite /
     /// ask-DJ Gem actions. `None` = closed. Opened by `Action::IdentifyNowPlaying` (`i`).
@@ -1297,14 +1292,9 @@ pub struct Overlays {
     pub(in crate::app) now_playing_seq: u64,
 }
 
-/// The station card's own state. One live text field, so there are no focus modes to get
-/// wrong: every typeable key edits the term, Up/Down move the list selection, Delete lifts,
-/// Enter commits, Esc closes.
 #[derive(Default)]
 pub struct StationCard {
-    /// A leading `-` means exclude. The card renders the parse result live.
     pub input: String,
     pub cursor: TextCursor,
-    /// Index into `SessionTaste::entries()`, clamped at render.
     pub selected: usize,
 }

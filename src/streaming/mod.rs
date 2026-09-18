@@ -184,8 +184,6 @@ pub struct StationState {
     pub recent_artist_keys: Vec<String>,
     pub banned_track_ids: HashSet<String>,
     pub banned_artist_keys: HashSet<String>,
-    /// The listener's soft "more like" / "exclude" terms for this session. Empty by default,
-    /// and empty is a no-op in scoring.
     pub seed_bias: SeedBias,
     /// Normalized artist keys the user has favorited (a seed-affinity boost).
     pub favorite_artist_keys: HashSet<String>,
@@ -295,11 +293,6 @@ pub fn ai_slots_for_confidence(n: usize, conf: Option<f32>) -> usize {
 /// Last synchronous safety pass before streaming picks are appended to the queue. The scoring pass
 /// already filtered candidates, but cached DJ Gem orders and low-context fallbacks can still benefit
 /// from a final cheap title/channel/duration check.
-///
-/// `taste` is the reason a ban cannot lose a race. A refill chain is normally cancelled when a
-/// ban lands, because banning always mutates the queue and a queue-revision change already
-/// retires the pending chain. This gate does not depend on that chain of reasoning: a pick the
-/// listener has banned is dropped here, whatever produced it and whenever it arrives.
 pub fn sanitize_final_picks(
     picks: Vec<Song>,
     fallback: &[Song],
