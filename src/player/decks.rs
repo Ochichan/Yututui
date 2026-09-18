@@ -91,6 +91,21 @@ pub(super) struct ConductorInput {
     pub file_generation_rx: watch::Receiver<u64>,
 }
 
+struct Conductor {
+    primary_tx: Sender<PlayerCmd>,
+    extra: Option<ExtraDeck>,
+    extra_is_lead: bool,
+    fade: Option<Fade>,
+    volume: i64,
+    next_deck_generation: u64,
+    warming: Option<JoinHandle<Result<ExtraDeck, OverlapBlocker>>>,
+    gate: Arc<EventGate>,
+    emit: EventSink,
+    audio: crate::config::MpvAudioRuntimeConfig,
+    intentional_close: Arc<AtomicBool>,
+    file_generation_rx: watch::Receiver<u64>,
+}
+
 pub(super) async fn run_conductor(input: ConductorInput) {
     let ConductorInput {
         mut cmd_rx,
@@ -102,12 +117,20 @@ pub(super) async fn run_conductor(input: ConductorInput) {
         file_generation_rx,
     } = input;
 
-    let mut extra: Option<ExtraDeck> = None;
-    let mut extra_is_lead = false;
-    let mut fade: Option<Fade> = None;
-    let mut volume: i64 = 100;
-    let mut next_deck_generation: u64 = 1;
-    let mut warming: Option<JoinHandle<Result<ExtraDeck, OverlapBlocker>>> = None;
+    let mut conductor = Conductor {
+        primary_tx: lead_tx,
+        extra: None,
+        extra_is_lead: false,
+        fade: None,
+        volume: 100,
+        next_deck_generation: 1,
+        warming: None,
+        gate,
+        emit,
+        audio,
+        intentional_close,
+        file_generation_rx,
+    };
     let mut tick = tokio::time::interval(FADE_TICK);
     tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
     tick.tick().await;
@@ -118,40 +141,32 @@ pub(super) async fn run_conductor(input: ConductorInput) {
                 let Some(cmd) = cmd else {
                     return;
                 };
-                if !handle_command(
-                    cmd,
-                    &lead_tx,
-                    &mut extra,
-                    &mut extra_is_lead,
-                    &mut fade,
-                    &mut volume,
-                    &mut next_deck_generation,
-                    &mut warming,
-                    &gate,
-                    &emit,
-                    &audio,
-                    &intentional_close,
-                    &file_generation_rx,
-                )
-                .await
-                {
+                if !conductor.handle_command(cmd).await {
                     return;
                 }
             }
-            _ = tick.tick(), if fade.is_some() => {
-                if let Some(current) = fade.as_ref() {
+            _ = tick.tick(), if conductor.fade.is_some() => {
+                if let Some(current) = conductor.fade.as_ref() {
                     let elapsed = Instant::now().saturating_duration_since(current.started);
+                    let length = current.length;
                     apply_volumes(
-                        volume,
-                        extra.as_ref(),
-                        extra_is_lead,
-                        &lead_tx,
-                        Some((elapsed, current.length)),
+                        conductor.volume,
+                        conductor.extra.as_ref(),
+                        conductor.extra_is_lead,
+                        &conductor.primary_tx,
+                        Some((elapsed, length)),
                     )
                     .await;
-                    if elapsed >= current.length.duration() {
-                        finish_fade(&lead_tx, extra.as_ref(), extra_is_lead, volume, &gate).await;
-                        fade = None;
+                    if elapsed >= length.duration() {
+                        finish_fade(
+                            &conductor.primary_tx,
+                            conductor.extra.as_ref(),
+                            conductor.extra_is_lead,
+                            conductor.volume,
+                            &conductor.gate,
+                        )
+                        .await;
+                        conductor.fade = None;
                     }
                 }
             }
@@ -159,175 +174,183 @@ pub(super) async fn run_conductor(input: ConductorInput) {
     }
 }
 
-async fn handle_command(
-    cmd: PlayerCmd,
-    primary_tx: &Sender<PlayerCmd>,
-    extra: &mut Option<ExtraDeck>,
-    extra_is_lead: &mut bool,
-    fade: &mut Option<Fade>,
-    volume: &mut i64,
-    next_deck_generation: &mut u64,
-    warming: &mut Option<JoinHandle<Result<ExtraDeck, OverlapBlocker>>>,
-    gate: &Arc<EventGate>,
-    emit: &EventSink,
-    audio: &crate::config::MpvAudioRuntimeConfig,
-    intentional_close: &Arc<AtomicBool>,
-    file_generation_rx: &watch::Receiver<u64>,
-) -> bool {
-    match cmd {
-        PlayerCmd::Load(load) => match load.handoff() {
-            TrackHandoff::Overlap { fade: length } => {
-                if let Err(blocker) = ensure_extra(
-                    extra,
-                    warming,
-                    next_deck_generation,
-                    audio,
-                    gate,
-                    emit,
-                    intentional_close,
-                    file_generation_rx,
-                )
-                .await
-                {
-                    emit(PlayerEvent::OverlapUnavailable(blocker));
-                    let cut = PlayerCmd::Load(load.with_handoff(TrackHandoff::Cut));
-                    return forward(lead_tx(primary_tx, extra.as_ref(), *extra_is_lead), cut).await;
+impl Conductor {
+    async fn handle_command(&mut self, cmd: PlayerCmd) -> bool {
+        match cmd {
+            PlayerCmd::Load(load) => match load.handoff() {
+                TrackHandoff::Overlap { fade: length } => {
+                    if let Err(blocker) = self.ensure_extra().await {
+                        (self.emit)(PlayerEvent::OverlapUnavailable(blocker));
+                        let cut = PlayerCmd::Load(load.with_handoff(TrackHandoff::Cut));
+                        return self.forward_lead(cut).await;
+                    }
+                    let Some(incoming_tx) = self.incoming_tx() else {
+                        (self.emit)(PlayerEvent::OverlapUnavailable(OverlapBlocker::Mpv));
+                        let cut = PlayerCmd::Load(load.with_handoff(TrackHandoff::Cut));
+                        return self.forward_lead(cut).await;
+                    };
+                    self.abort_current_fade().await;
+                    self.gate.fading.store(true, Ordering::Release);
+                    if !forward(
+                        &incoming_tx,
+                        PlayerCmd::SetVolume(scaled_volume(self.volume, 0.0)),
+                    )
+                    .await
+                    {
+                        return false;
+                    }
+                    if !forward(
+                        &incoming_tx,
+                        PlayerCmd::Load(load.with_handoff(TrackHandoff::Cut)),
+                    )
+                    .await
+                    {
+                        return false;
+                    }
+                    self.extra_is_lead = !self.extra_is_lead;
+                    self.gate
+                        .extra_is_lead
+                        .store(self.extra_is_lead, Ordering::Release);
+                    self.fade = Some(Fade {
+                        length,
+                        started: Instant::now(),
+                    });
+                    apply_volumes(
+                        self.volume,
+                        self.extra.as_ref(),
+                        self.extra_is_lead,
+                        &self.primary_tx,
+                        Some((Duration::ZERO, length)),
+                    )
+                    .await;
+                    true
                 }
-                let Some(extra_deck) = extra.as_ref() else {
-                    emit(PlayerEvent::OverlapUnavailable(OverlapBlocker::Mpv));
-                    let cut = PlayerCmd::Load(load.with_handoff(TrackHandoff::Cut));
-                    return forward(lead_tx(primary_tx, extra.as_ref(), *extra_is_lead), cut).await;
-                };
-                abort_fade(
-                    fade,
-                    gate,
-                    primary_tx,
-                    extra.as_ref(),
-                    *extra_is_lead,
-                    *volume,
-                )
-                .await;
-                let incoming_is_extra = !*extra_is_lead;
-                let incoming_tx = if incoming_is_extra {
-                    &extra_deck.tx
-                } else {
-                    primary_tx
-                };
-                gate.fading.store(true, Ordering::Release);
-                if !forward(
-                    incoming_tx,
-                    PlayerCmd::SetVolume(scaled_volume(*volume, 0.0)),
-                )
-                .await
-                {
-                    return false;
+                TrackHandoff::Cut => {
+                    self.abort_current_fade().await;
+                    self.warm_extra();
+                    self.forward_lead(PlayerCmd::Load(load)).await
                 }
-                if !forward(
-                    incoming_tx,
-                    PlayerCmd::Load(load.with_handoff(TrackHandoff::Cut)),
-                )
-                .await
-                {
-                    return false;
-                }
-                *extra_is_lead = incoming_is_extra;
-                gate.extra_is_lead
-                    .store(incoming_is_extra, Ordering::Release);
-                *fade = Some(Fade {
-                    length,
-                    started: Instant::now(),
-                });
+            },
+            PlayerCmd::LoadWithResume(_) | PlayerCmd::Stop => {
+                self.abort_current_fade().await;
+                self.forward_lead(cmd).await
+            }
+            PlayerCmd::SeekRelative(_) | PlayerCmd::SeekAbsolute { .. } => {
+                self.abort_current_fade().await;
+                self.forward_lead(cmd).await
+            }
+            PlayerCmd::SetVolume(next) => {
+                self.volume = next;
                 apply_volumes(
-                    *volume,
-                    extra.as_ref(),
-                    *extra_is_lead,
-                    primary_tx,
-                    Some((Duration::ZERO, length)),
+                    self.volume,
+                    self.extra.as_ref(),
+                    self.extra_is_lead,
+                    &self.primary_tx,
+                    self.fade.as_ref().map(|current| {
+                        (
+                            Instant::now().saturating_duration_since(current.started),
+                            current.length,
+                        )
+                    }),
                 )
                 .await;
                 true
             }
-            TrackHandoff::Cut => {
-                abort_fade(
-                    fade,
-                    gate,
-                    primary_tx,
-                    extra.as_ref(),
-                    *extra_is_lead,
-                    *volume,
-                )
-                .await;
-                warm_extra(
-                    extra,
-                    warming,
-                    next_deck_generation,
-                    audio,
-                    gate,
-                    emit,
-                    intentional_close,
-                    file_generation_rx,
-                );
-                forward(
-                    lead_tx(primary_tx, extra.as_ref(), *extra_is_lead),
-                    PlayerCmd::Load(load),
-                )
-                .await
-            }
-        },
-        PlayerCmd::LoadWithResume(_) | PlayerCmd::Stop => {
-            abort_fade(
-                fade,
-                gate,
-                primary_tx,
-                extra.as_ref(),
-                *extra_is_lead,
-                *volume,
-            )
-            .await;
-            forward(lead_tx(primary_tx, extra.as_ref(), *extra_is_lead), cmd).await
-        }
-        PlayerCmd::SeekRelative(_) | PlayerCmd::SeekAbsolute { .. } => {
-            abort_fade(
-                fade,
-                gate,
-                primary_tx,
-                extra.as_ref(),
-                *extra_is_lead,
-                *volume,
-            )
-            .await;
-            forward(lead_tx(primary_tx, extra.as_ref(), *extra_is_lead), cmd).await
-        }
-        PlayerCmd::SetVolume(next) => {
-            *volume = next;
-            apply_volumes(
-                *volume,
-                extra.as_ref(),
-                *extra_is_lead,
-                primary_tx,
-                fade.as_ref().map(|current| {
-                    (
-                        Instant::now().saturating_duration_since(current.started),
-                        current.length,
-                    )
-                }),
-            )
-            .await;
-            true
-        }
-        cmd if is_pause_broadcast(&cmd) => {
-            let lead = lead_tx(primary_tx, extra.as_ref(), *extra_is_lead);
-            if !forward(lead, cmd.clone()).await {
-                return false;
-            }
-            if fade.is_some() {
-                if let Some(retiring) = retiring_tx(primary_tx, extra.as_ref(), *extra_is_lead) {
+            cmd if is_pause_broadcast(&cmd) => {
+                if !self.forward_lead(cmd.clone()).await {
+                    return false;
+                }
+                if self.fade.is_some()
+                    && let Some(retiring) =
+                        retiring_tx(&self.primary_tx, self.extra.as_ref(), self.extra_is_lead)
+                {
                     return forward(retiring, cmd).await;
                 }
+                true
             }
-            true
+            other => self.forward_lead(other).await,
         }
-        other => forward(lead_tx(primary_tx, extra.as_ref(), *extra_is_lead), other).await,
+    }
+
+    fn incoming_tx(&self) -> Option<Sender<PlayerCmd>> {
+        if self.extra_is_lead {
+            Some(self.primary_tx.clone())
+        } else {
+            self.extra.as_ref().map(|deck| deck.tx.clone())
+        }
+    }
+
+    async fn forward_lead(&self, cmd: PlayerCmd) -> bool {
+        forward(
+            lead_tx(&self.primary_tx, self.extra.as_ref(), self.extra_is_lead),
+            cmd,
+        )
+        .await
+    }
+
+    async fn abort_current_fade(&mut self) {
+        abort_fade(
+            &mut self.fade,
+            &self.gate,
+            &self.primary_tx,
+            self.extra.as_ref(),
+            self.extra_is_lead,
+            self.volume,
+        )
+        .await;
+    }
+
+    fn warm_extra(&mut self) {
+        if self.extra.is_some() || self.warming.is_some() {
+            return;
+        }
+        let audio = self.audio.clone();
+        let gate = Arc::clone(&self.gate);
+        let emit = Arc::clone(&self.emit);
+        let intentional_close = Arc::clone(&self.intentional_close);
+        let file_generation_rx = self.file_generation_rx.clone();
+        let generation = self.next_deck_generation;
+        self.next_deck_generation = self.next_deck_generation.saturating_add(1);
+        self.warming = Some(tokio::spawn(async move {
+            spawn_extra(
+                &audio,
+                generation,
+                &gate,
+                &emit,
+                &intentional_close,
+                file_generation_rx,
+            )
+            .await
+        }));
+    }
+
+    async fn ensure_extra(&mut self) -> Result<(), OverlapBlocker> {
+        if self.extra.is_some() {
+            return Ok(());
+        }
+        if let Some(task) = self.warming.take()
+            && let Ok(Ok(deck)) = task.await
+        {
+            self.extra = Some(deck);
+            return Ok(());
+        }
+        match spawn_extra(
+            &self.audio,
+            self.next_deck_generation,
+            &self.gate,
+            &self.emit,
+            &self.intentional_close,
+            self.file_generation_rx.clone(),
+        )
+        .await
+        {
+            Ok(deck) => {
+                self.next_deck_generation = self.next_deck_generation.saturating_add(1);
+                self.extra = Some(deck);
+                Ok(())
+            }
+            Err(blocker) => Err(blocker),
+        }
     }
 }
 
@@ -434,80 +457,6 @@ fn scaled_volume(user: i64, gain: f64) -> i64 {
 fn is_pause_broadcast(cmd: &PlayerCmd) -> bool {
     matches!(cmd, PlayerCmd::CyclePause)
         || matches!(cmd, PlayerCmd::SetProperty { name, .. } if name == "pause")
-}
-
-fn warm_extra(
-    extra: &Option<ExtraDeck>,
-    warming: &mut Option<JoinHandle<Result<ExtraDeck, OverlapBlocker>>>,
-    next_deck_generation: &mut u64,
-    audio: &crate::config::MpvAudioRuntimeConfig,
-    gate: &Arc<EventGate>,
-    emit: &EventSink,
-    intentional_close: &Arc<AtomicBool>,
-    file_generation_rx: &watch::Receiver<u64>,
-) {
-    if extra.is_some() || warming.is_some() {
-        return;
-    }
-    let audio = audio.clone();
-    let gate = Arc::clone(gate);
-    let emit = Arc::clone(emit);
-    let intentional_close = Arc::clone(intentional_close);
-    let file_generation_rx = file_generation_rx.clone();
-    let generation = *next_deck_generation;
-    *next_deck_generation = next_deck_generation.saturating_add(1);
-    *warming = Some(tokio::spawn(async move {
-        spawn_extra(
-            &audio,
-            generation,
-            &gate,
-            &emit,
-            &intentional_close,
-            file_generation_rx,
-        )
-        .await
-    }));
-}
-
-async fn ensure_extra(
-    extra: &mut Option<ExtraDeck>,
-    warming: &mut Option<JoinHandle<Result<ExtraDeck, OverlapBlocker>>>,
-    next_deck_generation: &mut u64,
-    audio: &crate::config::MpvAudioRuntimeConfig,
-    gate: &Arc<EventGate>,
-    emit: &EventSink,
-    intentional_close: &Arc<AtomicBool>,
-    file_generation_rx: &watch::Receiver<u64>,
-) -> Result<(), OverlapBlocker> {
-    if extra.is_some() {
-        return Ok(());
-    }
-    if let Some(task) = warming.take() {
-        match task.await {
-            Ok(Ok(deck)) => {
-                *extra = Some(deck);
-                return Ok(());
-            }
-            Ok(Err(_)) | Err(_) => {}
-        }
-    }
-    match spawn_extra(
-        audio,
-        *next_deck_generation,
-        gate,
-        emit,
-        intentional_close,
-        file_generation_rx.clone(),
-    )
-    .await
-    {
-        Ok(deck) => {
-            *next_deck_generation = next_deck_generation.saturating_add(1);
-            *extra = Some(deck);
-            Ok(())
-        }
-        Err(blocker) => Err(blocker),
-    }
 }
 
 async fn spawn_extra(

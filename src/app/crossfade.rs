@@ -38,7 +38,7 @@ impl App {
         self.audio
             .overlap_support
             .is_available()
-            .then(|| self.audio.local_crossfade)
+            .then_some(self.audio.local_crossfade)
             .filter(|setting| !setting.is_off())
             .map(LocalCrossfade::label)
     }
