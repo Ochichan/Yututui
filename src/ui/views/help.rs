@@ -585,9 +585,9 @@ fn mouse_help_groups(app: &App) -> Vec<(String, Vec<(String, String)>)> {
                     "Hover pin",
                     "핀 호버",
                     "ピンにホバー",
-                    "Show the station name and restyle the pin.",
-                    "방송국 이름을 보여주고 핀 모양을 바꿉니다.",
-                    "局名を表示し、ピンの見た目を変えます。",
+                    "Real pointer motion shows the name and country. Off when animations are off.",
+                    "실제 포인터가 움직일 때만 이름과 국가를 보여 줍니다. 애니메이션이 꺼지면 꺼집니다.",
+                    "実際のポインタ移動でのみ局名と国を出します。アニメーションオフでは出しません。",
                 ),
                 mouse_row(
                     "Right click pin",

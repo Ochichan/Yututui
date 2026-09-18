@@ -124,14 +124,15 @@ impl ServerLibraryRowIdentity {
 }
 
 impl ContextTarget {
-    const fn mouse_context(&self) -> MouseContext {
+    const fn mouse_context(&self) -> Option<MouseContext> {
         match self {
-            Self::Search { .. } | Self::Atlas { .. } => MouseContext::Search,
+            Self::Atlas { .. } => None,
+            Self::Search { .. } => Some(MouseContext::Search),
             Self::LibrarySongs { .. }
             | Self::LibraryPlaylist { .. }
-            | Self::ServerLibrary { .. } => MouseContext::Library,
-            Self::Queue { .. } => MouseContext::Queue,
-            Self::Local { .. } | Self::LocalFind { .. } => MouseContext::Local,
+            | Self::ServerLibrary { .. } => Some(MouseContext::Library),
+            Self::Queue { .. } => Some(MouseContext::Queue),
+            Self::Local { .. } | Self::LocalFind { .. } => Some(MouseContext::Local),
         }
     }
 }
@@ -339,12 +340,10 @@ impl App {
             && menu.anchor_col == col
             && menu.anchor_row == row
         {
-            if matches!(menu.target, ContextTarget::Atlas { .. }) {
+            let Some(ctx) = menu.target.mouse_context() else {
                 return Vec::new();
-            }
-            let action = self
-                .mousemap
-                .action(menu.target.mouse_context(), MouseGesture::RightClick);
+            };
+            let action = self.mousemap.action(ctx, MouseGesture::RightClick);
             if matches!(action, MouseAction::ContextMenu | MouseAction::Disabled) {
                 return Vec::new();
             }
@@ -362,9 +361,10 @@ impl App {
         let Some(target) = self.context_target_at(col, row) else {
             return Vec::new();
         };
-        let action = self
-            .mousemap
-            .action(target.mouse_context(), MouseGesture::RightClick);
+        let Some(ctx) = target.mouse_context() else {
+            return Vec::new();
+        };
+        let action = self.mousemap.action(ctx, MouseGesture::RightClick);
         match action {
             MouseAction::ContextMenu => self.open_context_target_menu(col, row, target),
             MouseAction::Activate | MouseAction::Enqueue => {
@@ -385,12 +385,10 @@ impl App {
             && menu.anchor_col == col
             && menu.anchor_row == row
         {
-            if matches!(menu.target, ContextTarget::Atlas { .. }) {
+            let Some(ctx) = menu.target.mouse_context() else {
                 return Vec::new();
-            }
-            let action = self
-                .mousemap
-                .action(menu.target.mouse_context(), MouseGesture::RightDoubleClick);
+            };
+            let action = self.mousemap.action(ctx, MouseGesture::RightDoubleClick);
             if action == MouseAction::Disabled {
                 return Vec::new();
             }
@@ -409,9 +407,10 @@ impl App {
         let Some(target) = target else {
             return Vec::new();
         };
-        let action = self
-            .mousemap
-            .action(target.mouse_context(), MouseGesture::RightDoubleClick);
+        let Some(ctx) = target.mouse_context() else {
+            return Vec::new();
+        };
+        let action = self.mousemap.action(ctx, MouseGesture::RightDoubleClick);
         match action {
             MouseAction::Activate | MouseAction::Enqueue => {
                 self.execute_mouse_action(target, action)

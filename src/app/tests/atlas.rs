@@ -597,6 +597,8 @@ fn keyboard_next_and_enter_tune_without_mouse_move_or_hover() {
 
 #[test]
 fn right_click_pin_opens_a_four_item_menu_without_prior_motion() {
+    let _guard = crate::i18n::lock_for_test();
+    crate::i18n::set_language(crate::i18n::Language::English);
     let mut app = atlas_app();
     let (col, row) = globe_centre_cell(&app);
     app.update(Msg::MouseRightClick { col, row });
@@ -604,12 +606,20 @@ fn right_click_pin_opens_a_four_item_menu_without_prior_motion() {
         !app.interaction.pointer_motion,
         "right-click is not hover chrome"
     );
+    let menu = app.overlays.context_menu.as_ref().expect("atlas pin menu");
+    let labels: Vec<String> = menu
+        .items
+        .iter()
+        .map(|item| item.label(menu.target_count()))
+        .collect();
     assert_eq!(
-        app.overlays
-            .context_menu
-            .as_ref()
-            .map(|menu| menu.items.len()),
-        Some(4)
+        labels,
+        vec![
+            "Play now",
+            "Favorite / unfavorite",
+            "Copy stream url",
+            "Open country list",
+        ]
     );
 
     let mut play = atlas_app();
@@ -646,6 +656,29 @@ fn right_click_pin_opens_a_four_item_menu_without_prior_motion() {
         c,
         Cmd::Atlas(AtlasCmd::Country { code, .. }) if code.eq_ignore_ascii_case("KR")
     )));
+}
+
+#[test]
+fn atlas_pin_menu_ignores_search_mouse_bindings() {
+    let mut app = atlas_app();
+    app.mousemap
+        .set(
+            crate::mousemap::MouseContext::Search,
+            crate::mousemap::MouseGesture::RightClick,
+            crate::mousemap::MouseAction::Enqueue,
+        )
+        .unwrap();
+    let (col, row) = globe_centre_cell(&app);
+    app.update(Msg::MouseRightClick { col, row });
+    assert_eq!(
+        app.overlays
+            .context_menu
+            .as_ref()
+            .map(|menu| menu.items.len()),
+        Some(4),
+        "Search mouse remaps must not steal the Atlas pin menu"
+    );
+    assert_eq!(app.queue.len(), 0);
 }
 
 #[test]

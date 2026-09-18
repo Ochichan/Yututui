@@ -132,7 +132,6 @@ pub struct AtlasState {
     pub selected: Option<usize>,
     /// Keyboard cursor / landing highlight (marker `○`).
     pub highlight: Option<usize>,
-    /// Pointer hover. Independent of keyboard `highlight` and tuned `selected`.
     pub hover: Option<usize>,
     pub active_country: Option<[u8; 2]>,
     pub active_country_name: String,
@@ -282,6 +281,7 @@ impl App {
         atlas.generation += 1;
         atlas.kinetic = Kinetic::default();
         atlas.press = None;
+        atlas.hover = None;
         atlas.focus = AtlasFocus::Globe;
         atlas.search_editing = false;
         atlas.grid = self.config.atlas.grid;
@@ -994,6 +994,7 @@ impl App {
                 atlas.search_editing = false;
                 atlas.velocity = VelocityTracker::default();
                 atlas.drag_clock = 0.0;
+                atlas.hover = None;
                 atlas.press = Some(PressSession {
                     col,
                     row,
