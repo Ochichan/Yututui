@@ -108,6 +108,13 @@ impl App {
             self.close_station_card();
             return Vec::new();
         }
+        if matches!(
+            self.keymap.context_action(KeyContext::Station, chord),
+            Some(Action::OpenStationCard)
+        ) {
+            self.close_station_card();
+            return Vec::new();
+        }
 
         match self.keymap.action(KeyContext::Common, chord) {
             Some(Action::MoveUp) => {

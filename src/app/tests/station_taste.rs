@@ -105,6 +105,15 @@ fn station_card_opens_and_esc_closes_while_streaming() {
 }
 
 #[test]
+fn station_card_e_closes_without_typing_into_the_field() {
+    let mut app = streaming_app_with_duplicate_current();
+    app.update(Msg::Key(key(KeyCode::Char('e'))));
+    assert!(app.overlays.station_card.is_some());
+    app.update(Msg::Key(key(KeyCode::Char('e'))));
+    assert!(app.overlays.station_card.is_none());
+}
+
+#[test]
 fn off_state_station_chords_keep_global_and_player_meanings() {
     let mut app = app_playing(3, 0);
     assert!(!app.streaming_active());
