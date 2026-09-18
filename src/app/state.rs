@@ -65,9 +65,7 @@ pub struct AudioEq {
     pub normalize: bool,
     /// Seconds jumped per seek-back/-forward key (configurable; default 10s).
     pub seek_seconds: f64,
-    /// Live crossfade length.
     pub local_crossfade: crate::crossfade::LocalCrossfade,
-    /// Whether overlap is possible.
     pub overlap_support: crate::crossfade::OverlapSupport,
 }
 
@@ -364,8 +362,8 @@ pub struct Playback {
     /// Chapter boundaries of the loaded media, from mpv's `chapter-list` (empty when the
     /// media has none). Drives the seekbar markers and the `!`/`@` jumps.
     pub chapters: Vec<crate::player::Chapter>,
-    /// Last load sent to mpv.
     pub loaded: Option<crate::player::PlaybackLoad>,
+    pub overlap_armed: bool,
 }
 
 /// Prefetch / load tracking: the pre-resolved stream-URL cache, whether the current track

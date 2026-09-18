@@ -1,5 +1,3 @@
-//! Local Deck crossfade keys and the status chip.
-
 use super::*;
 use crate::crossfade::LocalCrossfade;
 
@@ -34,11 +32,58 @@ impl App {
     }
 
     pub fn crossfade_chip(&self) -> Option<String> {
+        if self.video.proc.is_some() {
+            return None;
+        }
         self.audio
             .overlap_support
             .is_available()
             .then(|| self.audio.local_crossfade)
             .filter(|setting| !setting.is_off())
             .map(LocalCrossfade::label)
+    }
+
+    pub(in crate::app) fn begin_crossfade_if_due(&mut self) -> Vec<Cmd> {
+        if self.playback.paused || self.video.proc.is_some() {
+            return Vec::new();
+        }
+        if self.audio.local_crossfade.is_off() {
+            return Vec::new();
+        }
+        let fade_secs = self.audio.local_crossfade.as_secs_f64();
+        let position = self.playback.time_pos.unwrap_or(0.0);
+        if !crate::crossfade::remaining_in_overlap_window(
+            self.playback.duration,
+            position,
+            fade_secs,
+        ) {
+            self.playback.overlap_armed = false;
+            return Vec::new();
+        }
+        if self.playback.overlap_armed {
+            return Vec::new();
+        }
+        let cursor = self.queue.cursor_pos();
+        let Some(next) = self.queue.plan_next_cursor(cursor, true) else {
+            return Vec::new();
+        };
+        let Some(song) = self.queue.song_at_cursor(next).cloned() else {
+            return Vec::new();
+        };
+        let Ok(load) = self.prepare_track_load(song) else {
+            return Vec::new();
+        };
+        let incoming = load.as_playback_load();
+        let crate::crossfade::TrackHandoff::Overlap { .. } = crate::crossfade::handoff(
+            self.playback.loaded.as_ref(),
+            self.playback.duration,
+            &incoming,
+            self.audio.local_crossfade,
+            self.audio.overlap_support,
+        ) else {
+            return Vec::new();
+        };
+        self.playback.overlap_armed = true;
+        self.advance_with_outgoing(true, true)
     }
 }

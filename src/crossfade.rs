@@ -1,5 +1,3 @@
-//! Local-file crossfade policy.
-
 use std::num::NonZeroU8;
 use std::time::Duration;
 
@@ -16,7 +14,6 @@ pub struct CrossfadeSecs(NonZeroU8);
 impl CrossfadeSecs {
     pub const MAX: Self = Self(NonZeroU8::new(MAX_TENTHS).expect("MAX_TENTHS is non-zero"));
 
-    /// `None` for zero or for anything past [`Self::MAX`].
     pub const fn from_tenths(tenths: u8) -> Option<Self> {
         match NonZeroU8::new(tenths) {
             Some(tenths) if tenths.get() <= MAX_TENTHS => Some(Self(tenths)),
@@ -33,7 +30,6 @@ impl CrossfadeSecs {
     }
 }
 
-/// The stored setting: off, or on at a specific length.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum LocalCrossfade {
     #[default]
@@ -42,7 +38,6 @@ pub enum LocalCrossfade {
 }
 
 impl LocalCrossfade {
-    /// A non-finite, negative, or oversized number becomes a legal setting.
     pub fn from_secs(secs: f64) -> Self {
         let tenths = (crate::util::finite_or(secs, 0.0) * 10.0).round();
         Self::from_tenths(tenths.clamp(0.0, f64::from(MAX_TENTHS)) as u8)
@@ -61,7 +56,6 @@ impl LocalCrossfade {
         matches!(self, Self::Off)
     }
 
-    /// Tenths, zero when off.
     pub const fn tenths(self) -> u8 {
         match self {
             Self::Off => 0,
@@ -73,12 +67,10 @@ impl LocalCrossfade {
         f64::from(self.tenths()) / 10.0
     }
 
-    /// Saturates at both ends.
     pub const fn nudge(self, steps: i8) -> Self {
         Self::from_tenths(self.tenths().saturating_add_signed(steps))
     }
 
-    /// `Off` or `1.5s`.
     pub fn label(self) -> String {
         match self {
             Self::Off => crate::t!("Off", "꺼짐", "オフ").to_owned(),
@@ -87,7 +79,6 @@ impl LocalCrossfade {
     }
 }
 
-/// A nonzero fade after the half-track clamp in [`handoff`]. [`envelope`] divides by this.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct FadeLength(NonZeroU8);
 
@@ -101,7 +92,6 @@ impl FadeLength {
     }
 }
 
-/// How the outgoing file becomes the incoming file.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum TrackHandoff {
     /// `loadfile <target> replace` on the deck that owns the transport.
@@ -114,7 +104,6 @@ pub enum TrackHandoff {
 /// Whether this build and this machine can hold two audio outputs at once.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum OverlapSupport {
-    /// Before the answer is known. Not available.
     #[default]
     Untried,
     Available,
@@ -133,7 +122,6 @@ pub enum OverlapBlocker {
     Mpv,
     /// Exclusive-mode device or ALSA `hw:` refused a second open.
     OutputBusy,
-    /// The video overlay owns audio.
     VideoOverlay,
 }
 
@@ -149,14 +137,45 @@ impl OverlapBlocker {
     }
 }
 
-pub const fn overlap_support() -> OverlapSupport {
-    OverlapSupport::Unavailable(OverlapBlocker::SingleDeckTransport)
+pub fn overlap_support() -> OverlapSupport {
+    if crate::player::mpv::second_deck_supported() {
+        OverlapSupport::Available
+    } else {
+        OverlapSupport::Unavailable(OverlapBlocker::Mpv)
+    }
 }
 
-/// Decide whether two loads may overlap.
-///
-/// `outgoing == None` is a cold start. A missing or invalid duration cannot be scheduled.
-/// Identical files would double the same audio.
+pub fn remaining_in_overlap_window(duration: Option<f64>, position: f64, fade_secs: f64) -> bool {
+    let Some(duration) = duration.filter(|secs| secs.is_finite() && *secs > 0.0) else {
+        return false;
+    };
+    if !position.is_finite() || !fade_secs.is_finite() || fade_secs <= 0.0 {
+        return false;
+    }
+    let remaining = duration - position;
+    remaining > 0.0 && remaining <= fade_secs
+}
+
+pub fn handoff_for_advance(
+    eof_like: bool,
+    outgoing: Option<&PlaybackLoad>,
+    outgoing_duration: Option<f64>,
+    incoming: &PlaybackLoad,
+    setting: LocalCrossfade,
+    support: OverlapSupport,
+    video_overlay: bool,
+) -> TrackHandoff {
+    if !eof_like {
+        return TrackHandoff::Cut;
+    }
+    let support = if video_overlay {
+        OverlapSupport::Unavailable(OverlapBlocker::VideoOverlay)
+    } else {
+        support
+    };
+    handoff(outgoing, outgoing_duration, incoming, setting, support)
+}
+
 pub fn handoff(
     outgoing: Option<&PlaybackLoad>,
     outgoing_duration: Option<f64>,
@@ -197,9 +216,7 @@ pub fn handoff(
     }
 }
 
-/// Whether two playback targets are two different files.
-///
-/// Canonicalize because the raw string is not identity. An unresolvable path is not distinct.
+/// Canonicalize because the raw string is not identity.
 fn distinct_files(from: &str, to: &str) -> bool {
     from != to
         && match (std::fs::canonicalize(from), std::fs::canonicalize(to)) {
@@ -208,7 +225,6 @@ fn distinct_files(from: &str, to: &str) -> bool {
         }
 }
 
-/// Per-deck gain, a finite 0.0..=1.0 multiplier.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct FadeGain(f64);
 
@@ -448,15 +464,72 @@ mod tests {
 
     #[test]
     fn this_build_refuses_overlap_and_says_why() {
+        match overlap_support() {
+            OverlapSupport::Available | OverlapSupport::Unavailable(OverlapBlocker::Mpv) => {}
+            other => panic!("expected Available or Unavailable(Mpv), got {other:?}"),
+        }
         assert_eq!(
-            overlap_support(),
-            OverlapSupport::Unavailable(OverlapBlocker::SingleDeckTransport)
+            overlap_support().is_available(),
+            matches!(overlap_support(), OverlapSupport::Available)
         );
-        assert!(!overlap_support().is_available());
         assert!(!OverlapSupport::Untried.is_available());
         assert_eq!(
             OverlapBlocker::SingleDeckTransport.reason(),
             "single-deck transport"
+        );
+    }
+
+    #[test]
+    fn remaining_window_uses_literal_duration_position_and_fade() {
+        assert!(remaining_in_overlap_window(Some(240.0), 238.6, 1.5));
+        assert!(!remaining_in_overlap_window(Some(240.0), 100.0, 1.5));
+        assert!(!remaining_in_overlap_window(Some(240.0), 240.0, 1.5));
+        assert!(!remaining_in_overlap_window(None, 238.6, 1.5));
+        assert!(!remaining_in_overlap_window(Some(240.0), 238.6, 0.0));
+    }
+
+    #[test]
+    fn skip_stays_cut_and_eof_may_overlap() {
+        let pair = LocalPair::create("advance");
+        let outgoing = on_demand(&pair.first);
+        let incoming = on_demand(&pair.second);
+        let setting = LocalCrossfade::from_tenths(15);
+        let support = OverlapSupport::Available;
+        assert_eq!(
+            handoff_for_advance(
+                false,
+                Some(&outgoing),
+                Some(240.0),
+                &incoming,
+                setting,
+                support,
+                false,
+            ),
+            TrackHandoff::Cut
+        );
+        match handoff_for_advance(
+            true,
+            Some(&outgoing),
+            Some(240.0),
+            &incoming,
+            setting,
+            support,
+            false,
+        ) {
+            TrackHandoff::Overlap { fade } => assert!((fade.as_secs_f64() - 1.5).abs() < 1e-9),
+            other => panic!("expected an overlap, got {other:?}"),
+        }
+        assert_eq!(
+            handoff_for_advance(
+                true,
+                Some(&outgoing),
+                Some(240.0),
+                &incoming,
+                setting,
+                support,
+                true,
+            ),
+            TrackHandoff::Cut
         );
     }
 

@@ -656,7 +656,6 @@ fn cold_toggle_pause_and_startup_autoplay_wait_for_load_admission() {
     );
 }
 
-/// The `Load` this transition sends to the player, and the handoff riding on it.
 fn loaded_handoff(cmds: &[Cmd]) -> TrackHandoff {
     player_batch(cmds)
         .into_iter()
@@ -667,7 +666,6 @@ fn loaded_handoff(cmds: &[Cmd]) -> TrackHandoff {
         .expect("a Load command")
 }
 
-/// Two local files queued back to back, playing the first.
 fn local_pair_playing() -> (App, Vec<std::path::PathBuf>) {
     let paths = vec![temp_audio_file("xfade-a"), temp_audio_file("xfade-b")];
     let songs = paths
@@ -685,19 +683,69 @@ fn local_pair_playing() -> (App, Vec<std::path::PathBuf>) {
 }
 
 #[test]
-fn the_transition_path_carries_the_crossfade_decision_for_two_local_files() {
-    let (mut app, paths) = local_pair_playing();
-    app.audio.local_crossfade = crate::crossfade::LocalCrossfade::from_tenths(15);
+fn a_manual_skip_cuts_even_when_overlap_is_available() {
+    for code in [KeyCode::Char('.'), KeyCode::Char(',')] {
+        let (mut app, paths) = local_pair_playing();
+        app.audio.local_crossfade = crate::crossfade::LocalCrossfade::from_tenths(15);
+        app.audio.overlap_support = crate::crossfade::OverlapSupport::Available;
+        app.playback.duration = Some(240.0);
 
-    app.audio.overlap_support = crate::crossfade::overlap_support();
-    assert!(!app.audio.overlap_support.is_available());
-    let mut cmds = app.update(Msg::Key(key(KeyCode::Char('.'))));
-    assert_eq!(loaded_handoff(&cmds), TrackHandoff::Cut);
-    admit_player_transition(&mut app, &mut cmds);
+        let cmds = app.update(Msg::Key(key(code)));
+        assert_eq!(loaded_handoff(&cmds), TrackHandoff::Cut, "{code:?}");
+
+        for path in paths {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+}
+
+#[test]
+fn remaining_window_time_pos_overlaps_two_local_files() {
+    let (mut app, paths) = local_pair_playing();
+    app.playback.paused = false;
+    app.audio.local_crossfade = crate::crossfade::LocalCrossfade::from_tenths(15);
+    app.audio.overlap_support = crate::crossfade::OverlapSupport::Available;
     app.playback.duration = Some(240.0);
 
+    assert_no_load(&app.update(PlayerMsg::TimePos(100.0)));
+    assert!(!app.playback.overlap_armed);
+
+    let cmds = app.update(PlayerMsg::TimePos(238.6));
+    match loaded_handoff(&cmds) {
+        TrackHandoff::Overlap { fade } => assert!((fade.as_secs_f64() - 1.5).abs() < 1e-9),
+        other => panic!("expected an overlap, got {other:?}"),
+    }
+    assert!(app.playback.overlap_armed);
+
+    assert_no_load(&app.update(PlayerMsg::TimePos(238.7)));
+
+    for path in paths {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+#[test]
+fn a_remote_remaining_window_does_not_early_advance() {
+    let mut app = app_playing(3, 0);
+    app.playback.paused = false;
+    app.audio.local_crossfade = crate::crossfade::LocalCrossfade::from_tenths(15);
     app.audio.overlap_support = crate::crossfade::OverlapSupport::Available;
-    let cmds = app.update(Msg::Key(key(KeyCode::Char(','))));
+    app.playback.duration = Some(240.0);
+    let cursor = app.queue.cursor_pos();
+
+    assert_no_load(&app.update(PlayerMsg::TimePos(238.6)));
+    assert_eq!(app.queue.cursor_pos(), cursor);
+    assert!(!app.playback.overlap_armed);
+}
+
+#[test]
+fn eof_overlaps_two_local_files_when_overlap_is_available() {
+    let (mut app, paths) = local_pair_playing();
+    app.audio.local_crossfade = crate::crossfade::LocalCrossfade::from_tenths(15);
+    app.audio.overlap_support = crate::crossfade::OverlapSupport::Available;
+    app.playback.duration = Some(240.0);
+
+    let cmds = app.update(PlayerMsg::Eof);
     match loaded_handoff(&cmds) {
         TrackHandoff::Overlap { fade } => assert!((fade.as_secs_f64() - 1.5).abs() < 1e-9),
         other => panic!("expected an overlap, got {other:?}"),

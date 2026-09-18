@@ -235,6 +235,7 @@ impl App {
                     }
                     tracing::debug!(time_pos = t, "progress");
                 }
+                return self.begin_crossfade_if_due();
             }
             PlayerMsg::Duration(d) => {
                 self.playback.duration = d.map(crate::playback_policy::norm_duration);
@@ -342,6 +343,10 @@ impl App {
             }
             PlayerMsg::CacheReplacementEmergency { reason } => {
                 return self.recover_cache_replacement_emergency(reason);
+            }
+            PlayerMsg::OverlapUnavailable(blocker) => {
+                self.audio.overlap_support = crate::crossfade::OverlapSupport::Unavailable(blocker);
+                self.dirty = true;
             }
             PlayerMsg::IntentAdmitted(commit) => {
                 return self.commit_player_intent(commit);

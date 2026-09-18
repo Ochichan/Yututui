@@ -219,8 +219,17 @@ mod tests {
         );
         assert_eq!(
             overlap_report(on, overlap_support()),
-            "1.5s · unsupported here (single-deck transport) · transitions stay as today, no fade",
-            "this build must document the refusal rather than claim overlap"
+            match overlap_support() {
+                OverlapSupport::Available => "1.5s · overlap ready".to_owned(),
+                OverlapSupport::Unavailable(blocker) => format!(
+                    "1.5s · unsupported here ({}) · transitions stay as today, no fade",
+                    blocker.reason()
+                ),
+                OverlapSupport::Untried => {
+                    "1.5s · unsupported here (not probed yet) · transitions stay as today, no fade"
+                        .to_owned()
+                }
+            },
         );
     }
 

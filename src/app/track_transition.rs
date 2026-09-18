@@ -582,12 +582,14 @@ impl App {
         match &plan.kind {
             TrackTransitionKind::Load { load, .. } => {
                 let incoming = load.as_playback_load();
-                let handoff = crate::crossfade::handoff(
+                let handoff = crate::crossfade::handoff_for_advance(
+                    plan.outgoing == Some(true),
                     self.playback.loaded.as_ref(),
                     self.playback.duration,
                     &incoming,
                     self.audio.local_crossfade,
                     self.audio.overlap_support,
+                    self.video.proc.is_some(),
                 );
                 commands.push(PlayerCmd::Load(incoming.with_handoff(handoff)));
                 if let Some(af) = self.track_audio_filter() {

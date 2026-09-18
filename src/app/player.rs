@@ -60,6 +60,8 @@ pub enum PlayerMsg {
     CacheReplacementEmergency {
         reason: crate::player::long_form_seek::CacheReason,
     },
+    /// Dual-deck overlap was refused. Sticky: later transitions stay Cut.
+    OverlapUnavailable(crate::crossfade::OverlapBlocker),
     /// The runtime accepted an admission-sensitive command batch; apply its projected state.
     IntentAdmitted(PlayerCommit),
     /// An event from the video-overlay mpv's IPC client, tagged with the spawn

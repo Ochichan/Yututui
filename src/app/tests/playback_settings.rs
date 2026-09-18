@@ -349,11 +349,19 @@ fn the_xfade_chip_appears_only_when_the_machine_can_actually_overlap() {
     app.audio.local_crossfade = crate::crossfade::LocalCrossfade::from_tenths(15);
 
     app.audio.overlap_support = crate::crossfade::overlap_support();
-    assert_eq!(app.crossfade_chip(), None);
-    assert!(
-        !buffer_contains(&render_app_buffer(&app, 120, 26), "xfade"),
-        "a chip here would promise a fade this build cannot perform"
-    );
+    if app.audio.overlap_support.is_available() {
+        assert_eq!(app.crossfade_chip().as_deref(), Some("1.5s"));
+        assert!(buffer_contains(
+            &render_app_buffer(&app, 120, 26),
+            "xfade 1.5s"
+        ));
+    } else {
+        assert_eq!(app.crossfade_chip(), None);
+        assert!(
+            !buffer_contains(&render_app_buffer(&app, 120, 26), "xfade"),
+            "a chip here would promise a fade this build cannot perform"
+        );
+    }
 
     app.audio.overlap_support = crate::crossfade::OverlapSupport::Available;
     assert_eq!(app.crossfade_chip().as_deref(), Some("1.5s"));

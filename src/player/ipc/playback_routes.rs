@@ -24,7 +24,8 @@ async fn begin_or_dispatch_command(
         )),
         cmd => {
             if matches!(cmd, PlayerCmd::Stop) {
-                state.issued_file_generation = reserve_file_generation(state);
+                state.issued_file_generation =
+                    reserve_published_file_generation(state, *file_generation_rx.borrow());
             }
             dispatch_command(conn, emit, state, request_id, cmd, None).await?;
             None
@@ -36,7 +37,8 @@ async fn begin_or_dispatch_command(
         // it as issued until validation has succeeded and `loadfile` is actually dispatched.
         // A seek/pause that supersedes recovery validation can therefore keep using the ready
         // current generation instead of waiting forever for a file that was never sent to mpv.
-        let file_generation = reserve_file_generation(state);
+        let file_generation =
+            reserve_published_file_generation(state, *file_generation_rx.borrow());
         let load_request_id = *request_id;
         let task = tokio::spawn(validate_load_until_superseded(
             destination,
@@ -56,10 +58,18 @@ async fn begin_or_dispatch_command(
 }
 
 fn reserve_file_generation(state: &mut DispatchState) -> u64 {
-    state.admitted_file_generation = state
+    reserve_published_file_generation(state, 0)
+}
+
+fn reserve_published_file_generation(state: &mut DispatchState, published: u64) -> u64 {
+    let local = state
         .admitted_file_generation
-        .max(state.issued_file_generation)
-        .wrapping_add(1);
+        .max(state.issued_file_generation);
+    state.admitted_file_generation = if published > local {
+        published
+    } else {
+        local.wrapping_add(1)
+    };
     state.admitted_file_generation
 }
 
