@@ -409,6 +409,7 @@ pub(super) async fn run_actor(input: ActorInput) {
         route_revocations,
         ..DispatchState::default()
     };
+    inherit_owner_file_generation(&mut state, *file_generation_rx.borrow());
     publish_cache_status(&mut state);
     if std::env::var_os("YTM_PERF").is_some() {
         state.numeric_perf = Some(NumericPerfWindow::new());

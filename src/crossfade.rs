@@ -156,8 +156,23 @@ pub fn remaining_in_overlap_window(duration: Option<f64>, position: f64, fade_se
     remaining > 0.0 && remaining <= fade_secs
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AdvanceCause {
+    Manual,
+    EndOfTrack,
+}
+
+impl AdvanceCause {
+    pub const fn from_outgoing(outgoing: Option<bool>) -> Self {
+        match outgoing {
+            Some(true) => Self::EndOfTrack,
+            _ => Self::Manual,
+        }
+    }
+}
+
 pub fn handoff_for_advance(
-    eof_like: bool,
+    cause: AdvanceCause,
     outgoing: Option<&PlaybackLoad>,
     outgoing_duration: Option<f64>,
     incoming: &PlaybackLoad,
@@ -165,7 +180,7 @@ pub fn handoff_for_advance(
     support: OverlapSupport,
     video_overlay: bool,
 ) -> TrackHandoff {
-    if !eof_like {
+    if matches!(cause, AdvanceCause::Manual) {
         return TrackHandoff::Cut;
     }
     let support = if video_overlay {
@@ -490,6 +505,16 @@ mod tests {
 
     #[test]
     fn skip_stays_cut_and_eof_may_overlap() {
+        assert_eq!(
+            AdvanceCause::from_outgoing(Some(true)),
+            AdvanceCause::EndOfTrack
+        );
+        assert_eq!(
+            AdvanceCause::from_outgoing(Some(false)),
+            AdvanceCause::Manual
+        );
+        assert_eq!(AdvanceCause::from_outgoing(None), AdvanceCause::Manual);
+
         let pair = LocalPair::create("advance");
         let outgoing = on_demand(&pair.first);
         let incoming = on_demand(&pair.second);
@@ -497,7 +522,7 @@ mod tests {
         let support = OverlapSupport::Available;
         assert_eq!(
             handoff_for_advance(
-                false,
+                AdvanceCause::Manual,
                 Some(&outgoing),
                 Some(240.0),
                 &incoming,
@@ -508,7 +533,7 @@ mod tests {
             TrackHandoff::Cut
         );
         match handoff_for_advance(
-            true,
+            AdvanceCause::EndOfTrack,
             Some(&outgoing),
             Some(240.0),
             &incoming,
@@ -521,7 +546,7 @@ mod tests {
         }
         assert_eq!(
             handoff_for_advance(
-                true,
+                AdvanceCause::EndOfTrack,
                 Some(&outgoing),
                 Some(240.0),
                 &incoming,

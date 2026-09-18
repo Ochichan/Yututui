@@ -54,14 +54,14 @@ impl EventGate {
         }
         if from_extra {
             let generation = self.admitted.load(Ordering::Acquire);
-            sink(retag(event, generation));
+            sink(rewrite_to_admitted_generation(event, generation));
         } else {
             sink(event);
         }
     }
 }
 
-fn retag(event: PlayerEvent, generation: u64) -> PlayerEvent {
+fn rewrite_to_admitted_generation(event: PlayerEvent, generation: u64) -> PlayerEvent {
     match event {
         PlayerEvent::FileScoped { event, .. } => PlayerEvent::FileScoped {
             file_generation: generation,
@@ -619,7 +619,7 @@ mod tests {
     }
 
     #[test]
-    fn event_gate_retags_extra_lead_file_scoped_to_admitted_generation() {
+    fn event_gate_rewrites_extra_lead_file_scoped_to_admitted_generation() {
         let admitted = Arc::new(AtomicU64::new(9));
         let gate = EventGate::new(Arc::clone(&admitted));
         gate.extra_is_lead.store(true, Ordering::Release);

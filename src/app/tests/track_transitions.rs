@@ -708,14 +708,14 @@ fn remaining_window_time_pos_overlaps_two_local_files() {
     app.playback.duration = Some(240.0);
 
     assert_no_load(&app.update(PlayerMsg::TimePos(100.0)));
-    assert!(!app.playback.overlap_armed);
+    assert!(!app.playback.overlap_fired);
 
     let cmds = app.update(PlayerMsg::TimePos(238.6));
     match loaded_handoff(&cmds) {
         TrackHandoff::Overlap { fade } => assert!((fade.as_secs_f64() - 1.5).abs() < 1e-9),
         other => panic!("expected an overlap, got {other:?}"),
     }
-    assert!(app.playback.overlap_armed);
+    assert!(app.playback.overlap_fired);
 
     assert_no_load(&app.update(PlayerMsg::TimePos(238.7)));
 
@@ -735,7 +735,7 @@ fn a_remote_remaining_window_does_not_early_advance() {
 
     assert_no_load(&app.update(PlayerMsg::TimePos(238.6)));
     assert_eq!(app.queue.cursor_pos(), cursor);
-    assert!(!app.playback.overlap_armed);
+    assert!(!app.playback.overlap_fired);
 }
 
 #[test]

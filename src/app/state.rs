@@ -363,7 +363,7 @@ pub struct Playback {
     /// media has none). Drives the seekbar markers and the `!`/`@` jumps.
     pub chapters: Vec<crate::player::Chapter>,
     pub loaded: Option<crate::player::PlaybackLoad>,
-    pub overlap_armed: bool,
+    pub overlap_fired: bool,
 }
 
 /// Prefetch / load tracking: the pre-resolved stream-URL cache, whether the current track

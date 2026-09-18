@@ -583,7 +583,7 @@ impl App {
             TrackTransitionKind::Load { load, .. } => {
                 let incoming = load.as_playback_load();
                 let handoff = crate::crossfade::handoff_for_advance(
-                    plan.outgoing == Some(true),
+                    crate::crossfade::AdvanceCause::from_outgoing(plan.outgoing),
                     self.playback.loaded.as_ref(),
                     self.playback.duration,
                     &incoming,

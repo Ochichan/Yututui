@@ -57,10 +57,10 @@ impl App {
             position,
             fade_secs,
         ) {
-            self.playback.overlap_armed = false;
+            self.playback.overlap_fired = false;
             return Vec::new();
         }
-        if self.playback.overlap_armed {
+        if self.playback.overlap_fired {
             return Vec::new();
         }
         let cursor = self.queue.cursor_pos();
@@ -83,7 +83,7 @@ impl App {
         ) else {
             return Vec::new();
         };
-        self.playback.overlap_armed = true;
+        self.playback.overlap_fired = true;
         self.advance_with_outgoing(true, true)
     }
 }
