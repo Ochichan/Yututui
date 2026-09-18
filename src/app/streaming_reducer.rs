@@ -757,12 +757,16 @@ impl App {
     pub(crate) fn streaming_exclude_ids(&self, seed_video_id: &str) -> Vec<String> {
         // Shared with the headless daemon engine — one implementation, so the two owners
         // can never drift on which already-heard/queued tracks a top-up excludes.
-        crate::streaming::exclude_ids(
+        let mut ids: HashSet<String> = crate::streaming::exclude_ids(
             &self.config.streaming,
             &self.queue,
             &self.library,
             seed_video_id,
         )
+        .into_iter()
+        .collect();
+        ids.extend(self.streaming.taste.banned_track_ids().map(str::to_owned));
+        ids.into_iter().collect()
     }
 
     /// Rank a raw candidate pool (from the anonymous related-tracks search) through the local
@@ -826,6 +830,7 @@ impl App {
             fallback,
             self.config.streaming.mode,
             &self.config.streaming,
+            &self.streaming.taste,
         );
         if !sanitized.is_empty()
             && streaming::final_preflight_needed(
@@ -1028,15 +1033,20 @@ impl App {
                 0.0
             };
 
+        let taste = crate::streaming::project_taste(
+            &self.streaming.taste,
+            &self.station.avoid_artist_keys(),
+        );
+
         StationState {
             mode: self.config.streaming.mode,
             seed_video_id: seed_video_id.to_owned(),
             seed_artist_key: self.streaming_seed_artist_key(seed_video_id),
             recent_track_ids,
             recent_artist_keys,
-            banned_track_ids: HashSet::new(),
-            // The active natural-language station's avoided artists are kept out of every refill.
-            banned_artist_keys: self.station.avoid_artist_keys().into_iter().collect(),
+            banned_track_ids: taste.banned_track_ids,
+            banned_artist_keys: taste.banned_artist_keys,
+            seed_bias: taste.seed_bias,
             favorite_artist_keys,
             session_artist_bias,
             temporary_novelty_boost,

@@ -659,6 +659,11 @@ pub struct StreamingRuntime {
     /// Cached co-occurrence graph keyed by [`Signals::play_log_generation`], so streaming refills don't
     /// rebuild the same nested HashMap when listening history has not changed.
     pub cooc_cache: Option<(u64, Cooc)>,
+    /// What the listener banned and seeded this session. Created empty at process start and
+    /// only ever changed by `SessionTaste::apply`. Turning autoplay off, switching mode, and
+    /// the 20-minute idle-session reset all leave it alone, because a ban the listener has to
+    /// re-enter is worse than one that outstays its welcome.
+    pub taste: crate::streaming::SessionTaste,
     /// True while an off-path feedback summary is handed off to the assistant actor, awaiting its
     /// `AiMsg::StationPatch`. A single-flight guard so a skip streak can't fan out duplicate calls.
     pub feedback_in_flight: bool,

@@ -238,12 +238,16 @@ impl DaemonEngine {
     pub(crate) fn streaming_exclude_ids(&self, seed_video_id: &str) -> Vec<String> {
         // Shared with the TUI App reducer — one implementation, so the two owners can never
         // drift on which already-heard/queued tracks an autoplay top-up excludes.
-        crate::streaming::exclude_ids(
+        let mut ids: HashSet<String> = crate::streaming::exclude_ids(
             &self.config.streaming,
             &self.queue,
             &self.library,
             seed_video_id,
         )
+        .into_iter()
+        .collect();
+        ids.extend(self.taste.banned_track_ids().map(str::to_owned));
+        ids.into_iter().collect()
     }
 
     pub(super) fn plan_local_streaming(
@@ -272,8 +276,13 @@ impl DaemonEngine {
         songs: Vec<Song>,
         fallback: &[Song],
     ) -> Vec<EngineEffect> {
-        let sanitized =
-            streaming::sanitize_final_picks(songs, fallback, pending.mode, &self.config.streaming);
+        let sanitized = streaming::sanitize_final_picks(
+            songs,
+            fallback,
+            pending.mode,
+            &self.config.streaming,
+            &self.taste,
+        );
         if !sanitized.is_empty()
             && streaming::final_preflight_needed(
                 &sanitized,
@@ -441,14 +450,17 @@ impl DaemonEngine {
                 0.0
             };
 
+        let taste = streaming::project_taste(&self.taste, &self.station.avoid_artist_keys());
+
         StationState {
             mode: self.config.streaming.mode,
             seed_video_id: seed_video_id.to_owned(),
             seed_artist_key: self.streaming_seed_artist_key(seed_video_id),
             recent_track_ids,
             recent_artist_keys,
-            banned_track_ids: HashSet::new(),
-            banned_artist_keys: self.station.avoid_artist_keys().into_iter().collect(),
+            banned_track_ids: taste.banned_track_ids,
+            banned_artist_keys: taste.banned_artist_keys,
+            seed_bias: taste.seed_bias,
             favorite_artist_keys,
             session_artist_bias: self.session_artist_bias(),
             temporary_novelty_boost,

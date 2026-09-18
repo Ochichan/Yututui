@@ -184,6 +184,9 @@ pub struct StationState {
     pub recent_artist_keys: Vec<String>,
     pub banned_track_ids: HashSet<String>,
     pub banned_artist_keys: HashSet<String>,
+    /// The listener's soft "more like" / "exclude" terms for this session. Empty by default,
+    /// and empty is a no-op in scoring.
+    pub seed_bias: SeedBias,
     /// Normalized artist keys the user has favorited (a seed-affinity boost).
     pub favorite_artist_keys: HashSet<String>,
     /// Short-lived per-session artist nudges derived from recent streaming outcomes.
@@ -292,11 +295,17 @@ pub fn ai_slots_for_confidence(n: usize, conf: Option<f32>) -> usize {
 /// Last synchronous safety pass before streaming picks are appended to the queue. The scoring pass
 /// already filtered candidates, but cached DJ Gem orders and low-context fallbacks can still benefit
 /// from a final cheap title/channel/duration check.
+///
+/// `taste` is the reason a ban cannot lose a race. A refill chain is normally cancelled when a
+/// ban lands, because banning always mutates the queue and a queue-revision change already
+/// retires the pending chain. This gate does not depend on that chain of reasoning: a pick the
+/// listener has banned is dropped here, whatever produced it and whenever it arrives.
 pub fn sanitize_final_picks(
     picks: Vec<Song>,
     fallback: &[Song],
     mode: StreamingMode,
     cfg: &StreamingConfig,
+    taste: &SessionTaste,
 ) -> Vec<Song> {
     let target = picks.len();
     let mut out = Vec::with_capacity(target);
@@ -305,7 +314,7 @@ pub fn sanitize_final_picks(
         if out.len() >= target {
             break;
         }
-        if taken.contains(&song.video_id) || reject_final_song(song, mode, cfg) {
+        if taken.contains(&song.video_id) || reject_final_song(song, mode, cfg, taste) {
             continue;
         }
         taken.insert(song.video_id.clone());
@@ -314,7 +323,15 @@ pub fn sanitize_final_picks(
     out
 }
 
-fn reject_final_song(song: &Song, mode: StreamingMode, cfg: &StreamingConfig) -> bool {
+fn reject_final_song(
+    song: &Song,
+    mode: StreamingMode,
+    cfg: &StreamingConfig,
+    taste: &SessionTaste,
+) -> bool {
+    if taste.rejects_song(song) {
+        return true;
+    }
     if let Some(duration) = candidate::parse_duration_secs(&song.duration)
         && cfg.duration_out_of_bounds(duration)
     {
@@ -680,6 +697,7 @@ mod tests {
             recent_artist_keys: Vec::new(),
             banned_track_ids: HashSet::new(),
             banned_artist_keys: HashSet::new(),
+            seed_bias: SeedBias::default(),
             favorite_artist_keys: HashSet::new(),
             session_artist_bias: HashMap::new(),
             temporary_novelty_boost: 0.0,
@@ -868,6 +886,34 @@ mod tests {
         let merged = merge_ai_picks(&[], &shortlist, &local_pick, 5);
         let order: Vec<&str> = merged.iter().map(|s| s.video_id.as_str()).collect();
         assert_eq!(order, vec!["a", "b"], "no DJ Gem ids → pure local pick");
+    }
+
+    #[test]
+    fn sanitize_final_picks_drops_a_banned_pick_that_reached_admission() {
+        let banned = song("blocked", "x");
+        let ok = song("ok", "y");
+        let mut taste = SessionTaste::default();
+        assert_eq!(
+            taste.apply(TasteEdit::ban_track(&banned).expect("id")),
+            TasteOutcome::Applied
+        );
+        let out = sanitize_final_picks(
+            vec![banned.clone(), ok.clone()],
+            &[],
+            StreamingMode::Balanced,
+            &StreamingConfig::default(),
+            &taste,
+        );
+        let ids: Vec<&str> = out.iter().map(|s| s.video_id.as_str()).collect();
+        assert_eq!(ids, vec!["ok"]);
+        let empty = sanitize_final_picks(
+            vec![banned],
+            &[],
+            StreamingMode::Balanced,
+            &StreamingConfig::default(),
+            &taste,
+        );
+        assert!(empty.is_empty());
     }
 
     /// A scored candidate with a chosen `base_score` (the only field the gate reads).

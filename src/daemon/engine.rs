@@ -183,6 +183,9 @@ pub struct DaemonEngine {
     inactive_radio_queue: Option<Arc<QueueSnapshot>>,
     inactive_local_queue: Option<Arc<QueueSnapshot>>,
     session_events: VecDeque<DaemonSessionEvent>,
+    /// Session-local bans and seeds. Empty in production this PR (no remote ban command);
+    /// tests drive it so Gem-off ranking parity can assert the same banned sets.
+    taste: crate::streaming::SessionTaste,
     /// The media-session artwork cache's resolved file for a track, keyed by
     /// `video_id`; surfaced in [`Self::media_snapshot`] while the keys match.
     media_art: Option<crate::media::artwork::MediaArtworkReady>,
@@ -367,6 +370,7 @@ impl DaemonEngine {
             inactive_radio_queue: None,
             inactive_local_queue: None,
             session_events: VecDeque::new(),
+            taste: crate::streaming::SessionTaste::default(),
             media_art: None,
             sleep_timer: None,
         }
