@@ -28,8 +28,8 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MediaKeyCode, ModifierKe
 use std::collections::{BTreeMap, HashMap};
 
 #[cfg(test)]
-mod tests;
-#[cfg(test)]
 mod station_tests;
+#[cfg(test)]
+mod tests;
 #[cfg(test)]
 mod text_edit_tests;

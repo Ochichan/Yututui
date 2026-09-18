@@ -61,7 +61,9 @@ fn taste_chip_follows_streaming_mode_and_stays_off_when_the_station_is_off() {
 
     app.autoplay_streaming = false;
     let parts = status_line_parts(&app, "    ", false, false);
-    assert!(!parts
-        .iter()
-        .any(|(target, _)| matches!(target, Some(MouseTarget::StationCard))));
+    assert!(
+        !parts
+            .iter()
+            .any(|(target, _)| matches!(target, Some(MouseTarget::StationCard)))
+    );
 }
