@@ -400,6 +400,11 @@ impl DaemonEngine {
     }
 
     #[cfg(test)]
+    pub(crate) fn set_taste_for_test(&mut self, taste: crate::streaming::SessionTaste) {
+        self.taste = taste;
+    }
+
+    #[cfg(test)]
     pub(crate) fn install_seek_parity_player(
         &mut self,
         video_id: &str,
