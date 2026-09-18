@@ -1,11 +1,9 @@
-//! The reducer's crossfade behaviors. The Local Deck nudge keys and the status chip.
+//! Local Deck crossfade keys and the status chip.
 
 use super::*;
 use crate::crossfade::LocalCrossfade;
 
 impl App {
-    /// `[` / `]` in Local Deck. `None` when the chord is not a nudge, so `on_key_local` keeps
-    /// its existing fall-through order.
     pub(in crate::app) fn local_crossfade_key(&mut self, chord: Chord) -> Option<Vec<Cmd>> {
         let steps = match self.keymap.context_action(KeyContext::LocalDeck, chord)? {
             Action::LocalCrossfadeDown => -1,
@@ -15,9 +13,6 @@ impl App {
         Some(self.nudge_local_crossfade(steps))
     }
 
-    /// Stored only, exactly like the seek-interval slider. Nothing is pushed to mpv, so this
-    /// needs no player admission and no `PlayerCommit`. Config is written here rather than on a
-    /// later settings save, so opening Settings always shows what the keys just set.
     fn nudge_local_crossfade(&mut self, steps: i8) -> Vec<Cmd> {
         let next = self.audio.local_crossfade.nudge(steps);
         self.audio.local_crossfade = next;
@@ -38,11 +33,6 @@ impl App {
         )))]
     }
 
-    /// `Some("1.5s")` when the chip should be drawn.
-    ///
-    /// Suppressed when this machine cannot overlap, because a chip claiming a fade that will
-    /// not happen is the one thing acceptance rules out. The settings row and `ytt doctor
-    /// audio` carry the unsupported note instead.
     pub fn crossfade_chip(&self) -> Option<String> {
         self.audio
             .overlap_support

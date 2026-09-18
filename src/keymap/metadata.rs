@@ -41,9 +41,7 @@ pub enum Action {
     OpenSearch,
     /// Open the collection-wide Local Find surface while dedicated Local Deck mode is active.
     OpenLocalFind,
-    /// Nudge the local-file crossfade length without leaving Local Deck. Bound to `[` and `]`
-    /// in `KeyContext::LocalDeck` only; `KeyContext::Player` keeps those chords for speed,
-    /// because the dispatch lives in `on_key_local` rather than in `keys.rs`.
+    /// Nudge the local-file crossfade length without leaving Local Deck.
     LocalCrossfadeDown,
     LocalCrossfadeUp,
     Quit,

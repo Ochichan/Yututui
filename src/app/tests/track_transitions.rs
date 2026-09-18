@@ -689,7 +689,6 @@ fn the_transition_path_carries_the_crossfade_decision_for_two_local_files() {
     let (mut app, paths) = local_pair_playing();
     app.audio.local_crossfade = crate::crossfade::LocalCrossfade::from_tenths(15);
 
-    // This build cannot overlap, so the wiring must still produce today's replace.
     app.audio.overlap_support = crate::crossfade::overlap_support();
     assert!(!app.audio.overlap_support.is_available());
     let mut cmds = app.update(Msg::Key(key(KeyCode::Char('.'))));

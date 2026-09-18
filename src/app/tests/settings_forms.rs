@@ -399,7 +399,6 @@ fn local_crossfade_slider_runs_off_to_three_seconds_and_survives_a_save() {
         "Off"
     );
 
-    // Off is the bottom of the range, and 3.0s is the top: 40 presses cannot overshoot either.
     assert!(app.settings_change(-1).is_empty());
     assert_eq!(
         app.settings.as_ref().unwrap().draft.local_crossfade,

@@ -1,28 +1,15 @@
 //! Local-file crossfade policy.
-//!
-//! This module owns every rule about *whether* two tracks may overlap and *by how much*. The
-//! reducer state that feeds the rules lives in [`crate::app`]. Splitting it that way means the
-//! eligibility rules have exactly one home, so a new caller cannot re-derive "is this a local
-//! file" and drift from it.
-//!
-//! Driving two mpv processes is deliberately absent. [`overlap_support`] is the single place
-//! that answers whether this build can overlap at all, and while it says no every transition
-//! stays the `loadfile … replace` it is today.
 
 use std::num::NonZeroU8;
 use std::time::Duration;
 
 use crate::player::PlaybackLoad;
 
-/// Longest supported fade, in tenths of a second.
 const MAX_TENTHS: u8 = 30;
 
 /// A configured crossfade length, 0.1s to 3.0s in tenths.
 ///
-/// Tenths rather than an `f64` because the slider, the `[`/`]` nudge, the config file, and the
-/// label all agree on tenths. A NaN, a negative, an off-tenth value, and an out-of-range value
-/// are unrepresentable rather than clamped at each use. Zero lives in [`LocalCrossfade::Off`],
-/// so "on, but zero seconds long" cannot be spelled.
+/// Zero is unrepresentable. It lives in [`LocalCrossfade::Off`].
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct CrossfadeSecs(NonZeroU8);
 
@@ -47,9 +34,6 @@ impl CrossfadeSecs {
 }
 
 /// The stored setting: off, or on at a specific length.
-///
-/// Config, the settings draft, the status chip, and doctor all hold this, so none of them can
-/// represent "on" without a length or disagree about what zero means.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum LocalCrossfade {
     #[default]
@@ -58,15 +42,13 @@ pub enum LocalCrossfade {
 }
 
 impl LocalCrossfade {
-    /// The config-file boundary. A non-finite, negative, or oversized number becomes a legal
-    /// value here and never reaches the rest of the app, mirroring `config::clamp_seek_seconds`.
+    /// A non-finite, negative, or oversized number becomes a legal setting.
     pub fn from_secs(secs: f64) -> Self {
         let tenths = (crate::util::finite_or(secs, 0.0) * 10.0).round();
         Self::from_tenths(tenths.clamp(0.0, f64::from(MAX_TENTHS)) as u8)
     }
 
-    /// Tenths past [`CrossfadeSecs::MAX`] saturate, which is what makes [`Self::nudge`] a
-    /// plain `saturating_add_signed`.
+    /// Tenths past [`CrossfadeSecs::MAX`] saturate.
     pub const fn from_tenths(tenths: u8) -> Self {
         match CrossfadeSecs::from_tenths(tenths) {
             Some(secs) => Self::On(secs),
@@ -79,7 +61,7 @@ impl LocalCrossfade {
         matches!(self, Self::Off)
     }
 
-    /// Tenths, zero when off. The slider bar and the persisted seconds both derive from this.
+    /// Tenths, zero when off.
     pub const fn tenths(self) -> u8 {
         match self {
             Self::Off => 0,
@@ -91,13 +73,12 @@ impl LocalCrossfade {
         f64::from(self.tenths()) / 10.0
     }
 
-    /// One `[` / `]` press or one settings-slider step. Saturates at both ends.
+    /// Saturates at both ends.
     pub const fn nudge(self, steps: i8) -> Self {
         Self::from_tenths(self.tenths().saturating_add_signed(steps))
     }
 
-    /// `Off` or `1.5s`. The single source for the settings row, the chip, and doctor, so those
-    /// three can never disagree about how a value reads.
+    /// `Off` or `1.5s`.
     pub fn label(self) -> String {
         match self {
             Self::Off => crate::t!("Off", "꺼짐", "オフ").to_owned(),
@@ -106,12 +87,7 @@ impl LocalCrossfade {
     }
 }
 
-/// A crossfade length known to be schedulable against the outgoing track.
-///
-/// [`envelope`] divides by this, and a zero-length overlap has no meaning, so the zero case is
-/// removed from the type instead of re-checked in the transport. Distinct from
-/// [`CrossfadeSecs`] because the configured length still has to survive the half-track clamp
-/// in [`handoff`]; only what comes out of that clamp can open an overlap.
+/// A nonzero fade after the half-track clamp in [`handoff`]. [`envelope`] divides by this.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct FadeLength(NonZeroU8);
 
@@ -126,12 +102,9 @@ impl FadeLength {
 }
 
 /// How the outgoing file becomes the incoming file.
-///
-/// This travels with exactly one admitted load, like [`crate::player::MediaSourceContext`]. It
-/// is owner-known intent that mpv cannot infer, not a wire type.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum TrackHandoff {
-    /// Today's behavior. `loadfile <target> replace` on the deck that owns the transport.
+    /// `loadfile <target> replace` on the deck that owns the transport.
     #[default]
     Cut,
     /// Start the incoming file on a second deck and ramp both for `fade`.
@@ -139,13 +112,9 @@ pub enum TrackHandoff {
 }
 
 /// Whether this build and this machine can hold two audio outputs at once.
-///
-/// Probed, never assumed. `AudioBackendCaps::supports_gapless` is hardcoded `true`, and that is
-/// the mistake this type exists to avoid repeating.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum OverlapSupport {
-    /// Before the answer is known. Deliberately not available, so a load admitted during
-    /// startup cannot be planned as an overlap on a host that turns out to refuse one.
+    /// Before the answer is known. Not available.
     #[default]
     Untried,
     Available,
@@ -160,22 +129,16 @@ impl OverlapSupport {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum OverlapBlocker {
-    /// The player transport drives one mpv whose IPC actor owns a single file-generation
-    /// identity. A second lead-capable deck needs that identity per deck, so overlap is
-    /// refused here rather than faked with a volume dip.
     SingleDeckTransport,
-    /// mpv is absent, or its lifetime protection cannot be armed for a second deck. An
-    /// unguarded mpv is refused by policy, so this is a hard no.
     Mpv,
-    /// The audio output refused a second concurrent open. An exclusive-mode device or a bare
-    /// ALSA `hw:` sink does this. Only the running transport can observe it.
+    /// Exclusive-mode device or ALSA `hw:` refused a second open.
     OutputBusy,
-    /// The video overlay owns audio right now, with the audio engine paused underneath it.
+    /// The video overlay owns audio.
     VideoOverlay,
 }
 
 impl OverlapBlocker {
-    /// Doctor's reason line. Language-neutral, like every other capability label.
+    /// Doctor's untranslated reason line.
     pub const fn reason(self) -> &'static str {
         match self {
             Self::SingleDeckTransport => "single-deck transport",
@@ -186,28 +149,14 @@ impl OverlapBlocker {
     }
 }
 
-/// Whether this build can overlap two files.
-///
-/// One deck is all the player transport has. `player::ipc`'s dispatch state carries a single
-/// `issued_file_generation` plus the load/start/eof correlation keyed to it, and `PlayerHandle`
-/// publishes one admitted generation to one actor, so promoting a second deck to lead means
-/// remapping that identity across two actors. Until that lands this answers no, every
-/// transition stays a `loadfile … replace`, and nothing pretends otherwise. Flipping this one
-/// function is what turns the setting, the chip, and doctor on together.
 pub const fn overlap_support() -> OverlapSupport {
     OverlapSupport::Unavailable(OverlapBlocker::SingleDeckTransport)
 }
 
-/// The one place crossfade eligibility is decided.
+/// Decide whether two loads may overlap.
 ///
-/// Gating on the resolved [`crate::playback_target::PlaybackDestination`] rather than on
-/// `Song::local_path` or `local_dedicated_mode` is what makes the remote cases fall out for
-/// free. A prefetched CDN URL, a sealed OpenSubsonic loopback route, and a radio stream are all
-/// non-paths, so none of them needs its own guard here or at any call site.
-///
-/// `outgoing == None` is a cold start. `outgoing_duration == None` is an unknown length, which
-/// cannot be scheduled against. Identical files are a self-reload (previous-at-queue-start,
-/// repeat-one), which would double the same audio.
+/// `outgoing == None` is a cold start. A missing or invalid duration cannot be scheduled.
+/// Identical files would double the same audio.
 pub fn handoff(
     outgoing: Option<&PlaybackLoad>,
     outgoing_duration: Option<f64>,
@@ -239,11 +188,8 @@ pub fn handoff(
     if !distinct_files(from, to) {
         return TrackHandoff::Cut;
     }
-    // A 4s interlude must not be 75% crossfade, so the fade never exceeds half the outgoing
-    // track. Truncating tenths keeps it under that half, and below one tenth there is nothing
-    // left to fade.
-    let half_track_tenths = (duration * 5.0).min(f64::from(MAX_TENTHS)) as u8;
-    match CrossfadeSecs::from_tenths(setting.tenths().min(half_track_tenths)) {
+    let max_fade_tenths = ((duration / 2.0) * 10.0).min(f64::from(MAX_TENTHS)) as u8;
+    match CrossfadeSecs::from_tenths(setting.tenths().min(max_fade_tenths)) {
         Some(fade) => TrackHandoff::Overlap {
             fade: FadeLength(fade.0),
         },
@@ -251,12 +197,9 @@ pub fn handoff(
     }
 }
 
-/// Whether two playback targets are provably two different files.
+/// Whether two playback targets are two different files.
 ///
-/// The raw string is what mpv receives, but `./track.flac` and an absolute path through a
-/// symlinked library root are the same audio, and overlapping a file with itself doubles it.
-/// An unresolvable path (moved or unreadable between the load and this decision) counts as not
-/// distinct, so the uncertain case degrades to a cut rather than to doubled audio.
+/// Canonicalize because the raw string is not identity. An unresolvable path is not distinct.
 fn distinct_files(from: &str, to: &str) -> bool {
     from != to
         && match (std::fs::canonicalize(from), std::fs::canonicalize(to)) {
@@ -265,7 +208,7 @@ fn distinct_files(from: &str, to: &str) -> bool {
         }
 }
 
-/// Per-deck gain during a fade, guaranteed to be a finite 0.0..=1.0 multiplier.
+/// Per-deck gain, a finite 0.0..=1.0 multiplier.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct FadeGain(f64);
 
@@ -275,10 +218,7 @@ impl FadeGain {
     }
 }
 
-/// `(outgoing, incoming)` gains at `elapsed` into a `length` fade.
-///
-/// Equal power, not linear amplitude. Ramping both decks linearly dips about 3 dB at the
-/// midpoint, which is audible as a hole in the middle of every transition.
+/// Equal-power `(outgoing, incoming)` gains at `elapsed` into a `length` fade.
 pub fn envelope(elapsed: Duration, length: FadeLength) -> (FadeGain, FadeGain) {
     let progress = (elapsed.as_secs_f64() / length.as_secs_f64()).clamp(0.0, 1.0);
     let angle = progress * std::f64::consts::FRAC_PI_2;
@@ -291,7 +231,6 @@ mod tests {
     use crate::playback_target::{CredentialedPlaybackRef, PlaybackDestination};
     use crate::player::MediaSourceContext;
 
-    /// Two real files, because `handoff` resolves both paths before it will overlap them.
     struct LocalPair {
         dir: std::path::PathBuf,
         first: String,
@@ -524,8 +463,6 @@ mod tests {
     #[test]
     fn the_config_boundary_clamps_every_hostile_number() {
         for (secs, expected) in [
-            // A non-finite value falls back to the default before any clamping, exactly like
-            // `config::clamp_seek_seconds`; only a finite oversized number clamps to the top.
             (f64::NAN, LocalCrossfade::Off),
             (f64::INFINITY, LocalCrossfade::Off),
             (f64::NEG_INFINITY, LocalCrossfade::Off),
@@ -579,7 +516,6 @@ mod tests {
         assert!((out.get() - 1.0).abs() < 1e-9);
         assert!(incoming.get().abs() < 1e-9);
 
-        // Equal power means both decks sit at -3 dB in the middle, not at half amplitude.
         let (out, incoming) = envelope(Duration::from_millis(1000), fade);
         assert!((out.get() - std::f64::consts::FRAC_1_SQRT_2).abs() < 1e-9);
         assert!((incoming.get() - std::f64::consts::FRAC_1_SQRT_2).abs() < 1e-9);

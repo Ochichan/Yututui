@@ -170,11 +170,6 @@ fn enabled_label(value: bool) -> &'static str {
     if value { "enabled" } else { "disabled" }
 }
 
-/// The configured crossfade and whether this machine will actually perform it.
-///
-/// A length with no capability note would read as a promise. When overlap is unavailable the
-/// line says so and says what happens instead, because what happens instead is an ordinary
-/// cut and nothing in the audio path pretends otherwise.
 fn overlap_report(
     setting: crate::crossfade::LocalCrossfade,
     support: crate::crossfade::OverlapSupport,

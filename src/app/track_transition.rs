@@ -78,8 +78,6 @@ pub(in crate::app) struct PreparedTrackLoad {
 }
 
 impl PreparedTrackLoad {
-    /// What mpv will be told to load. Built here so the intent that goes to the player and the
-    /// projection kept for the next handoff decision cannot describe different media.
     pub(in crate::app) fn as_playback_load(&self) -> crate::player::PlaybackLoad {
         crate::player::PlaybackLoad::from_destination(
             self.destination.clone(),

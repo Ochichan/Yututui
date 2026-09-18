@@ -68,9 +68,8 @@ impl PlaybackDestination {
 
     /// The filesystem path mpv would open directly, if this is one.
     ///
-    /// `Credentialed` targets and every parseable URL return `None`. The scheme rule matches
-    /// [`validate_playback_target_for_handoff`], including the Windows drive letter that
-    /// `Url::parse` reads as a one-character scheme, so the two cannot drift.
+    /// `Credentialed` targets and every parseable URL return `None`. A Windows `C:` path is a
+    /// drive, not a `Url` scheme.
     pub fn local_file_path(&self) -> Option<&str> {
         let target = self.direct_target()?.trim();
         if target.is_empty() {

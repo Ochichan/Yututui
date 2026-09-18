@@ -335,9 +335,8 @@ pub struct Config {
     pub speed: Option<f64>,
     /// Seek step in seconds for the seek-back/-forward keys. `None` → 10s.
     pub seek_seconds: Option<f64>,
-    /// Crossfade length in seconds between two local files. `None` → off. Seconds rather than
-    /// tenths because a hand-edited `config.json` should read `1.5`; the value is parsed into
-    /// [`crate::crossfade::LocalCrossfade`] at read time, never trusted raw.
+    /// Crossfade length in seconds between two local files. `None` → off. A hand-edited
+    /// `config.json` uses seconds, for example `1.5`.
     pub local_crossfade_secs: Option<f64>,
     /// Adjust volume with the mouse wheel over the player volume cluster. `None` → on.
     pub mouse_wheel_volume: Option<bool>,

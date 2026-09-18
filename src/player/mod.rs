@@ -112,9 +112,6 @@ impl PlaybackLoad {
     }
 
     /// Attach the owner's handoff decision.
-    ///
-    /// Both constructors default to [`crate::crossfade::TrackHandoff::Cut`], so every existing
-    /// construction site (tests, daemon, recovery, restore) keeps today's replace semantics.
     pub fn with_handoff(mut self, handoff: crate::crossfade::TrackHandoff) -> Self {
         self.handoff = handoff;
         self

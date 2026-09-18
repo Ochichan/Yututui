@@ -814,7 +814,6 @@ impl App {
             Field::LocalCrossfade => {
                 let s = self.settings_mut();
                 s.draft.local_crossfade = s.draft.local_crossfade.nudge(dir.clamp(-1, 1) as i8);
-                // Stored only — affects the next track transition, nothing to push to mpv now.
                 Vec::new()
             }
             Field::AnimFps => {

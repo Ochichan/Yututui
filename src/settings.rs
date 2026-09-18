@@ -268,9 +268,6 @@ impl SettingsTab {
 
 fn playback_sections() -> Vec<(&'static str, usize)> {
     vec![
-        // 10 = the 9 Now-Playing controls + the radio-only recording entry. When not
-        // in radio mode, `SettingsState::sections` decrements this back to 9 in
-        // lockstep with `SettingsState::fields` hiding `RadioRecording`.
         (
             t!("Now Playing", "현재 재생", "再生中"),
             10 + AtlasField::ALL.len(),
@@ -404,9 +401,7 @@ pub enum Field {
     VideoLayout,
     /// Detail level for remote album art rendered inside the terminal.
     AlbumArtQuality,
-    /// Crossfade between two local files, off to 3.0s. Placed before `RadioRecording` so the
-    /// radio-only tail of the "Now Playing" section stays last and the section count stays a
-    /// valid partition.
+    /// Crossfade between two local files, off to 3.0s.
     LocalCrossfade,
     /// Opens the radio-recording settings popup. Radio-mode only — hidden outside it by
     /// [`SettingsState::fields`]; lives in the "Now Playing" section.
@@ -742,8 +737,7 @@ pub struct SettingsDraft {
     pub speed: f64,
     /// Seek step (seconds) for the seek-back/-forward keys.
     pub seek_seconds: f64,
-    /// Local-file crossfade length. Holds the domain type, not an `f64`, so the draft cannot
-    /// carry an unrepresentable value between the slider and [`Self::apply_to`].
+    /// Local-file crossfade length.
     pub local_crossfade: crate::crossfade::LocalCrossfade,
     /// The "large text" toggle (see [`Field::BigText`]). `big_text_percent` is the
     /// level it enables — seeded from the detected zoom mode when Settings opens, since

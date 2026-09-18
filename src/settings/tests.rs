@@ -255,9 +255,6 @@ fn playback_tab_groups_now_playing_and_eq() {
     let _guard = crate::i18n::lock_for_test();
     crate::i18n::set_language(crate::i18n::Language::English);
     let f = SettingsTab::Playback.fields();
-    // Speed + SeekInterval + WheelVolume + Gapless + MediaControls + AutoContinueVideos +
-    // VideoLayout + AlbumArtQuality + LocalCrossfade + RadioRecording (radio-only), then audio
-    // controls and EQ.
     assert_eq!(f.len(), 10 + AtlasField::ALL.len() + 3 + eq::BANDS + 2);
     assert_eq!(f[0], Field::Speed);
     assert_eq!(f[1], Field::SeekInterval);
