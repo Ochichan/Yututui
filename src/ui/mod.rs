@@ -110,6 +110,9 @@ pub fn render(frame: &mut Frame, app: &App) {
     }
     // The per-track WhyGem card is a modal over whichever surface selected its queue item.
     views::why_ai::render(frame, app, area);
+    if app.overlays.station_card.is_some() {
+        views::station_card::render(frame, app, area);
+    }
     // The "what's playing" identify card (radio): the result + favorite / ask-DJ Gem
     // actions. Below the mode confirmations so those stay on top.
     if app.overlays.now_playing_overlay.is_some() {

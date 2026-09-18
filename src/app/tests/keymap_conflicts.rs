@@ -29,3 +29,36 @@ fn settings_global_key_capture_rejects_player_overlap() {
     assert_eq!(conflict.existing, Action::NextTrack);
     assert_eq!(conflict.chord, crate::keymap::parse_chord(".").unwrap());
 }
+
+#[test]
+fn station_rebind_may_shadow_global_without_raising_a_conflict() {
+    let mut app = app_playing(1, 0);
+    app.update(Msg::Key(key(KeyCode::Char('o'))));
+    for _ in 0..2 {
+        app.update(Msg::Key(key(KeyCode::Tab)));
+    }
+    let row = crate::keymap::editable_entries()
+        .iter()
+        .position(|entry| *entry == (KeyContext::Station, Action::BanTrack))
+        .expect("station ban binding is editable");
+    app.settings.as_mut().unwrap().row = row;
+    app.update(Msg::Key(key(KeyCode::Enter)));
+    assert_eq!(
+        app.settings.as_ref().unwrap().capturing,
+        Some((KeyContext::Station, Action::BanTrack))
+    );
+
+    app.update(Msg::Key(key(KeyCode::Char('?'))));
+    assert!(
+        app.overlays.key_conflict.is_none(),
+        "Station may share a Global chord"
+    );
+    assert_eq!(
+        app.settings
+            .as_ref()
+            .unwrap()
+            .keymap
+            .chord(KeyContext::Station, Action::BanTrack),
+        Some(crate::keymap::parse_chord("?").unwrap())
+    );
+}

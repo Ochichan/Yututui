@@ -6,8 +6,9 @@
 //! replies aligned with the command lane's authoritative acceptance result.
 
 use super::*;
-use crate::queue::{QueueMutationPlan, QueueRemovalPlayback, QueueReplacementDraft};
+use crate::queue::{QueueMutationPlan, QueueReplacementDraft};
 
+mod queue_removal;
 mod why_gem;
 
 #[derive(Clone, Copy)]
@@ -42,17 +43,19 @@ impl CursorTransition {
 }
 
 #[derive(Clone, Default)]
-struct TrackPostCommit {
-    close_queue_popup: bool,
-    queue_removal_cursor: Option<usize>,
-    force_autoplay_extend: bool,
-    player_mode: bool,
-    romanize_songs: Vec<Song>,
-    persist_playback_modes: bool,
-    clear_heal_video_id: Option<String>,
-    mode_switch: Option<super::mode_transition::ModeSwitchPlan>,
-    why_gem: Option<super::why_gem::WhyGemCommit>,
-    recommendation_queued: Option<why_gem::RecommendationQueuedCommit>,
+pub(in crate::app) struct TrackPostCommit {
+    pub(in crate::app) close_queue_popup: bool,
+    pub(in crate::app) queue_removal_cursor: Option<usize>,
+    pub(in crate::app) force_autoplay_extend: bool,
+    pub(in crate::app) player_mode: bool,
+    pub(in crate::app) romanize_songs: Vec<Song>,
+    pub(in crate::app) persist_playback_modes: bool,
+    pub(in crate::app) clear_heal_video_id: Option<String>,
+    pub(in crate::app) mode_switch: Option<super::mode_transition::ModeSwitchPlan>,
+    pub(in crate::app) why_gem: Option<super::why_gem::WhyGemCommit>,
+    pub(in crate::app) recommendation_queued: Option<why_gem::RecommendationQueuedCommit>,
+    pub(in crate::app) taste: Option<crate::streaming::TasteEdit>,
+    pub(in crate::app) detached_refill: Option<Song>,
 }
 
 /// Caller-owned reducer projections which become valid only with an accepted queue replacement.
@@ -403,6 +406,7 @@ impl App {
                 )),
                 ..TrackPostCommit::default()
             },
+            None,
         )
     }
 
@@ -422,6 +426,7 @@ impl App {
                 why_gem: Some(super::why_gem::WhyGemCommit::Clear),
                 ..TrackPostCommit::default()
             },
+            None,
         );
         let intent = cmds.iter_mut().find_map(|cmd| match cmd {
             Cmd::PlayerControl(PlayerControl::Intent(intent)) => Some(intent),
@@ -445,132 +450,6 @@ impl App {
             });
         }
         cmds
-    }
-
-    /// Apply a current-inclusive queue removal only after its Load/Stop batch is admitted.
-    /// The caller handles `Unchanged` removals synchronously because they emit no player work.
-    pub(in crate::app) fn load_prepared_queue_removal(
-        &mut self,
-        mutation: QueueMutationPlan,
-        playback: QueueRemovalPlayback,
-        popup_cursor: usize,
-    ) -> Vec<Cmd> {
-        let post_commit = TrackPostCommit {
-            queue_removal_cursor: Some(popup_cursor),
-            ..TrackPostCommit::default()
-        };
-        match playback {
-            QueueRemovalPlayback::Unchanged => {
-                unreachable!("non-current queue removal does not need player admission")
-            }
-            QueueRemovalPlayback::LoadSelected => {
-                self.prepare_queue_mutation_track_transition(mutation, post_commit)
-            }
-            QueueRemovalPlayback::Stop => {
-                self.prepare_queue_mutation_stop_transition(mutation, post_commit)
-            }
-        }
-    }
-
-    fn prepare_queue_mutation_stop_transition(
-        &self,
-        mutation: QueueMutationPlan,
-        post_commit: TrackPostCommit,
-    ) -> Vec<Cmd> {
-        self.track_transition_intent(TrackTransitionPlan {
-            expected_queue_rev: self.queue.rev(),
-            expected_cursor: self.queue.cursor_pos(),
-            expected_video_id: self.queue.current().map(|song| song.video_id.clone()),
-            mutation: Some(mutation),
-            recorder: None,
-            kind: TrackTransitionKind::End {
-                target_cursor: None,
-            },
-            outgoing: None,
-            skipped: Vec::new(),
-            status_after_commit: None,
-            video_follow_up: None,
-            post_commit,
-        })
-    }
-
-    fn prepare_queue_mutation_track_transition(
-        &mut self,
-        mut mutation: QueueMutationPlan,
-        post_commit: TrackPostCommit,
-    ) -> Vec<Cmd> {
-        let expected_queue_rev = self.queue.rev();
-        let expected_cursor = self.queue.cursor_pos();
-        let expected_video_id = self.queue.current().map(|song| song.video_id.clone());
-        if mutation.is_empty() {
-            return self.track_transition_intent(TrackTransitionPlan {
-                expected_queue_rev,
-                expected_cursor,
-                expected_video_id,
-                mutation: Some(mutation),
-                recorder: None,
-                kind: TrackTransitionKind::End {
-                    target_cursor: None,
-                },
-                outgoing: None,
-                skipped: Vec::new(),
-                status_after_commit: None,
-                video_follow_up: None,
-                post_commit,
-            });
-        }
-
-        let mut cursor = mutation.cursor_pos();
-        let mut last_cursor = cursor;
-        let mut skipped = Vec::new();
-        for _ in 0..mutation.len() {
-            let Some(song) = mutation.song_at_cursor(cursor).cloned() else {
-                break;
-            };
-            match self.prepare_track_load(song.clone()) {
-                Ok(load) => {
-                    mutation.select_cursor(cursor);
-                    return self.track_transition_intent(TrackTransitionPlan {
-                        expected_queue_rev,
-                        expected_cursor,
-                        expected_video_id,
-                        mutation: Some(mutation),
-                        recorder: None,
-                        kind: TrackTransitionKind::Load {
-                            cursor: CursorTransition::MoveTo { cursor },
-                            load: Box::new(load),
-                        },
-                        outgoing: None,
-                        skipped,
-                        status_after_commit: None,
-                        video_follow_up: None,
-                        post_commit,
-                    });
-                }
-                Err(reason) => skipped.push(SkippedCandidate { song, reason }),
-            }
-            last_cursor = cursor;
-            let Some(next) = mutation.plan_next_cursor(cursor) else {
-                break;
-            };
-            cursor = next;
-        }
-        mutation.select_cursor(last_cursor);
-        self.track_transition_intent(TrackTransitionPlan {
-            expected_queue_rev,
-            expected_cursor,
-            expected_video_id,
-            mutation: Some(mutation),
-            recorder: None,
-            kind: TrackTransitionKind::End {
-                target_cursor: Some(last_cursor),
-            },
-            outgoing: None,
-            skipped,
-            status_after_commit: None,
-            video_follow_up: None,
-            post_commit,
-        })
     }
 
     fn track_transition_intent(&self, mut plan: TrackTransitionPlan) -> Vec<Cmd> {
@@ -769,7 +648,9 @@ impl App {
                     )
                     .to_owned();
                 }
-                effects.extend(self.maybe_autoplay_extend());
+                if !(post_commit.force_autoplay_extend || post_commit.detached_refill.is_some()) {
+                    effects.extend(self.maybe_autoplay_extend());
+                }
             }
         }
 
@@ -784,7 +665,12 @@ impl App {
         if let Some(cursor) = post_commit.queue_removal_cursor {
             self.commit_queue_removal_ui(cursor);
         }
-        if post_commit.force_autoplay_extend {
+        if let Some(edit) = post_commit.taste.take() {
+            let _ = self.streaming.taste.apply(edit);
+        }
+        if let Some(seed) = post_commit.detached_refill.take() {
+            effects.extend(self.force_autoplay_extend_from(&seed));
+        } else if post_commit.force_autoplay_extend {
             effects.extend(self.force_autoplay_extend());
         }
         if post_commit.player_mode {

@@ -117,6 +117,7 @@ pub(in crate::daemon) fn engine_with_queue(ids: &[&str]) -> DaemonEngine {
         inactive_radio_queue: None,
         inactive_local_queue: None,
         session_events: VecDeque::new(),
+        taste: crate::streaming::SessionTaste::default(),
         media_art: None,
         sleep_timer: None,
     }

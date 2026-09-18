@@ -183,6 +183,7 @@ pub struct DaemonEngine {
     inactive_radio_queue: Option<Arc<QueueSnapshot>>,
     inactive_local_queue: Option<Arc<QueueSnapshot>>,
     session_events: VecDeque<DaemonSessionEvent>,
+    taste: crate::streaming::SessionTaste,
     /// The media-session artwork cache's resolved file for a track, keyed by
     /// `video_id`; surfaced in [`Self::media_snapshot`] while the keys match.
     media_art: Option<crate::media::artwork::MediaArtworkReady>,
@@ -367,6 +368,7 @@ impl DaemonEngine {
             inactive_radio_queue: None,
             inactive_local_queue: None,
             session_events: VecDeque::new(),
+            taste: crate::streaming::SessionTaste::default(),
             media_art: None,
             sleep_timer: None,
         }
@@ -393,6 +395,11 @@ impl DaemonEngine {
             self.cancel_pending_streaming_request();
         }
         self.last_mode = mode;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_taste_for_test(&mut self, taste: crate::streaming::SessionTaste) {
+        self.taste = taste;
     }
 
     #[cfg(test)]

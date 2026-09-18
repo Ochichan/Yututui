@@ -26,6 +26,8 @@ mod status_glyphs;
 mod status_line;
 use status_line::status_line_parts_with_labels_reusing;
 #[cfg(test)]
+mod taste_chip_tests;
+#[cfg(test)]
 mod why_gem_tests;
 
 /// Render the control block into four caller-provided single-height rows — the Player

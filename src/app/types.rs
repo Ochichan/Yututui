@@ -1,7 +1,6 @@
 //! Message, command, and view-state type definitions for the app reducer.
 //!
-//! These are
-//! re-exported from `crate::app` (`pub use types::*`) so existing `crate::app::Msg` /
+//! These are re-exported from `crate::app` (`pub use types::*`) so existing `crate::app::Msg` /
 //! `crate::app::Cmd` / `crate::app::Mode` paths keep resolving for actors and views.
 
 use super::*;
@@ -683,6 +682,7 @@ pub enum MouseTarget {
     /// Inert coverage for the open per-track WhyGem card; outside clicks close it while clicks
     /// inside are consumed without reaching the covered queue/player surface.
     WhyGemCard,
+    StationCard,
     /// A visible synced-lyric row. The owning track ID and original LRC index make stale frame
     /// targets fail closed instead of seeking a newly loaded track.
     LyricsLine {

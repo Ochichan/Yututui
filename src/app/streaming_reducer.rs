@@ -174,10 +174,18 @@ impl App {
     }
 
     pub(in crate::app) fn force_autoplay_extend(&mut self) -> Vec<Cmd> {
-        self.autoplay_extend(true)
+        self.autoplay_extend_seeded(true, None)
+    }
+
+    pub(in crate::app) fn force_autoplay_extend_from(&mut self, seed: &Song) -> Vec<Cmd> {
+        self.autoplay_extend_seeded(true, Some(seed))
     }
 
     fn autoplay_extend(&mut self, force: bool) -> Vec<Cmd> {
+        self.autoplay_extend_seeded(force, None)
+    }
+
+    fn autoplay_extend_seeded(&mut self, force: bool, seed: Option<&Song>) -> Vec<Cmd> {
         // Queue mutations can call this again in the same owner turn, before the top-level
         // reducer's post-dispatch reconciliation. Retire that stale generation first so it does
         // not block the replacement request. A canceled in-flight request also gets this one
@@ -203,7 +211,7 @@ impl App {
             } else {
                 self.streaming.last_extend.map(|t| t.elapsed())
             },
-            self.queue.current(),
+            seed.or_else(|| self.queue.current()),
         ) else {
             return Vec::new();
         };
@@ -308,6 +316,7 @@ impl App {
             skip_streak,
             profile_version: profile.profile_version,
             prompt_recipe_hash: recipe_hash,
+            taste_epoch: self.streaming.taste.epoch(),
         });
         if let Some(cached) = self.ai_cache_lookup(cache_key) {
             tracing::debug!("streaming DJ Gem cache hit → replaying cached order");
@@ -757,12 +766,16 @@ impl App {
     pub(crate) fn streaming_exclude_ids(&self, seed_video_id: &str) -> Vec<String> {
         // Shared with the headless daemon engine — one implementation, so the two owners
         // can never drift on which already-heard/queued tracks a top-up excludes.
-        crate::streaming::exclude_ids(
+        let mut ids: HashSet<String> = crate::streaming::exclude_ids(
             &self.config.streaming,
             &self.queue,
             &self.library,
             seed_video_id,
         )
+        .into_iter()
+        .collect();
+        ids.extend(self.streaming.taste.banned_track_ids().map(str::to_owned));
+        ids.into_iter().collect()
     }
 
     /// Rank a raw candidate pool (from the anonymous related-tracks search) through the local
@@ -826,6 +839,7 @@ impl App {
             fallback,
             self.config.streaming.mode,
             &self.config.streaming,
+            &self.streaming.taste,
         );
         if !sanitized.is_empty()
             && streaming::final_preflight_needed(
@@ -1028,15 +1042,20 @@ impl App {
                 0.0
             };
 
+        let taste = crate::streaming::project_taste(
+            &self.streaming.taste,
+            &self.station.avoid_artist_keys(),
+        );
+
         StationState {
             mode: self.config.streaming.mode,
             seed_video_id: seed_video_id.to_owned(),
             seed_artist_key: self.streaming_seed_artist_key(seed_video_id),
             recent_track_ids,
             recent_artist_keys,
-            banned_track_ids: HashSet::new(),
-            // The active natural-language station's avoided artists are kept out of every refill.
-            banned_artist_keys: self.station.avoid_artist_keys().into_iter().collect(),
+            banned_track_ids: taste.banned_track_ids,
+            banned_artist_keys: taste.banned_artist_keys,
+            seed_bias: taste.seed_bias,
             favorite_artist_keys,
             session_artist_bias,
             temporary_novelty_boost,

@@ -295,6 +295,62 @@ impl Queue {
         ))
     }
 
+    pub(crate) fn prepare_purge(
+        &self,
+        reject: impl Fn(&Song) -> bool,
+    ) -> Option<(QueueMutationPlan, QueueRemovalOutcome)> {
+        let len = self.order.len();
+        if len == 0 {
+            return None;
+        }
+        let matches: Vec<usize> = (0..len)
+            .filter(|&pos| {
+                self.order
+                    .get(pos)
+                    .and_then(|&idx| self.songs.get(idx))
+                    .is_some_and(&reject)
+            })
+            .collect();
+        if matches.is_empty() {
+            return None;
+        }
+        let removes_current = matches.binary_search(&self.cursor).is_ok();
+        let first_match = matches[0];
+        let (playback, selected_cursor) = if !removes_current {
+            (QueueRemovalPlayback::Unchanged, None)
+        } else if let Some(orig) =
+            (self.cursor + 1..len).find(|pos| matches.binary_search(pos).is_err())
+        {
+            let shift = matches.iter().take_while(|&&m| m < orig).count();
+            (QueueRemovalPlayback::LoadSelected, Some(orig - shift))
+        } else if matches.len() < len && self.repeat == Repeat::All {
+            (QueueRemovalPlayback::LoadSelected, Some(0))
+        } else {
+            (QueueRemovalPlayback::Stop, None)
+        };
+
+        let mut scratch = self.mutation_scratch();
+        for &pos in matches.iter().rev() {
+            let removed = scratch.remove_at_without_revision(pos);
+            debug_assert!(
+                removed.is_some(),
+                "prepared queue purge positions must stay in bounds"
+            );
+        }
+        if let Some(cursor) = selected_cursor {
+            scratch.cursor = cursor;
+        }
+        let popup_cursor = first_match.min(scratch.order.len().saturating_sub(1));
+        Some((
+            self.mutation_plan(scratch),
+            QueueRemovalOutcome {
+                removed: matches.len(),
+                popup_cursor,
+                playback,
+            },
+        ))
+    }
+
     /// Prepare snapshot validation/restoration as a pure queue mutation. Mode-switch callers can
     /// inspect and admission-gate this plan later without advancing the live shuffle RNG or rev.
     pub(crate) fn prepare_snapshot_restore(&self, snapshot: QueueSnapshot) -> QueueMutationPlan {
@@ -418,6 +474,103 @@ mod tests {
         assert_eq!(full.playback(), QueueRemovalPlayback::Stop);
         assert!(empty.is_empty());
         assert_eq!(full.popup_cursor(), 0);
+    }
+
+    #[test]
+    fn prepare_purge_drops_noncontiguous_matches_and_is_pure() {
+        let mut queue = Queue::default();
+        queue.set(songs(6), 0);
+        let before_ids = ordered_ids(&queue);
+        let before_rev = queue.rev();
+        let before_bumps = queue.revision_bumps;
+
+        let (plan, outcome) = queue
+            .prepare_purge(|song| {
+                song.video_id
+                    .parse::<usize>()
+                    .expect("fixture id")
+                    .is_multiple_of(2)
+            })
+            .expect("even ids match");
+
+        assert_eq!(ordered_ids(&queue), before_ids);
+        assert_eq!(queue.rev(), before_rev);
+        assert_eq!(queue.revision_bumps, before_bumps);
+        assert_eq!(outcome.removed(), 3);
+        assert_eq!(outcome.playback(), QueueRemovalPlayback::LoadSelected);
+        assert_eq!(plan.current().map(|song| song.video_id.as_str()), Some("1"));
+        let planned: Vec<&str> = plan
+            .ordered_iter()
+            .map(|song| song.video_id.as_str())
+            .collect();
+        assert_eq!(planned, vec!["1", "3", "5"]);
+
+        queue.commit_mutation(plan);
+        assert_eq!(ordered_ids(&queue), vec!["1", "3", "5"]);
+        assert_eq!(
+            queue.current().map(|song| song.video_id.as_str()),
+            Some("1")
+        );
+        assert_eq!(queue.revision_bumps, before_bumps + 1);
+    }
+
+    #[test]
+    fn prepare_purge_classifies_unchanged_wrap_and_stop_like_range() {
+        let mut queue = Queue::default();
+        queue.set(songs(4), 1);
+        assert!(queue.prepare_purge(|_| false).is_none());
+
+        let (kept, unchanged) = queue
+            .prepare_purge(|song| song.video_id == "3")
+            .expect("later row matches");
+        assert_eq!(unchanged.playback(), QueueRemovalPlayback::Unchanged);
+        assert_eq!(kept.current().map(|song| song.video_id.as_str()), Some("1"));
+
+        queue.repeat = Repeat::Off;
+        queue.goto(3);
+        let (stopped, stop) = queue
+            .prepare_purge(|song| song.video_id == "3")
+            .expect("current tail matches");
+        assert_eq!(stop.playback(), QueueRemovalPlayback::Stop);
+        assert_eq!(
+            stopped
+                .ordered_iter()
+                .map(|song| song.video_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["0", "1", "2"]
+        );
+
+        queue.repeat = Repeat::All;
+        let (wrapped, wrap) = queue
+            .prepare_purge(|song| song.video_id == "3")
+            .expect("current tail matches");
+        assert_eq!(wrap.playback(), QueueRemovalPlayback::LoadSelected);
+        assert_eq!(
+            wrapped.current().map(|song| song.video_id.as_str()),
+            Some("0")
+        );
+
+        let (empty, full) = queue.prepare_purge(|_| true).expect("every row matches");
+        assert_eq!(full.playback(), QueueRemovalPlayback::Stop);
+        assert!(empty.is_empty());
+        assert_eq!(full.popup_cursor(), 0);
+    }
+
+    #[test]
+    fn prepare_purge_loads_the_first_survivor_after_a_gapped_current() {
+        let mut queue = Queue::default();
+        queue.set(songs(5), 2);
+        let (plan, outcome) = queue
+            .prepare_purge(|song| song.video_id == "0" || song.video_id == "2")
+            .expect("gapped matches");
+        assert_eq!(outcome.removed(), 2);
+        assert_eq!(outcome.playback(), QueueRemovalPlayback::LoadSelected);
+        assert_eq!(plan.current().map(|song| song.video_id.as_str()), Some("3"));
+        let planned: Vec<&str> = plan
+            .ordered_iter()
+            .map(|song| song.video_id.as_str())
+            .collect();
+        assert_eq!(planned, vec!["1", "3", "4"]);
     }
 
     #[test]

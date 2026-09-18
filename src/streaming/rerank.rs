@@ -226,6 +226,7 @@ mod tests {
             recent_artist_keys: Vec::new(),
             banned_track_ids: HashSet::new(),
             banned_artist_keys: HashSet::new(),
+            seed_bias: crate::streaming::SeedBias::default(),
             favorite_artist_keys: HashSet::new(),
             session_artist_bias: std::collections::HashMap::new(),
             temporary_novelty_boost: 0.0,

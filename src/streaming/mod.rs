@@ -14,6 +14,7 @@ pub(crate) mod musicgate;
 pub mod pack;
 mod rerank;
 mod score;
+pub mod taste;
 
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -32,6 +33,10 @@ pub use config::{CuratingMode, ModeProfile, StreamingConfig, StreamingMode};
 pub use cooccurrence::Cooc;
 pub use pack::PackedCand;
 pub use score::{GateVerdict, classify_pool};
+pub use taste::{
+    SeedBias, SeedPolarity, SessionTaste, TasteCounts, TasteEdit, TasteError, TasteOutcome,
+    project_taste,
+};
 
 pub use crate::playback_policy::AutoplayRefill;
 use crate::playback_policy::RefillSeedTrack;
@@ -179,6 +184,7 @@ pub struct StationState {
     pub recent_artist_keys: Vec<String>,
     pub banned_track_ids: HashSet<String>,
     pub banned_artist_keys: HashSet<String>,
+    pub seed_bias: SeedBias,
     /// Normalized artist keys the user has favorited (a seed-affinity boost).
     pub favorite_artist_keys: HashSet<String>,
     /// Short-lived per-session artist nudges derived from recent streaming outcomes.
@@ -292,6 +298,7 @@ pub fn sanitize_final_picks(
     fallback: &[Song],
     mode: StreamingMode,
     cfg: &StreamingConfig,
+    taste: &SessionTaste,
 ) -> Vec<Song> {
     let target = picks.len();
     let mut out = Vec::with_capacity(target);
@@ -300,7 +307,7 @@ pub fn sanitize_final_picks(
         if out.len() >= target {
             break;
         }
-        if taken.contains(&song.video_id) || reject_final_song(song, mode, cfg) {
+        if taken.contains(&song.video_id) || reject_final_song(song, mode, cfg, taste) {
             continue;
         }
         taken.insert(song.video_id.clone());
@@ -309,7 +316,15 @@ pub fn sanitize_final_picks(
     out
 }
 
-fn reject_final_song(song: &Song, mode: StreamingMode, cfg: &StreamingConfig) -> bool {
+fn reject_final_song(
+    song: &Song,
+    mode: StreamingMode,
+    cfg: &StreamingConfig,
+    taste: &SessionTaste,
+) -> bool {
+    if taste.rejects_song(song) {
+        return true;
+    }
     if let Some(duration) = candidate::parse_duration_secs(&song.duration)
         && cfg.duration_out_of_bounds(duration)
     {
@@ -407,6 +422,7 @@ pub struct AiCacheKeyParts<'a> {
     pub skip_streak: usize,
     pub profile_version: u32,
     pub prompt_recipe_hash: u64,
+    pub taste_epoch: u64,
 }
 
 /// A stable key for caching a DJ Gem rerank's result. The candidate set is order-independent
@@ -424,6 +440,7 @@ pub fn ai_cache_key(parts: AiCacheKeyParts<'_>) -> u64 {
     parts.skip_streak.hash(&mut h);
     parts.profile_version.hash(&mut h);
     parts.prompt_recipe_hash.hash(&mut h);
+    parts.taste_epoch.hash(&mut h);
     let mut sorted: Vec<&String> = parts.candidate_ids.iter().collect();
     sorted.sort();
     sorted.hash(&mut h);
@@ -675,6 +692,7 @@ mod tests {
             recent_artist_keys: Vec::new(),
             banned_track_ids: HashSet::new(),
             banned_artist_keys: HashSet::new(),
+            seed_bias: SeedBias::default(),
             favorite_artist_keys: HashSet::new(),
             session_artist_bias: HashMap::new(),
             temporary_novelty_boost: 0.0,
@@ -865,6 +883,34 @@ mod tests {
         assert_eq!(order, vec!["a", "b"], "no DJ Gem ids → pure local pick");
     }
 
+    #[test]
+    fn sanitize_final_picks_drops_a_banned_pick_that_reached_admission() {
+        let banned = song("blocked", "x");
+        let ok = song("ok", "y");
+        let mut taste = SessionTaste::default();
+        assert_eq!(
+            taste.apply(TasteEdit::ban_track(&banned).expect("id")),
+            TasteOutcome::Applied
+        );
+        let out = sanitize_final_picks(
+            vec![banned.clone(), ok.clone()],
+            &[],
+            StreamingMode::Balanced,
+            &StreamingConfig::default(),
+            &taste,
+        );
+        let ids: Vec<&str> = out.iter().map(|s| s.video_id.as_str()).collect();
+        assert_eq!(ids, vec!["ok"]);
+        let empty = sanitize_final_picks(
+            vec![banned],
+            &[],
+            StreamingMode::Balanced,
+            &StreamingConfig::default(),
+            &taste,
+        );
+        assert!(empty.is_empty());
+    }
+
     /// A scored candidate with a chosen `base_score` (the only field the gate reads).
     fn scored(id: &str, base: f32) -> Candidate {
         scored_src(id, base, CandidateSource::YtdlpStreaming)
@@ -893,6 +939,7 @@ mod tests {
             skip_streak: 0,
             profile_version: mode.profile(&StreamingConfig::default()).profile_version,
             prompt_recipe_hash: ai_recipe_hash(mode.profile(&StreamingConfig::default()).ai_recipe),
+            taste_epoch: 0,
         })
     }
 

@@ -3,9 +3,9 @@
 use super::*;
 
 #[derive(Clone, Copy)]
-pub(super) struct RecommendationQueuedCommit {
-    pub(super) added: usize,
-    pub(super) streaming_refill: bool,
+pub(in crate::app) struct RecommendationQueuedCommit {
+    pub(in crate::app) added: usize,
+    pub(in crate::app) streaming_refill: bool,
 }
 
 impl App {
@@ -31,6 +31,7 @@ impl App {
                 why_gem: Some(crate::app::why_gem::WhyGemCommit::Forget(manual_video_ids)),
                 ..TrackPostCommit::default()
             },
+            None,
         )
     }
 
@@ -55,6 +56,7 @@ impl App {
                 }),
                 ..TrackPostCommit::default()
             },
+            None,
         )
     }
 

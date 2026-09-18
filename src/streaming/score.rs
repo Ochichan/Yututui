@@ -32,6 +32,7 @@ struct RawFeatures {
     completion: f32,
     /// Positive [0,1] "official music" signal — added raw (not normalized).
     music_tier: f32,
+    seed_bias: f32,
     version_penalty: f32,
     gate_risk: f32,
     /// Co-occurrence affinity vs the *immediately-preceding* (seed) track. Evidence-only;
@@ -81,6 +82,7 @@ pub fn filter_and_score(
             + w.ytm_continuation * cont_n[i]
             + w.completion * comp_n[i]
             + w.music_tier * feats[i].music_tier
+            + crate::streaming::taste::SEED_BIAS_WEIGHT * feats[i].seed_bias
             - w.dislike_penalty * feats[i].version_penalty
             - GATE_DEMOTE_PENALTY * feats[i].gate_risk;
         // Retain the per-feature evidence for the DJ Gem reranker. `transition` is intentionally
@@ -364,6 +366,7 @@ fn raw_features(
         continuation,
         completion,
         music_tier,
+        seed_bias: st.seed_bias.score(c),
         version_penalty,
         gate_risk,
         transition,
@@ -443,6 +446,7 @@ mod tests {
             recent_artist_keys: Vec::new(),
             banned_track_ids: HashSet::new(),
             banned_artist_keys: HashSet::new(),
+            seed_bias: crate::streaming::SeedBias::default(),
             favorite_artist_keys: HashSet::new(),
             session_artist_bias: std::collections::HashMap::new(),
             temporary_novelty_boost: 0.0,
@@ -577,6 +581,61 @@ mod tests {
         assert!(
             off.base_score > plain.base_score,
             "official-audio tier outranks a plain upload"
+        );
+    }
+
+    #[test]
+    fn more_like_seed_promotes_a_near_tie() {
+        let cfg = StreamingConfig::default();
+        let mut taste = crate::streaming::SessionTaste::default();
+        assert_eq!(
+            taste.apply(crate::streaming::TasteEdit::parse_seed("jazz").expect("term")),
+            crate::streaming::TasteOutcome::Applied
+        );
+        let mut st = station("seed");
+        st.seed_bias = crate::streaming::project_taste(&taste, &[]).seed_bias;
+        let pool = vec![
+            cand("hit", "Late Jazz Night", "Same Artist", 0),
+            cand("miss", "Plain Rock Tune", "Same Artist", 0),
+        ];
+        let scored = filter_and_score(pool, &st, &Signals::default(), &Cooc::default(), &cfg, 0);
+        let hit = scored.iter().find(|c| c.video_id() == "hit").unwrap();
+        let miss = scored.iter().find(|c| c.video_id() == "miss").unwrap();
+        assert!(
+            hit.base_score > miss.base_score,
+            "more-like jazz should lift the matching title ({hit} vs {miss})",
+            hit = hit.base_score,
+            miss = miss.base_score
+        );
+    }
+
+    #[test]
+    fn exclude_seed_demotes_but_still_ranks_the_only_survivor() {
+        let cfg = StreamingConfig::default();
+        let mut taste = crate::streaming::SessionTaste::default();
+        assert_eq!(
+            taste.apply(crate::streaming::TasteEdit::parse_seed("-jazz").expect("term")),
+            crate::streaming::TasteOutcome::Applied
+        );
+        let mut st = station("seed");
+        st.seed_bias = crate::streaming::project_taste(&taste, &[]).seed_bias;
+        let pool = vec![cand("only", "Late Jazz Night", "Trio", 0)];
+        let scored = filter_and_score(pool, &st, &Signals::default(), &Cooc::default(), &cfg, 0);
+        assert_eq!(scored.len(), 1);
+        assert_eq!(scored[0].video_id(), "only");
+        let baseline = filter_and_score(
+            vec![cand("only", "Late Jazz Night", "Trio", 0)],
+            &station("seed"),
+            &Signals::default(),
+            &Cooc::default(),
+            &cfg,
+            0,
+        );
+        assert!(
+            scored[0].base_score < baseline[0].base_score,
+            "exclude jazz should lower the matching title ({demoted} vs {baseline})",
+            demoted = scored[0].base_score,
+            baseline = baseline[0].base_score
         );
     }
 

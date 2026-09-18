@@ -70,6 +70,7 @@ pub(super) fn status_line_parts_with_labels_reusing(
         parts.push((None, Cow::Owned(bars)));
     }
     push_streaming_mode(&mut parts, app, labels, gap, retro);
+    push_taste_counts(&mut parts, app, labels, gap, minimal, retro);
     push_download_tag(&mut parts, app, gap, minimal);
     push_chapter_tag(&mut parts, app, gap, minimal);
     push_sleep_timer(&mut parts, app, gap, minimal);
@@ -580,6 +581,38 @@ fn push_streaming_mode(
         };
         parts.push((Some(MouseTarget::StreamingMenu), Cow::Owned(streaming)));
     }
+}
+
+fn push_taste_counts(
+    parts: &mut StatusLineParts,
+    app: &App,
+    labels: StatusLabelTier,
+    gap: &'static str,
+    minimal: bool,
+    retro: bool,
+) {
+    let counts = app.streaming.taste.counts();
+    if !app.streaming_active() || (minimal && counts.is_empty()) {
+        return;
+    }
+    parts.push((None, Cow::Borrowed(gap)));
+    let text = if labels.beginner() {
+        beginner_control_label(
+            app,
+            labels,
+            KeyContext::Station,
+            Action::OpenStationCard,
+            if retro {
+                "Bans & seeds"
+            } else {
+                t!("Bans & seeds", "차단 & 시드", "禁止 & シード")
+            },
+            Some(format!("{} · {}", counts.banned, counts.seeds)),
+        )
+    } else {
+        format!("banned {} · seeds {}", counts.banned, counts.seeds)
+    };
+    parts.push((Some(MouseTarget::StationCard), Cow::Owned(text)));
 }
 
 /// Download indicator for the current track, if one is in flight or finished. While one is

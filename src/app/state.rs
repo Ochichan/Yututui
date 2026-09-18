@@ -659,6 +659,7 @@ pub struct StreamingRuntime {
     /// Cached co-occurrence graph keyed by [`Signals::play_log_generation`], so streaming refills don't
     /// rebuild the same nested HashMap when listening history has not changed.
     pub cooc_cache: Option<(u64, Cooc)>,
+    pub taste: crate::streaming::SessionTaste,
     /// True while an off-path feedback summary is handed off to the assistant actor, awaiting its
     /// `AiMsg::StationPatch`. A single-flight guard so a skip streak can't fan out duplicate calls.
     pub feedback_in_flight: bool,
@@ -1279,6 +1280,7 @@ pub struct Overlays {
     /// Queue revision paired with `why_gem_queue_index`. Any membership/order mutation closes the
     /// card rather than silently retargeting an indistinguishable duplicate occurrence.
     pub(crate) why_gem_queue_revision: Option<u64>,
+    pub station_card: Option<StationCard>,
     /// The "what's playing" (지듣노) overlay — the radio identify card with favorite /
     /// ask-DJ Gem actions. `None` = closed. Opened by `Action::IdentifyNowPlaying` (`i`).
     pub now_playing_overlay: Option<NowPlayingOverlay>,
@@ -1288,4 +1290,11 @@ pub struct Overlays {
     /// Identify epoch: replies must carry the open overlay's snapshot of this counter or
     /// they're stale (overlay closed / stream title moved on).
     pub(in crate::app) now_playing_seq: u64,
+}
+
+#[derive(Default)]
+pub struct StationCard {
+    pub input: String,
+    pub cursor: TextCursor,
+    pub selected: usize,
 }

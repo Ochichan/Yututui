@@ -270,11 +270,7 @@ fn default_bindings_are_conflict_free() {
             continue;
         }
         if let Some(&global) = by_chord.get(&(KeyContext::Global, chord)) {
-            let local_deck_accept_all_shadows_global_animation = ctx == KeyContext::LocalDeck
-                && action == Action::AcceptAllImportReview
-                && global == Action::ToggleAnimations
-                && chord == Chord::new(KeyCode::Char('A'), KeyModifiers::empty());
-            if local_deck_accept_all_shadows_global_animation {
+            if crate::keymap::PRE_GLOBAL_CONTEXTS.contains(&ctx) {
                 continue;
             }
             panic!(

@@ -70,6 +70,7 @@ mod settings_ui;
 mod sleep_timer;
 mod source_recovery;
 mod startup_playback;
+mod station_taste;
 mod streaming_extend;
 mod sync_settings;
 mod text_cursor_rendering;

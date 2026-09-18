@@ -18,6 +18,7 @@ mod harness;
 mod personal_sync;
 mod rating_recommendation;
 mod sleep_timer;
+mod taste;
 
 use std::sync::Arc;
 

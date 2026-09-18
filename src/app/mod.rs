@@ -199,6 +199,7 @@ mod settings_color_picker;
 mod settings_mouse;
 mod settings_reducer;
 mod spotify_import_reducer;
+mod station_taste;
 mod stream_metadata;
 mod streaming_reducer;
 mod sync_activation;

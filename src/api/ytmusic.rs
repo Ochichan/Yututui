@@ -756,7 +756,15 @@ pub(crate) async fn preflight_streaming_picks(
         if !taken.insert(song.video_id.clone()) {
             continue;
         }
-        if streaming::sanitize_final_picks(vec![song.clone()], &[], mode, cfg).is_empty() {
+        if streaming::sanitize_final_picks(
+            vec![song.clone()],
+            &[],
+            mode,
+            cfg,
+            &streaming::SessionTaste::default(),
+        )
+        .is_empty()
+        {
             continue;
         }
         if streaming::needs_metadata_preflight(song, mode, cfg) {
