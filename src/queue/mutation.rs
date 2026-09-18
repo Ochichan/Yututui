@@ -295,12 +295,6 @@ impl Queue {
         ))
     }
 
-    /// Prepare the removal of every row matching `reject`, current row included, without
-    /// touching live state. The by-predicate sibling of [`Self::prepare_remove_range`]: a ban
-    /// purges a track wherever it sits, and its rows are not contiguous.
-    ///
-    /// `None` when nothing matches. When the current row matches, the outcome asks for player
-    /// admission exactly as a range removal does, so a rejected load leaves the queue intact.
     pub(crate) fn prepare_purge(
         &self,
         reject: impl Fn(&Song) -> bool,
@@ -314,7 +308,7 @@ impl Queue {
                 self.order
                     .get(pos)
                     .and_then(|&idx| self.songs.get(idx))
-                    .is_some_and(|song| reject(song))
+                    .is_some_and(&reject)
             })
             .collect();
         if matches.is_empty() {
