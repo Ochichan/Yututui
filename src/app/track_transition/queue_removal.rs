@@ -63,7 +63,7 @@ impl App {
         })
     }
 
-    fn prepare_queue_mutation_track_transition(
+    pub(in crate::app) fn prepare_queue_mutation_track_transition(
         &mut self,
         mut mutation: QueueMutationPlan,
         post_commit: TrackPostCommit,
