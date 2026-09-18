@@ -14,6 +14,7 @@ pub(crate) mod musicgate;
 pub mod pack;
 mod rerank;
 mod score;
+pub mod taste;
 
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -32,6 +33,10 @@ pub use config::{CuratingMode, ModeProfile, StreamingConfig, StreamingMode};
 pub use cooccurrence::Cooc;
 pub use pack::PackedCand;
 pub use score::{GateVerdict, classify_pool};
+pub use taste::{
+    SeedBias, SeedPolarity, SessionTaste, TasteCounts, TasteEdit, TasteError, TasteOutcome,
+    project_taste,
+};
 
 pub use crate::playback_policy::AutoplayRefill;
 use crate::playback_policy::RefillSeedTrack;
