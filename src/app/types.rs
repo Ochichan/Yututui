@@ -1,7 +1,6 @@
 //! Message, command, and view-state type definitions for the app reducer.
 //!
-//! These are
-//! re-exported from `crate::app` (`pub use types::*`) so existing `crate::app::Msg` /
+//! These are re-exported from `crate::app` (`pub use types::*`) so existing `crate::app::Msg` /
 //! `crate::app::Cmd` / `crate::app::Mode` paths keep resolving for actors and views.
 
 use super::*;
