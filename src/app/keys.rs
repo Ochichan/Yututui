@@ -314,6 +314,22 @@ impl App {
             return self.on_key_local(k);
         }
 
+        // The Ctrl+R station owns B / Shift+A / e while it is actually playing. Routed before
+        // globals for the same reason Local Deck routes Shift+A early, and gated on the same
+        // `streaming_active()` predicate that draws the `banned N · seeds M` chip, so what the
+        // listener can see and what the keys do can never disagree. Station off, globals win.
+        if self.streaming_active()
+            && !(self.in_text_entry() && chord.is_typeable())
+            && let Some(action) = self.keymap.context_action(KeyContext::Station, chord)
+        {
+            return match action {
+                Action::BanTrack => self.ban_current_track(),
+                Action::BanArtist => self.ban_current_artist(),
+                Action::OpenStationCard => self.open_station_card(),
+                _ => Vec::new(),
+            };
+        }
+
         if let Some(cmds) = self.route_global_key_context(chord) {
             return cmds;
         }
@@ -352,6 +368,16 @@ impl App {
     }
 
     fn route_modal_key_contexts(&mut self, k: KeyEvent, chord: Chord) -> Option<Vec<Cmd>> {
+        // The station card captures the keyboard while open, like the search results-filter
+        // popup: its input is always live, so every typeable key belongs to it. Quit still
+        // works; Delete lifts the selected ban/seed; Esc closes.
+        if self.overlays.station_card.is_some() {
+            if matches!(self.keymap.global_action(chord), Some(Action::Quit)) {
+                return Some(self.quit_app());
+            }
+            return Some(self.station_card_key(k, chord));
+        }
+
         // While the help overlay is up, swallow input; help-toggle / Esc / Back dismiss it,
         // and the navigation keys scroll the sheet (it rarely fits whole on small grids).
         if self.overlays.help_visible {
@@ -647,6 +673,9 @@ impl App {
     /// Whether a focused text field is currently capturing typed characters (so command
     /// keys and the `?` help shortcut must not fire — they'd be typed instead).
     pub(in crate::app) fn in_text_entry(&self) -> bool {
+        if self.overlays.station_card.is_some() {
+            return true;
+        }
         if self.atlas_active() && self.radio_mode.atlas.search_editing {
             return true;
         }

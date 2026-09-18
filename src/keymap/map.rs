@@ -20,6 +20,15 @@ pub struct Conflict {
     pub chord: Chord,
 }
 
+/// Contexts whose dispatch deliberately runs before `Global` (see `App::on_key`), so a chord
+/// they share with a global action is a shadow rather than a conflict. Settings › Keys must
+/// agree with the router, and one table is easier to keep true than one boolean per pair.
+pub const PRE_GLOBAL_CONTEXTS: &[KeyContext] = &[
+    KeyContext::LocalDeck,
+    KeyContext::Station,
+    KeyContext::StationCard,
+];
+
 /// The resolved keybindings: chord → action (for dispatch) and action → chord (for
 /// rendering hints), both keyed by context.
 #[derive(Debug, Clone)]
@@ -191,7 +200,14 @@ impl KeyMap {
     /// other context. Local contexts may shadow `Common` navigation, matching dispatch.
     fn conflict(&self, ctx: KeyContext, action: Action, chord: Chord) -> Option<Conflict> {
         if ctx == KeyContext::Global {
-            return self.conflict_in_contexts(all_contexts(), action, chord);
+            return self.conflict_in_contexts(
+                all_contexts().filter(|c| !PRE_GLOBAL_CONTEXTS.contains(c)),
+                action,
+                chord,
+            );
+        }
+        if PRE_GLOBAL_CONTEXTS.contains(&ctx) {
+            return self.conflict_in_context(ctx, action, chord);
         }
 
         self.conflict_in_context(ctx, action, chord)
@@ -205,17 +221,7 @@ impl KeyMap {
         chord: Chord,
     ) -> Option<Conflict> {
         let existing = self.bindings.get(&(ctx, chord)).copied()?;
-        let animation_shadow = chord == Chord::new(KeyCode::Char('A'), KeyModifiers::empty())
-            && match ctx {
-                KeyContext::Global => {
-                    (existing, action) == (Action::ToggleAnimations, Action::AcceptAllImportReview)
-                }
-                KeyContext::LocalDeck => {
-                    (existing, action) == (Action::AcceptAllImportReview, Action::ToggleAnimations)
-                }
-                _ => false,
-            };
-        if existing == action || animation_shadow {
+        if existing == action {
             return None;
         }
         Some(Conflict {

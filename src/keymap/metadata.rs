@@ -149,6 +149,14 @@ pub enum Action {
     AtlasToggleGrid,
     AtlasToggleAutorotate,
     AtlasClose,
+    /// Ban the playing track for this session and drop it from the queue.
+    BanTrack,
+    /// Ban the playing artist for this session and drop their rows from the queue.
+    BanArtist,
+    /// Open the station card (session bans and seed terms).
+    OpenStationCard,
+    /// Lift the selected ban or seed.
+    StationForget,
 }
 
 /// Stable id (for config keys) + English + Korean + Japanese human label (for the editor
@@ -969,6 +977,34 @@ const ACTION_META: &[(Action, &str, &str, &str, &str)] = &[
         "음소거 / 해제",
         "ミュート / 解除",
     ),
+    (
+        Action::BanTrack,
+        "ban_track",
+        "Ban this track",
+        "이 곡 차단",
+        "この曲を禁止",
+    ),
+    (
+        Action::BanArtist,
+        "ban_artist",
+        "Ban this artist",
+        "이 아티스트 차단",
+        "このアーティストを禁止",
+    ),
+    (
+        Action::OpenStationCard,
+        "open_station_card",
+        "Open station card",
+        "스테이션 카드 열기",
+        "ステーションカードを開く",
+    ),
+    (
+        Action::StationForget,
+        "station_forget",
+        "Forget selected ban or seed",
+        "선택한 차단/시드 해제",
+        "選択した禁止/シードを解除",
+    ),
 ];
 
 impl Action {
@@ -1154,6 +1190,10 @@ pub enum KeyContext {
     MpvOverlay,
     /// The Atlas globe surface inside dedicated Radio mode.
     Atlas,
+    /// The Ctrl+R station while it is actually playing. Routed before `Global`.
+    Station,
+    /// The station card overlay.
+    StationCard,
 }
 
 const CONTEXT_META: &[(KeyContext, &str, &str, &str, &str)] = &[
@@ -1249,6 +1289,20 @@ const CONTEXT_META: &[(KeyContext, &str, &str, &str, &str)] = &[
         "Atlas globe",
         "아틀라스 지구본",
         "アトラス地球儀",
+    ),
+    (
+        KeyContext::Station,
+        "station",
+        "Radio station (while streaming)",
+        "라디오 스테이션 (스트리밍 중)",
+        "ラジオステーション (配信中)",
+    ),
+    (
+        KeyContext::StationCard,
+        "station_card",
+        "Station card",
+        "스테이션 카드",
+        "ステーションカード",
     ),
 ];
 

@@ -147,6 +147,13 @@ pub fn default_bindings() -> Vec<(KeyContext, Action, Chord)> {
         // scrolling with a modifier held); the Ctrl+-/= keys stay live either way.
         (C::Global, A::ToggleZoomWheelLock, ctrl('l')),
         (C::Global, A::Quit, ctrl('q')),
+        // Radio station. Routed before Global, and only while `streaming_active()`, so these
+        // three chords keep their global meanings whenever the station is off.
+        (C::Station, A::BanTrack, ch('B')),
+        (C::Station, A::BanArtist, ch('A')),
+        (C::Station, A::OpenStationCard, ch('e')),
+        // The station card overlay.
+        (C::StationCard, A::StationForget, key(KeyCode::Delete)),
         // Library list commands.
         (C::Library, A::Confirm, key(KeyCode::Enter)),
         (C::Library, A::ToggleLocalMode, alt_shift('l')),

@@ -19,7 +19,7 @@ mod metadata;
 pub use chord::{Chord, chord_to_config, chord_to_mpv_input, mpv_overlay_fixed_alias, parse_chord};
 pub use defaults::{WireAction, default_bindings, editable_entries, groups, wire_actions};
 pub use display::{format_chord, format_chord_for_display, format_chord_retro};
-pub use map::{Conflict, KeyMap};
+pub use map::{Conflict, KeyMap, PRE_GLOBAL_CONTEXTS};
 pub use metadata::{Action, KeyContext};
 
 #[cfg(test)]
