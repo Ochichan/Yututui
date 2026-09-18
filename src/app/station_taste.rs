@@ -1,11 +1,7 @@
-//! Station-card and session-taste handlers for the Ctrl+R radio.
-
 use super::*;
 use crate::streaming::{TasteEdit, TasteError, TasteOutcome};
 
 impl App {
-    /// `B` on the live station. Bans the current track and purges it from the queue so
-    /// Prev and a queue jump cannot replay it either.
     pub(in crate::app) fn ban_current_track(&mut self) -> Vec<Cmd> {
         let Some(song) = self.queue.current() else {
             return Vec::new();
@@ -17,7 +13,6 @@ impl App {
         }
     }
 
-    /// `Shift+A` on the live station. Same transaction, wider predicate.
     pub(in crate::app) fn ban_current_artist(&mut self) -> Vec<Cmd> {
         let Some(song) = self.queue.current().cloned() else {
             return Vec::new();
@@ -36,7 +31,6 @@ impl App {
         }
     }
 
-    /// Purge, skip-signal, and ban as one player-admitted transaction.
     fn commit_taste_ban(&mut self, edit: TasteEdit) -> Vec<Cmd> {
         self.cancel_pending_streaming_recommendation();
         let Some((mutation, outcome)) = self.queue.prepare_purge(|song| edit.rejects(song)) else {
@@ -56,8 +50,6 @@ impl App {
         self.apply_queue_removal(mutation, outcome, post_commit, Some(false))
     }
 
-    /// Seeds change nothing that is already queued. They apply immediately, cancel the
-    /// pending refill chain, and bias the next refill while streaming is active.
     pub(in crate::app) fn apply_taste_edit(&mut self, edit: TasteEdit) -> Vec<Cmd> {
         match self.streaming.taste.apply(edit) {
             TasteOutcome::Applied => {
@@ -161,7 +153,6 @@ impl App {
         Vec::new()
     }
 
-    /// Enter in the station card. An empty field seeds the current artist.
     pub(in crate::app) fn station_card_commit(&mut self) -> Vec<Cmd> {
         let Some(card) = self.overlays.station_card.as_mut() else {
             return Vec::new();
@@ -185,7 +176,6 @@ impl App {
         self.apply_taste_edit(edit)
     }
 
-    /// Delete in the station card. Lifts the selected ban or seed.
     pub(in crate::app) fn station_card_forget(&mut self) -> Vec<Cmd> {
         let Some(index) = self.overlays.station_card.as_ref().map(|c| c.selected) else {
             return Vec::new();

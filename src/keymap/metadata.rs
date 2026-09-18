@@ -149,13 +149,9 @@ pub enum Action {
     AtlasToggleGrid,
     AtlasToggleAutorotate,
     AtlasClose,
-    /// Ban the playing track for this session and drop it from the queue.
     BanTrack,
-    /// Ban the playing artist for this session and drop their rows from the queue.
     BanArtist,
-    /// Open the station card (session bans and seed terms).
     OpenStationCard,
-    /// Lift the selected ban or seed.
     StationForget,
 }
 
@@ -1190,9 +1186,7 @@ pub enum KeyContext {
     MpvOverlay,
     /// The Atlas globe surface inside dedicated Radio mode.
     Atlas,
-    /// The Ctrl+R station while it is actually playing. Routed before `Global`.
     Station,
-    /// The station card overlay.
     StationCard,
 }
 

@@ -32,9 +32,6 @@ struct RawFeatures {
     completion: f32,
     /// Positive [0,1] "official music" signal — added raw (not normalized).
     music_tier: f32,
-    /// Signed seed nudge in [-1, 1] from `StationState.seed_bias`. Added raw, like
-    /// `music_tier`: min-max normalizing a signed batch feature would turn "no term matched
-    /// anything" into a spread of fake distinctions.
     seed_bias: f32,
     version_penalty: f32,
     gate_risk: f32,

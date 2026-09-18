@@ -54,9 +54,7 @@ pub(in crate::app) struct TrackPostCommit {
     pub(in crate::app) mode_switch: Option<super::mode_transition::ModeSwitchPlan>,
     pub(in crate::app) why_gem: Option<super::why_gem::WhyGemCommit>,
     pub(in crate::app) recommendation_queued: Option<why_gem::RecommendationQueuedCommit>,
-    /// Applied only after the player admits the queue mutation this edit justified.
     pub(in crate::app) taste: Option<crate::streaming::TasteEdit>,
-    /// Forced refill seed when a current-inclusive purge Stops (the queue may be empty).
     pub(in crate::app) detached_refill: Option<Song>,
 }
 
@@ -650,7 +648,6 @@ impl App {
                     )
                     .to_owned();
                 }
-                // Ban post-commit owns the refill so it sees the new taste.
                 if !(post_commit.force_autoplay_extend || post_commit.detached_refill.is_some()) {
                     effects.extend(self.maybe_autoplay_extend());
                 }
