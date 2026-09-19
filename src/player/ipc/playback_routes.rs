@@ -67,7 +67,9 @@ fn reserve_published_file_generation(state: &mut DispatchState, published: u64) 
         .admitted_file_generation
         .max(state.issued_file_generation);
     if published != 0 && published >= local {
-        inherit_owner_file_generation(state, published);
+        // Extra reuses the owner watch generation. Leave issued on the current
+        // file until loadfile or Stop so a seek can still alias that file.
+        state.admitted_file_generation = published;
         return published;
     }
     state.admitted_file_generation = local.wrapping_add(1);

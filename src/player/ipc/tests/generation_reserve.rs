@@ -59,7 +59,7 @@ fn extra_load_snaps_forward_to_owner_published_generation() {
     };
     assert_eq!(reserve_published_file_generation(&mut state, 2), 2);
     assert_eq!(state.admitted_file_generation, 2);
-    assert_eq!(state.issued_file_generation, 2);
+    assert_eq!(state.issued_file_generation, 1);
 }
 
 #[tokio::test]
