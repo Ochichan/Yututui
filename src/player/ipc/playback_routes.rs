@@ -62,13 +62,17 @@ fn inherit_owner_file_generation(state: &mut DispatchState, published: u64) {
     state.issued_file_generation = published;
 }
 
+fn admit_owner_generation_without_issuing(state: &mut DispatchState, published: u64) -> u64 {
+    state.admitted_file_generation = published;
+    published
+}
+
 fn reserve_published_file_generation(state: &mut DispatchState, published: u64) -> u64 {
     let local = state
         .admitted_file_generation
         .max(state.issued_file_generation);
     if published != 0 && published >= local {
-        inherit_owner_file_generation(state, published);
-        return published;
+        return admit_owner_generation_without_issuing(state, published);
     }
     state.admitted_file_generation = local.wrapping_add(1);
     state.admitted_file_generation
