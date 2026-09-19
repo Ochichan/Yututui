@@ -62,15 +62,17 @@ fn inherit_owner_file_generation(state: &mut DispatchState, published: u64) {
     state.issued_file_generation = published;
 }
 
+fn admit_owner_generation_without_issuing(state: &mut DispatchState, published: u64) -> u64 {
+    state.admitted_file_generation = published;
+    published
+}
+
 fn reserve_published_file_generation(state: &mut DispatchState, published: u64) -> u64 {
     let local = state
         .admitted_file_generation
         .max(state.issued_file_generation);
     if published != 0 && published >= local {
-        // Extra reuses the owner watch generation. Leave issued on the current
-        // file until loadfile or Stop so a seek can still alias that file.
-        state.admitted_file_generation = published;
-        return published;
+        return admit_owner_generation_without_issuing(state, published);
     }
     state.admitted_file_generation = local.wrapping_add(1);
     state.admitted_file_generation
