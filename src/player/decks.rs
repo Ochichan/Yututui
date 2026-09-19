@@ -79,7 +79,9 @@ impl EventGate {
         }
         match event.unscoped() {
             PlayerEvent::Error(_) | PlayerEvent::TransportClosed(_) => Some(ExtraProof::Failed),
-            PlayerEvent::TimePos(_) if event.file_generation() == Some(generation) => {
+            PlayerEvent::TimePos(_) | PlayerEvent::Duration(Some(_))
+                if event.file_generation() == Some(generation) =>
+            {
                 Some(ExtraProof::Ready)
             }
             _ => None,
@@ -103,6 +105,17 @@ impl EventGate {
         if matches!(unscoped, PlayerEvent::Volume(_)) && self.fading.load(Ordering::Acquire) {
             return;
         }
+        if self.pending_generation.load(Ordering::Acquire) != 0 {
+            if self.admit_pending_incoming(from_extra, &event) {
+                if from_extra {
+                    let generation = self.admitted.load(Ordering::Acquire);
+                    sink(rewrite_to_admitted_generation(event, generation));
+                } else {
+                    sink(event);
+                }
+            }
+            return;
+        }
         let extra_leads = self.extra_is_lead.load(Ordering::Acquire);
         if from_extra != extra_leads {
             return;
@@ -113,6 +126,20 @@ impl EventGate {
         } else {
             sink(event);
         }
+    }
+
+    fn admit_pending_incoming(&self, from_extra: bool, event: &PlayerEvent) -> bool {
+        let generation = self.pending_generation.load(Ordering::Acquire);
+        if generation == 0
+            || from_extra != self.pending_incoming_extra.load(Ordering::Acquire)
+            || event.file_generation() != Some(generation)
+        {
+            return false;
+        }
+        matches!(
+            event.unscoped(),
+            PlayerEvent::TimePos(_) | PlayerEvent::Duration(Some(_)) | PlayerEvent::Paused(_)
+        )
     }
 }
 
@@ -356,7 +383,7 @@ impl Conductor {
     async fn cut_load(&mut self, load: PlaybackLoad) -> bool {
         self.abort_current_fade().await;
         self.cancel_pending_overlap().await;
-        if self.extra_is_lead && !self.extra_has_file {
+        if self.extra_is_lead && (self.extra.is_none() || !self.extra_has_file) {
             self.set_extra_is_lead(false);
             if let Some(extra) = self.extra.as_ref() {
                 let _ = forward(&extra.tx, PlayerCmd::Stop).await;
@@ -420,9 +447,18 @@ impl Conductor {
     }
 
     async fn retire_extra(&mut self) {
+        tracing::info!(
+            extra_was_lead = self.extra_is_lead,
+            extra_present = self.extra.is_some(),
+            warming = self.warming.is_some(),
+            pending = self.pending_overlap.is_some(),
+            fading = self.fade.is_some(),
+            "retire_extra"
+        );
         self.abort_current_fade().await;
         self.pending_overlap.take();
         self.gate.clear_pending();
+        self.gate.fading.store(false, Ordering::Release);
         self.set_extra_is_lead(false);
         self.extra_has_file = false;
         if let Some(task) = self.warming.take() {
@@ -431,6 +467,14 @@ impl Conductor {
         if let Some(extra) = self.extra.take() {
             let _ = forward(&extra.tx, PlayerCmd::Stop).await;
         }
+        tracing::info!(
+            extra_is_lead = self.extra_is_lead,
+            extra_present = self.extra.is_some(),
+            extra_has_file = self.extra_has_file,
+            pending = self.pending_overlap.is_some(),
+            fading = self.fade.is_some(),
+            "deck_state"
+        );
     }
 
     fn set_extra_is_lead(&mut self, extra_is_lead: bool) {
@@ -927,8 +971,92 @@ mod tests {
         );
     }
 
+    #[test]
+    fn event_gate_admits_pending_extra_duration_before_lead_flip() {
+        let (proof_tx, mut proof_rx) = tokio::sync::mpsc::channel(8);
+        let gate = EventGate::with_proof(Arc::new(AtomicU64::new(4)), Some(proof_tx));
+        gate.arm_pending(true, 4);
+        let (sink, collected) = collecting_sink();
+
+        gate.emit(
+            true,
+            PlayerEvent::file_scoped(4, PlayerEvent::Duration(Some(10.0))),
+            &sink,
+        );
+        gate.emit(
+            true,
+            PlayerEvent::file_scoped(4, PlayerEvent::TimePos(0.2)),
+            &sink,
+        );
+
+        assert!(!gate.extra_is_lead.load(Ordering::Acquire));
+        let events = take(&collected);
+        assert!(
+            events.iter().any(|event| matches!(
+                event,
+                PlayerEvent::FileScoped {
+                    file_generation: 4,
+                    event
+                } if matches!(event.as_ref(), PlayerEvent::Duration(Some(duration)) if *duration == 10.0)
+            )),
+            "overlap must surface extra Duration before lead flip, not leave --:--"
+        );
+        assert!(events.iter().any(|event| matches!(
+            event,
+            PlayerEvent::FileScoped {
+                file_generation: 4,
+                event
+            } if matches!(event.as_ref(), PlayerEvent::TimePos(pos) if *pos == 0.2)
+        )));
+        assert!(matches!(proof_rx.try_recv(), Ok(ExtraProof::Ready)));
+    }
+
+    #[test]
+    fn event_gate_drops_outgoing_time_pos_and_admits_incoming_primary_during_pending() {
+        let gate = EventGate::new(Arc::new(AtomicU64::new(5)));
+        gate.extra_is_lead.store(true, Ordering::Release);
+        gate.arm_pending(false, 5);
+        let (sink, collected) = collecting_sink();
+
+        gate.emit(
+            true,
+            PlayerEvent::file_scoped(4, PlayerEvent::TimePos(9.0)),
+            &sink,
+        );
+        assert!(
+            take(&collected).is_empty(),
+            "outgoing extra TimePos must not flash onto the incoming generation"
+        );
+
+        gate.emit(
+            false,
+            PlayerEvent::file_scoped(5, PlayerEvent::Duration(Some(10.0))),
+            &sink,
+        );
+        gate.emit(
+            false,
+            PlayerEvent::file_scoped(5, PlayerEvent::TimePos(0.1)),
+            &sink,
+        );
+        let events = take(&collected);
+        assert!(events.iter().any(|event| matches!(
+            event,
+            PlayerEvent::FileScoped {
+                file_generation: 5,
+                event
+            } if matches!(event.as_ref(), PlayerEvent::Duration(Some(duration)) if *duration == 10.0)
+        )));
+        assert!(events.iter().any(|event| matches!(
+            event,
+            PlayerEvent::FileScoped {
+                file_generation: 5,
+                event
+            } if matches!(event.as_ref(), PlayerEvent::TimePos(pos) if *pos == 0.1)
+        )));
+    }
+
     #[tokio::test]
-    async fn retire_extra_clears_lead_and_drops_extra() {
+    async fn retire_extra_then_cut_plays_on_primary() {
         let mut h = harness();
         h.conductor.set_extra_is_lead(true);
         h.conductor.extra_has_file = true;
@@ -949,6 +1077,39 @@ mod tests {
         assert!(h.conductor.warming.is_none());
         let extra = take_cmds(&mut h.extra_rx);
         assert!(extra.iter().any(|cmd| matches!(cmd, PlayerCmd::Stop)));
+        assert_eq!(h.gate.pending_generation.load(Ordering::Acquire), 0);
+        assert!(!h.gate.fading.load(Ordering::Acquire));
+
+        h.conductor.warming = Some(tokio::spawn(async { Err(OverlapBlocker::Mpv) }));
+        assert!(h.conductor.handle_command(cut_load("/music/c.flac")).await);
+        assert!(!h.conductor.extra_is_lead);
+        assert!(take_cmds(&mut h.extra_rx).is_empty());
+        let primary = take_cmds(&mut h.primary_rx);
+        assert!(
+            primary
+                .iter()
+                .any(|cmd| load_url(cmd) == Some("/music/c.flac") && load_is_cut(cmd)),
+            "Off → RetireExtra must return subsequent Cut to primary"
+        );
+    }
+
+    #[tokio::test]
+    async fn cut_recovers_when_extra_lead_but_deck_already_gone() {
+        let mut h = harness();
+        h.conductor.set_extra_is_lead(true);
+        h.conductor.extra_has_file = true;
+        h.conductor.extra = None;
+        h.conductor.warming = Some(tokio::spawn(async { Err(OverlapBlocker::Mpv) }));
+        assert!(h.conductor.handle_command(cut_load("/music/d.flac")).await);
+        assert!(!h.conductor.extra_is_lead);
+        assert!(!h.gate.extra_is_lead.load(Ordering::Acquire));
+        let primary = take_cmds(&mut h.primary_rx);
+        assert!(
+            primary
+                .iter()
+                .any(|cmd| load_url(cmd) == Some("/music/d.flac") && load_is_cut(cmd)),
+            "sticky extra lead with no deck must Cut on primary"
+        );
     }
 
     #[test]

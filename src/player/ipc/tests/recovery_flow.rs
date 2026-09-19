@@ -504,6 +504,25 @@ fn extra_deck_inherits_owner_generation_then_wrapping_adds() {
 }
 
 #[test]
+fn extra_load_reuses_owner_generation_when_already_inherited() {
+    let mut state = DispatchState::default();
+    inherit_owner_file_generation(&mut state, 2);
+    assert_eq!(reserve_published_file_generation(&mut state, 2), 2);
+    assert_eq!(state.admitted_file_generation, 2);
+    assert_eq!(state.issued_file_generation, 2);
+}
+
+#[test]
+fn extra_load_snaps_forward_to_owner_published_generation() {
+    let mut state = DispatchState::default();
+    state.issued_file_generation = 1;
+    state.admitted_file_generation = 1;
+    assert_eq!(reserve_published_file_generation(&mut state, 2), 2);
+    assert_eq!(state.admitted_file_generation, 2);
+    assert_eq!(state.issued_file_generation, 2);
+}
+
+#[test]
 fn end_file_atomically_drops_recovery_post_load_lane_before_new_stop() {
     let emit: EventSink = std::sync::Arc::new(|_| {});
     let mut state = DispatchState {
