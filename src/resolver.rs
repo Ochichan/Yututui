@@ -547,19 +547,46 @@ async fn resolve_url_with_program(
         tracing::warn!(%error, "refusing to resolve unsafe watch URL");
     })
     .ok()?;
-    if let Some(stream_url) =
-        resolve_url_with_format(program, &watch_url, cookies, "bestaudio", "audio-only").await
+    let fallback = "bestaudio/best[acodec!=none]/best";
+    // Cookie auth pins web_safari. That client often has no audio-only itag, so
+    // exclusive `bestaudio` fails with "Requested format is not available".
+    if cookies.is_none()
+        && let Some(stream_url) = resolve_url_with_format(
+            program,
+            &watch_url,
+            cookies,
+            "bestaudio",
+            "audio-only",
+            false,
+        )
+        .await
     {
         return Some(stream_url);
     }
-    resolve_url_with_format(
+    if let Some(stream_url) = resolve_url_with_format(
         program,
         &watch_url,
         cookies,
-        "bestaudio/best[acodec!=none]/best",
+        fallback,
         "audio-containing fallback",
+        cookies.is_some(),
     )
     .await
+    {
+        return Some(stream_url);
+    }
+    if cookies.is_some() {
+        return resolve_url_with_format(
+            program,
+            &watch_url,
+            cookies,
+            fallback,
+            "audio-containing fallback without web_safari",
+            false,
+        )
+        .await;
+    }
+    None
 }
 
 async fn resolve_url_with_format(
@@ -568,6 +595,7 @@ async fn resolve_url_with_format(
     cookies: Option<&std::path::Path>,
     format_selector: &str,
     stage: &str,
+    pin_stream_client: bool,
 ) -> Option<String> {
     let mut cmd = crate::tools::ytdlp_command_for(program);
     cmd.args(["-f", format_selector, "-g", "--no-playlist"])
@@ -575,7 +603,7 @@ async fn resolve_url_with_format(
     crate::tools::append_ytdlp_cookie_args(&mut cmd, cookies);
     // Match mpv's cookie-auth stream client so prefetched CDN URLs are not the
     // TVHTML5 URLs that ffmpeg then rejects with HTTP 403.
-    if cookies.is_some() {
+    if pin_stream_client {
         crate::tools::append_ytdlp_youtube_stream_extractor_args(&mut cmd);
     }
     cmd.stdin(Stdio::null());

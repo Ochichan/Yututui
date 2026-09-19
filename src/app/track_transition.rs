@@ -454,7 +454,7 @@ impl App {
 
     fn track_transition_intent(&self, mut plan: TrackTransitionPlan) -> Vec<Cmd> {
         let recorder = self.prepare_recorder_teardown();
-        let mut commands = Vec::with_capacity(4);
+        let mut commands = Vec::with_capacity(5);
         commands.extend(self.recorder_transition_commands(&recorder));
         debug_assert!(plan.recorder.is_none());
         plan.recorder = Some(recorder);
@@ -474,6 +474,12 @@ impl App {
                 if let Some(af) = self.track_audio_filter() {
                     commands.push(PlayerCmd::SetAudioFilter(af));
                 }
+                // mpv's pause property survives loadfile. Commit sets UI playing, so the
+                // same batch must unpause. Overlay follow-up may still append pause=true.
+                commands.push(PlayerCmd::SetProperty {
+                    name: "pause".to_owned(),
+                    value: serde_json::Value::Bool(false),
+                });
             }
             TrackTransitionKind::End { .. } => commands.push(PlayerCmd::Stop),
         }
