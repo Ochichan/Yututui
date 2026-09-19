@@ -500,6 +500,23 @@ fn settings_reset_all_turns_local_crossfade_off() {
 }
 
 #[test]
+fn saving_an_already_off_crossfade_does_not_retire_the_extra_deck() {
+    let mut app = app_playing(1, 0);
+    assert!(app.audio.local_crossfade.is_off());
+
+    app.open_settings();
+    let cmds = app.update(Msg::Key(key(KeyCode::Esc)));
+
+    assert!(
+        !cmds.iter().any(|cmd| {
+            cmd.player_commands()
+                .any(|command| matches!(command, PlayerCmd::RetireExtra))
+        }),
+        "RetireExtra belongs only to an enabled-to-Off transition"
+    );
+}
+
+#[test]
 fn settings_change_updates_stored_selectors_and_toggles_across_tabs() {
     let mut app = App::new(100);
     app.open_settings();

@@ -121,3 +121,19 @@ async fn owner_published_recovery_reserve_keeps_current_seek_dispatchable() {
         backlog.front().expect("superseding seek remains queued")
     ));
 }
+
+#[test]
+fn stale_published_generation_cannot_move_a_deck_backward() {
+    let mut state = DispatchState {
+        issued_file_generation: 5,
+        admitted_file_generation: 6,
+        ..DispatchState::default()
+    };
+
+    assert_eq!(reserve_published_file_generation(&mut state, 4), 7);
+    assert_eq!(state.admitted_file_generation, 7);
+    assert_eq!(
+        state.issued_file_generation, 5,
+        "reserving a local successor must not claim it was already issued"
+    );
+}
