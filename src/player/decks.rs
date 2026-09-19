@@ -461,8 +461,7 @@ impl Conductor {
         if let Some(task) = self.warming.take() {
             task.abort();
         }
-        if self.extra_is_lead && self.extra.is_some() {
-            // Extra still owns the audible file. Dropping it here silences the current track.
+        if self.extra_owns_playback() {
             self.extra_has_file = false;
         } else {
             self.set_extra_is_lead(false);
@@ -479,6 +478,10 @@ impl Conductor {
             fading = self.fade.is_some(),
             "deck_state"
         );
+    }
+
+    fn extra_owns_playback(&self) -> bool {
+        self.extra_is_lead && self.extra.is_some()
     }
 
     fn set_extra_is_lead(&mut self, extra_is_lead: bool) {
