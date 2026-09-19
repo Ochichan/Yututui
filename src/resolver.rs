@@ -1089,6 +1089,86 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn cookie_resolve_skips_exclusive_bestaudio_and_pins_web_safari() {
+        let dir = temp_dir();
+        fs::create_dir_all(&dir).unwrap();
+        let args_log = dir.join("args.txt");
+        let cookies = dir.join("cookies.txt");
+        fs::write(&cookies, "# Netscape HTTP Cookie File\n").unwrap();
+        let fake = write_executable(
+            &dir,
+            "yt-dlp",
+            &format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\nprintf '%s\\n' 'https://cdn.example/cookie.m4a'\n",
+                args_log.display()
+            ),
+        );
+
+        let resolved = resolve_url_with_program(
+            fake.to_str().unwrap(),
+            "https://music.youtube.com/watch?v=abc123",
+            Some(cookies.as_path()),
+        )
+        .await;
+
+        assert_eq!(resolved.as_deref(), Some("https://cdn.example/cookie.m4a"));
+        let args = fs::read_to_string(&args_log).unwrap();
+        assert!(
+            !args
+                .lines()
+                .any(|line| line.contains("-f bestaudio -g --no-playlist")),
+            "cookie/web_safari resolve must not use exclusive bestaudio: {args}"
+        );
+        assert!(args.contains("-f bestaudio/best[acodec!=none]/best -g --no-playlist"));
+        assert!(
+            args.contains("player_client=web_safari"),
+            "cookie resolve still pins web_safari on the fallback selector: {args}"
+        );
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn cookie_resolve_retries_fallback_without_web_safari() {
+        let dir = temp_dir();
+        fs::create_dir_all(&dir).unwrap();
+        let args_log = dir.join("args.txt");
+        let cookies = dir.join("cookies.txt");
+        fs::write(&cookies, "# Netscape HTTP Cookie File\n").unwrap();
+        let fake = write_executable(
+            &dir,
+            "yt-dlp",
+            &format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\ncase \"$*\" in\n  *player_client=web_safari*) exit 1 ;;\n  *'bestaudio/best[acodec!=none]/best'*) printf '%s\\n' 'https://cdn.example/no-safari.m4a' ;;\n  *) exit 1 ;;\nesac\n",
+                args_log.display()
+            ),
+        );
+
+        let resolved = resolve_url_with_program(
+            fake.to_str().unwrap(),
+            "https://music.youtube.com/watch?v=abc123",
+            Some(cookies.as_path()),
+        )
+        .await;
+
+        assert_eq!(
+            resolved.as_deref(),
+            Some("https://cdn.example/no-safari.m4a")
+        );
+        let args = fs::read_to_string(&args_log).unwrap();
+        assert!(
+            args.contains("player_client=web_safari"),
+            "first cookie fallback still tries web_safari: {args}"
+        );
+        assert!(
+            args.lines()
+                .any(|line| line.contains("-f bestaudio/best[acodec!=none]/best")
+                    && !line.contains("player_client=web_safari")),
+            "cookie fallback must retry once without web_safari: {args}"
+        );
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
     async fn resolve_url_rejects_non_http_scheme() {
         let dir = temp_dir();
         fs::create_dir_all(&dir).unwrap();

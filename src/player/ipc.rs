@@ -353,7 +353,7 @@ fn log_numeric_perf(state: &mut DispatchState, force: bool) {
 
 include!("ipc/incoming.rs");
 
-const MPV_IPC_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+pub(crate) const MPV_IPC_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const MPV_IPC_CONNECT_RETRY_DELAY: Duration = Duration::from_millis(15);
 
 /// Connect to the mpv IPC endpoint while mpv finishes starting up.

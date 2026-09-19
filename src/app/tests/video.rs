@@ -187,11 +187,19 @@ fn video_continue_advances_queue_paused_and_loads_next_video() {
     // …but both sides stay pinned paused: video owns playback until the overlay closes.
     assert!(app.playback.paused);
     assert!(app.video.paused_audio);
-    assert!(cmds.iter().flat_map(Cmd::player_commands).any(|c| matches!(
-        c,
-        PlayerCmd::SetProperty { name, value }
-            if name == "pause" && value == &serde_json::Value::Bool(true)
-    )));
+    let pauses: Vec<bool> = cmds
+        .iter()
+        .flat_map(Cmd::player_commands)
+        .filter_map(|command| match command {
+            PlayerCmd::SetProperty { name, value } if name == "pause" => value.as_bool(),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        pauses,
+        vec![false, true],
+        "Load unpause must land before the overlay re-pauses audio"
+    );
     // The same overlay window is asked to show the next track's video.
     assert!(cmds.iter().any(|c| matches!(
         c,
