@@ -62,11 +62,6 @@ fn inherit_owner_file_generation(state: &mut DispatchState, published: u64) {
     state.issued_file_generation = published;
 }
 
-#[cfg(test)]
-fn reserve_file_generation(state: &mut DispatchState) -> u64 {
-    reserve_published_file_generation(state, 0)
-}
-
 fn reserve_published_file_generation(state: &mut DispatchState, published: u64) -> u64 {
     let local = state
         .admitted_file_generation
