@@ -1056,6 +1056,47 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn retire_extra_keeps_playing_extra_lead_until_next_cut() {
+        let mut h = harness();
+        h.conductor.set_extra_is_lead(true);
+        h.conductor.extra_has_file = true;
+        assert!(h.conductor.handle_command(PlayerCmd::RetireExtra).await);
+        assert!(
+            h.conductor.extra_is_lead,
+            "Off after a completed overlap must keep extra as lead"
+        );
+        assert!(
+            h.gate.extra_is_lead.load(Ordering::Acquire),
+            "event gate must keep extra as lead so TimePos still flows"
+        );
+        assert!(
+            h.conductor.extra.is_some(),
+            "Off must not drop the deck that still owns the current file"
+        );
+        let extra = take_cmds(&mut h.extra_rx);
+        assert!(
+            extra.iter().all(|cmd| !matches!(cmd, PlayerCmd::Stop)),
+            "Off mid-track must not Stop the extra lead"
+        );
+        assert!(take_cmds(&mut h.primary_rx).is_empty());
+
+        assert!(h.conductor.handle_command(cut_load("/music/c.flac")).await);
+        assert!(!h.conductor.extra_is_lead);
+        let extra = take_cmds(&mut h.extra_rx);
+        assert!(
+            extra.iter().any(|cmd| matches!(cmd, PlayerCmd::Stop)),
+            "next Cut stops the retired extra lead"
+        );
+        let primary = take_cmds(&mut h.primary_rx);
+        assert!(
+            primary
+                .iter()
+                .any(|cmd| load_url(cmd) == Some("/music/c.flac") && load_is_cut(cmd)),
+            "Off then next Cut must play on primary"
+        );
+    }
+
+    #[tokio::test]
     async fn retire_extra_then_cut_plays_on_primary() {
         let mut h = harness();
         h.conductor.set_extra_is_lead(true);
