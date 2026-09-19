@@ -113,6 +113,7 @@ pub enum PlayerCommit {
     Track(Box<TrackTransitionPlan>),
     VideoOpen(Box<VideoOpenPlan>),
     VideoFinish(Box<VideoFinishPlan>),
+    RetireExtra,
 }
 
 impl PlayerCommit {
@@ -144,7 +145,8 @@ impl PlayerCommit {
             | Self::Seek { .. }
             | Self::Speed { .. }
             | Self::EqPreset { .. }
-            | Self::Normalize { .. } => true,
+            | Self::Normalize { .. }
+            | Self::RetireExtra => true,
         }
     }
 }
@@ -349,6 +351,7 @@ impl App {
                 self.supersede_source_recovery();
                 return self.commit_video_finish(*plan);
             }
+            PlayerCommit::RetireExtra => {}
         }
         self.dirty = true;
         Vec::new()
