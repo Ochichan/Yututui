@@ -12,7 +12,8 @@ impl App {
     }
 
     fn nudge_local_crossfade(&mut self, steps: i8) -> Vec<Cmd> {
-        let next = self.audio.local_crossfade.nudge(steps);
+        let previous = self.audio.local_crossfade;
+        let next = previous.nudge(steps);
         self.audio.local_crossfade = next;
         self.config.local_crossfade_secs = Some(next.as_secs_f64());
         self.status.kind = StatusKind::Info;
@@ -26,9 +27,18 @@ impl App {
             next.label()
         );
         self.dirty = true;
-        vec![Cmd::Persist(PersistCmd::Config(Box::new(
+        let mut cmds = Vec::new();
+        if !previous.is_off() && next.is_off() {
+            cmds.extend(self.player_intent(
+                "retire_extra",
+                PlayerCmd::RetireExtra,
+                PlayerCommit::RetireExtra,
+            ));
+        }
+        cmds.push(Cmd::Persist(PersistCmd::Config(Box::new(
             self.config.clone(),
-        )))]
+        ))));
+        cmds
     }
 
     pub fn crossfade_chip(&self) -> Option<String> {

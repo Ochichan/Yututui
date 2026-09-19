@@ -1038,6 +1038,9 @@ async fn dispatch_command(
                 Some(tracked.acknowledgement),
             )
         }
+        PlayerCmd::RetireExtra => {
+            unreachable!("RetireExtra is conductor-local")
+        }
     };
     if let Some(operation) = terminal_operation {
         remember_pending_terminal(

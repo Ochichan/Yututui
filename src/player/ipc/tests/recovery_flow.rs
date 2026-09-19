@@ -94,7 +94,7 @@ async fn superseding_seek_during_recovery_validation_keeps_current_generation_di
             paused: false,
             reason: crate::player::long_form_seek::CacheReason::DisableFailed,
         });
-    let candidate = reserve_file_generation(&mut state);
+    let candidate = reserve_published_file_generation(&mut state, 0);
     assert_eq!(candidate, 8);
     assert_eq!(*generation_rx.borrow(), candidate);
     assert_eq!(state.issued_file_generation, 7);
@@ -171,7 +171,7 @@ async fn emergency_recovery_validation_retains_load_and_force_ram_only_after_use
         playback_ready_generation: None,
         ..DispatchState::default()
     };
-    let candidate = reserve_file_generation(&mut state);
+    let candidate = reserve_published_file_generation(&mut state, 0);
     let task = tokio::spawn(async {
         std::future::pending::<()>().await;
         never_validated()
@@ -470,37 +470,7 @@ async fn rejected_load_commits_exact_generation_stop_before_newer_load() {
     assert_eq!(state.issued_file_generation, 8);
     assert_eq!(state.admitted_file_generation, 8);
     assert_eq!(state.active_file_generation, None);
-    assert_eq!(reserve_file_generation(&mut state), 9);
-}
-
-#[test]
-fn actor_fifo_reservations_match_two_queued_load_admissions() {
-    let mut state = DispatchState::default();
-    let load_b = reserve_file_generation(&mut state);
-    let load_c = reserve_file_generation(&mut state);
-    assert_eq!((load_b, load_c), (1, 2));
-    assert_eq!(state.admitted_file_generation, 2);
-    assert_eq!(state.issued_file_generation, 0);
-}
-
-#[test]
-fn actor_fifo_reservations_match_stop_then_load_batch() {
-    let mut state = DispatchState::default();
-    let stop = reserve_file_generation(&mut state);
-    state.issued_file_generation = stop;
-    let load = reserve_file_generation(&mut state);
-    assert_eq!((stop, load), (1, 2));
-    assert_eq!(state.issued_file_generation, 1);
-    assert_eq!(state.admitted_file_generation, 2);
-}
-
-#[test]
-fn extra_deck_inherits_owner_generation_then_wrapping_adds() {
-    let mut state = DispatchState::default();
-    inherit_owner_file_generation(&mut state, 5);
-    assert_eq!(state.admitted_file_generation, 5);
-    assert_eq!(state.issued_file_generation, 5);
-    assert_eq!(reserve_file_generation(&mut state), 6);
+    assert_eq!(reserve_published_file_generation(&mut state, 0), 9);
 }
 
 #[test]

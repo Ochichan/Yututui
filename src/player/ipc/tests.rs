@@ -44,6 +44,7 @@ fn cache_runtime_for_test(requested: crate::config::LongFormSeekOptimization) ->
     )
 }
 
+mod generation_reserve;
 mod recovery_flow;
 
 fn recv_file_event(rx: &mut tokio::sync::mpsc::Receiver<PlayerEvent>) -> (u64, PlayerEvent) {

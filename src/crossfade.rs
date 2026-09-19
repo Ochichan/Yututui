@@ -83,6 +83,11 @@ impl LocalCrossfade {
 pub struct FadeLength(NonZeroU8);
 
 impl FadeLength {
+    #[cfg(test)]
+    pub(crate) fn from_tenths(tenths: u8) -> Option<Self> {
+        CrossfadeSecs::from_tenths(tenths).map(|secs| Self(secs.0))
+    }
+
     pub fn as_secs_f64(self) -> f64 {
         f64::from(self.0.get()) / 10.0
     }

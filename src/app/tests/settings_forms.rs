@@ -479,6 +479,13 @@ fn settings_reset_all_turns_local_crossfade_off() {
     );
 
     let mut cmds = app.update(Msg::Key(key(KeyCode::Esc)));
+    assert!(
+        cmds.iter().any(|cmd| {
+            cmd.player_commands()
+                .any(|command| matches!(command, PlayerCmd::RetireExtra))
+        }),
+        "saving Off retires the extra deck"
+    );
     admit_player_transition(&mut app, &mut cmds);
     assert_eq!(
         app.audio.local_crossfade,

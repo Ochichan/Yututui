@@ -217,6 +217,8 @@ pub enum PlayerCmd {
     /// Set a property whose exact mpv reply is a resource-lifetime boundary. The recorder uses
     /// this only for the final `stream-record` command which closes the previous source.
     TrackedProperty(TrackedProperty),
+    /// Tear the standby deck down and restore single-deck lead. Conductor-local.
+    RetireExtra,
 }
 
 #[derive(Clone)]
@@ -278,6 +280,7 @@ impl PlayerCmd {
                 | Self::RefreshAudioDevices
                 | Self::SelectAudioDevice { .. }
                 | Self::TrackedProperty(_)
+                | Self::RetireExtra
         )
     }
 
@@ -1138,7 +1141,8 @@ where
     let expected_media_generation = Arc::new(AtomicU64::new(0));
     let (file_generation_tx, file_generation_rx) = tokio::sync::watch::channel(0);
     let route_revocations = Arc::new(RouteRevocationRegistry::default());
-    let gate = decks::EventGate::new(Arc::clone(&admitted_file_generation));
+    let (proof_tx, proof_rx) = tokio::sync::mpsc::channel(8);
+    let gate = decks::EventGate::with_proof(Arc::clone(&admitted_file_generation), Some(proof_tx));
     let primary_sink = gate.sink(false, Arc::clone(&emit));
     tokio::spawn(ipc::run_actor(ipc::ActorInput {
         conn,
@@ -1159,6 +1163,7 @@ where
         gate,
         intentional_close: Arc::clone(&intentional_close),
         file_generation_rx,
+        proof_rx,
     }));
 
     Ok((
