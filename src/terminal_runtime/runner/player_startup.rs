@@ -8,7 +8,9 @@ use crate::runtime::RuntimeEvent;
 use crate::{config, player, runtime};
 
 type PlayerReadyResult = Result<(PlayerHandle, player::Mpv), String>;
-const PLAYER_START_TIMEOUT: Duration = Duration::from_secs(5);
+const PLAYER_START_TIMEOUT: Duration = Duration::from_secs(
+    player::guardian::STARTUP_TIMEOUT.as_secs() + player::ipc::MPV_IPC_CONNECT_TIMEOUT.as_secs(),
+);
 
 pub(super) struct PlayerStartup {
     pub(super) ready_rx: Option<tokio::sync::oneshot::Receiver<PlayerReadyResult>>,
@@ -122,4 +124,21 @@ pub(super) fn spawn_audio_player(
             )),
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::player::{guardian, ipc};
+
+    #[test]
+    fn outer_player_start_timeout_covers_guardian_and_ipc_connect() {
+        assert!(
+            PLAYER_START_TIMEOUT >= guardian::STARTUP_TIMEOUT + ipc::MPV_IPC_CONNECT_TIMEOUT,
+            "PLAYER_START_TIMEOUT ({:?}) is shorter than guardian::STARTUP_TIMEOUT ({:?}) + ipc::MPV_IPC_CONNECT_TIMEOUT ({:?})",
+            PLAYER_START_TIMEOUT,
+            guardian::STARTUP_TIMEOUT,
+            ipc::MPV_IPC_CONNECT_TIMEOUT
+        );
+    }
 }

@@ -5,6 +5,39 @@ fn player_batch(cmds: &[Cmd]) -> Vec<&PlayerCmd> {
     cmds.iter().flat_map(Cmd::player_commands).collect()
 }
 
+fn is_pause(command: &PlayerCmd, paused: bool) -> bool {
+    matches!(
+        command,
+        PlayerCmd::SetProperty { name, value }
+            if name == "pause" && *value == serde_json::Value::Bool(paused)
+    )
+}
+
+fn assert_load_then_unpause(cmds: &[Cmd]) {
+    let batch = player_batch(cmds);
+    let load_at = batch
+        .iter()
+        .position(|command| matches!(command, PlayerCmd::Load(_)))
+        .expect("Load");
+    let unpause_at = batch
+        .iter()
+        .position(|command| is_pause(command, false))
+        .expect("pause=false after Load");
+    assert!(
+        unpause_at > load_at,
+        "unpause must follow Load (load_at={load_at}, unpause_at={unpause_at})"
+    );
+    if let Some(af_at) = batch
+        .iter()
+        .position(|command| matches!(command, PlayerCmd::SetAudioFilter(_)))
+    {
+        assert!(
+            unpause_at > af_at,
+            "unpause must follow AF (af_at={af_at}, unpause_at={unpause_at})"
+        );
+    }
+}
+
 fn take_player_intent(cmds: Vec<Cmd>) -> PlayerIntent {
     cmds.into_iter()
         .find_map(|cmd| match cmd {
@@ -227,12 +260,13 @@ fn recorder_clear_load_and_filter_share_one_ordered_batch() {
     let cmds = app.on_player_action(Action::NextTrack);
     let batch = player_batch(&cmds);
 
-    assert_eq!(batch.len(), 3);
+    assert_eq!(batch.len(), 4);
     assert!(batch[0].property().is_some_and(|(name, value)| {
         name == "stream-record" && value == &serde_json::Value::from("")
     }));
     assert!(matches!(batch[1], PlayerCmd::Load(_)));
     assert!(matches!(batch[2], PlayerCmd::SetAudioFilter(_)));
+    assert!(is_pause(batch[3], false));
     assert!(
         app.recorder.current.is_some(),
         "recorder state waits for whole-batch admission"
@@ -253,6 +287,27 @@ fn recorder_clear_load_and_filter_share_one_ordered_batch() {
             .all(|cmd| cmd.player_commands().next().is_none()),
         "required player commands must not be resent after commit"
     );
+}
+
+#[test]
+fn stream_load_arm_unpauses_after_load() {
+    let mut app = app_playing(3, 0);
+    app.playback.paused = true;
+    let cmds = app.on_player_action(Action::NextTrack);
+    assert_loads_video(&cmds, "id1");
+    assert_load_then_unpause(&cmds);
+}
+
+#[test]
+fn local_load_arm_unpauses_after_load() {
+    let (mut app, paths) = local_pair_playing();
+    app.playback.paused = true;
+    let cmds = app.on_player_action(Action::NextTrack);
+    assert!(load_url(&cmds).is_some());
+    assert_load_then_unpause(&cmds);
+    for path in paths {
+        let _ = std::fs::remove_file(path);
+    }
 }
 
 #[test]

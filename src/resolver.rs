@@ -547,19 +547,44 @@ async fn resolve_url_with_program(
         tracing::warn!(%error, "refusing to resolve unsafe watch URL");
     })
     .ok()?;
-    if let Some(stream_url) =
-        resolve_url_with_format(program, &watch_url, cookies, "bestaudio", "audio-only").await
+    let fallback = "bestaudio/best[acodec!=none]/best";
+    if cookies.is_none()
+        && let Some(stream_url) = resolve_url_with_format(
+            program,
+            &watch_url,
+            cookies,
+            "bestaudio",
+            "audio-only",
+            false,
+        )
+        .await
     {
         return Some(stream_url);
     }
-    resolve_url_with_format(
+    if let Some(stream_url) = resolve_url_with_format(
         program,
         &watch_url,
         cookies,
-        "bestaudio/best[acodec!=none]/best",
+        fallback,
         "audio-containing fallback",
+        cookies.is_some(),
     )
     .await
+    {
+        return Some(stream_url);
+    }
+    if cookies.is_some() {
+        return resolve_url_with_format(
+            program,
+            &watch_url,
+            cookies,
+            fallback,
+            "audio-containing fallback without web_safari",
+            false,
+        )
+        .await;
+    }
+    None
 }
 
 async fn resolve_url_with_format(
@@ -568,6 +593,7 @@ async fn resolve_url_with_format(
     cookies: Option<&std::path::Path>,
     format_selector: &str,
     stage: &str,
+    pin_stream_client: bool,
 ) -> Option<String> {
     let mut cmd = crate::tools::ytdlp_command_for(program);
     cmd.args(["-f", format_selector, "-g", "--no-playlist"])
@@ -575,7 +601,7 @@ async fn resolve_url_with_format(
     crate::tools::append_ytdlp_cookie_args(&mut cmd, cookies);
     // Match mpv's cookie-auth stream client so prefetched CDN URLs are not the
     // TVHTML5 URLs that ffmpeg then rejects with HTTP 403.
-    if cookies.is_some() {
+    if pin_stream_client {
         crate::tools::append_ytdlp_youtube_stream_extractor_args(&mut cmd);
     }
     cmd.stdin(Stdio::null());
@@ -1085,6 +1111,86 @@ mod tests {
         let args = fs::read_to_string(&args_log).unwrap();
         assert!(args.contains("-f bestaudio -g --no-playlist"));
         assert!(args.contains("-f bestaudio/best[acodec!=none]/best -g --no-playlist"));
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn cookie_resolve_skips_exclusive_bestaudio_and_pins_web_safari() {
+        let dir = temp_dir();
+        fs::create_dir_all(&dir).unwrap();
+        let args_log = dir.join("args.txt");
+        let cookies = dir.join("cookies.txt");
+        fs::write(&cookies, "# Netscape HTTP Cookie File\n").unwrap();
+        let fake = write_executable(
+            &dir,
+            "yt-dlp",
+            &format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\nprintf '%s\\n' 'https://cdn.example/cookie.m4a'\n",
+                args_log.display()
+            ),
+        );
+
+        let resolved = resolve_url_with_program(
+            fake.to_str().unwrap(),
+            "https://music.youtube.com/watch?v=abc123",
+            Some(cookies.as_path()),
+        )
+        .await;
+
+        assert_eq!(resolved.as_deref(), Some("https://cdn.example/cookie.m4a"));
+        let args = fs::read_to_string(&args_log).unwrap();
+        assert!(
+            !args
+                .lines()
+                .any(|line| line.contains("-f bestaudio -g --no-playlist")),
+            "cookie/web_safari resolve must not use exclusive bestaudio: {args}"
+        );
+        assert!(args.contains("-f bestaudio/best[acodec!=none]/best -g --no-playlist"));
+        assert!(
+            args.contains("player_client=web_safari"),
+            "cookie resolve still pins web_safari on the fallback selector: {args}"
+        );
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn cookie_resolve_retries_fallback_without_web_safari() {
+        let dir = temp_dir();
+        fs::create_dir_all(&dir).unwrap();
+        let args_log = dir.join("args.txt");
+        let cookies = dir.join("cookies.txt");
+        fs::write(&cookies, "# Netscape HTTP Cookie File\n").unwrap();
+        let fake = write_executable(
+            &dir,
+            "yt-dlp",
+            &format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\ncase \"$*\" in\n  *player_client=web_safari*) exit 1 ;;\n  *'bestaudio/best[acodec!=none]/best'*) printf '%s\\n' 'https://cdn.example/no-safari.m4a' ;;\n  *) exit 1 ;;\nesac\n",
+                args_log.display()
+            ),
+        );
+
+        let resolved = resolve_url_with_program(
+            fake.to_str().unwrap(),
+            "https://music.youtube.com/watch?v=abc123",
+            Some(cookies.as_path()),
+        )
+        .await;
+
+        assert_eq!(
+            resolved.as_deref(),
+            Some("https://cdn.example/no-safari.m4a")
+        );
+        let args = fs::read_to_string(&args_log).unwrap();
+        assert!(
+            args.contains("player_client=web_safari"),
+            "first cookie fallback still tries web_safari: {args}"
+        );
+        assert!(
+            args.lines()
+                .any(|line| line.contains("-f bestaudio/best[acodec!=none]/best")
+                    && !line.contains("player_client=web_safari")),
+            "cookie fallback must retry once without web_safari: {args}"
+        );
         let _ = fs::remove_dir_all(dir);
     }
 
