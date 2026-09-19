@@ -174,7 +174,6 @@ fn failed_layout_respawn_reuses_retryable_finish_admission() {
 #[test]
 fn video_continue_advances_queue_paused_and_loads_next_video() {
     let mut app = app_playing(3, 0);
-    // The overlay paused the audio when it opened.
     app.playback.paused = true;
     app.video.paused_audio = true;
 
@@ -182,9 +181,7 @@ fn video_continue_advances_queue_paused_and_loads_next_video() {
     admit_player_transition(&mut app, &mut cmds);
 
     assert_eq!(current(&app), "id1");
-    // The next track loads into the audio engine (position tracking)…
     assert_loads_video(&cmds, "id1");
-    // …but both sides stay pinned paused: video owns playback until the overlay closes.
     assert!(app.playback.paused);
     assert!(app.video.paused_audio);
     let pauses: Vec<bool> = cmds
@@ -200,7 +197,6 @@ fn video_continue_advances_queue_paused_and_loads_next_video() {
         vec![false, true],
         "Load unpause must land before the overlay re-pauses audio"
     );
-    // The same overlay window is asked to show the next track's video.
     assert!(cmds.iter().any(|c| matches!(
         c,
         Cmd::VideoLoad(url) if url == "https://www.youtube.com/watch?v=id1"

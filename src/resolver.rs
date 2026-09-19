@@ -548,8 +548,6 @@ async fn resolve_url_with_program(
     })
     .ok()?;
     let fallback = "bestaudio/best[acodec!=none]/best";
-    // Cookie auth pins web_safari. That client often has no audio-only itag, so
-    // exclusive `bestaudio` fails with "Requested format is not available".
     if cookies.is_none()
         && let Some(stream_url) = resolve_url_with_format(
             program,

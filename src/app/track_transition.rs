@@ -474,8 +474,6 @@ impl App {
                 if let Some(af) = self.track_audio_filter() {
                     commands.push(PlayerCmd::SetAudioFilter(af));
                 }
-                // mpv's pause property survives loadfile. Commit sets UI playing, so the
-                // same batch must unpause. Overlay follow-up may still append pause=true.
                 commands.push(PlayerCmd::SetProperty {
                     name: "pause".to_owned(),
                     value: serde_json::Value::Bool(false),
