@@ -456,16 +456,19 @@ impl Conductor {
             "retire_extra"
         );
         self.abort_current_fade().await;
-        self.pending_overlap.take();
-        self.gate.clear_pending();
+        self.cancel_pending_overlap().await;
         self.gate.fading.store(false, Ordering::Release);
-        self.set_extra_is_lead(false);
-        self.extra_has_file = false;
         if let Some(task) = self.warming.take() {
             task.abort();
         }
-        if let Some(extra) = self.extra.take() {
-            let _ = forward(&extra.tx, PlayerCmd::Stop).await;
+        if self.extra_owns_playback() {
+            self.extra_has_file = false;
+        } else {
+            self.set_extra_is_lead(false);
+            self.extra_has_file = false;
+            if let Some(extra) = self.extra.take() {
+                let _ = forward(&extra.tx, PlayerCmd::Stop).await;
+            }
         }
         tracing::info!(
             extra_is_lead = self.extra_is_lead,
@@ -475,6 +478,10 @@ impl Conductor {
             fading = self.fade.is_some(),
             "deck_state"
         );
+    }
+
+    fn extra_owns_playback(&self) -> bool {
+        self.extra_is_lead && self.extra.is_some()
     }
 
     fn set_extra_is_lead(&mut self, extra_is_lead: bool) {
@@ -1056,6 +1063,47 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn retire_extra_keeps_playing_extra_lead_until_next_cut() {
+        let mut h = harness();
+        h.conductor.set_extra_is_lead(true);
+        h.conductor.extra_has_file = true;
+        assert!(h.conductor.handle_command(PlayerCmd::RetireExtra).await);
+        assert!(
+            h.conductor.extra_is_lead,
+            "Off after a completed overlap must keep extra as lead"
+        );
+        assert!(
+            h.gate.extra_is_lead.load(Ordering::Acquire),
+            "event gate must keep extra as lead so TimePos still flows"
+        );
+        assert!(
+            h.conductor.extra.is_some(),
+            "Off must not drop the deck that still owns the current file"
+        );
+        let extra = take_cmds(&mut h.extra_rx);
+        assert!(
+            extra.iter().all(|cmd| !matches!(cmd, PlayerCmd::Stop)),
+            "Off mid-track must not Stop the extra lead"
+        );
+        assert!(take_cmds(&mut h.primary_rx).is_empty());
+
+        assert!(h.conductor.handle_command(cut_load("/music/c.flac")).await);
+        assert!(!h.conductor.extra_is_lead);
+        let extra = take_cmds(&mut h.extra_rx);
+        assert!(
+            extra.iter().any(|cmd| matches!(cmd, PlayerCmd::Stop)),
+            "next Cut stops the retired extra lead"
+        );
+        let primary = take_cmds(&mut h.primary_rx);
+        assert!(
+            primary
+                .iter()
+                .any(|cmd| load_url(cmd) == Some("/music/c.flac") && load_is_cut(cmd)),
+            "Off then next Cut must play on primary"
+        );
+    }
+
+    #[tokio::test]
     async fn retire_extra_then_cut_plays_on_primary() {
         let mut h = harness();
         h.conductor.set_extra_is_lead(true);
@@ -1069,21 +1117,30 @@ mod tests {
             deadline: Instant::now() + OVERLAP_PROOF_TIMEOUT,
         });
         assert!(h.conductor.handle_command(PlayerCmd::RetireExtra).await);
-        assert!(!h.conductor.extra_is_lead);
-        assert!(!h.gate.extra_is_lead.load(Ordering::Acquire));
+        assert!(h.conductor.extra_is_lead);
+        assert!(h.gate.extra_is_lead.load(Ordering::Acquire));
         assert!(!h.conductor.extra_has_file);
         assert!(h.conductor.pending_overlap.is_none());
-        assert!(h.conductor.extra.is_none());
+        assert!(h.conductor.extra.is_some());
         assert!(h.conductor.warming.is_none());
         let extra = take_cmds(&mut h.extra_rx);
-        assert!(extra.iter().any(|cmd| matches!(cmd, PlayerCmd::Stop)));
+        assert!(
+            extra.iter().all(|cmd| !matches!(cmd, PlayerCmd::Stop)),
+            "Off must not Stop the extra lead while it still owns the current file"
+        );
+        let primary = take_cmds(&mut h.primary_rx);
+        assert!(
+            primary.iter().any(|cmd| matches!(cmd, PlayerCmd::Stop)),
+            "Off cancels the pending incoming load on primary"
+        );
         assert_eq!(h.gate.pending_generation.load(Ordering::Acquire), 0);
         assert!(!h.gate.fading.load(Ordering::Acquire));
 
         h.conductor.warming = Some(tokio::spawn(async { Err(OverlapBlocker::Mpv) }));
         assert!(h.conductor.handle_command(cut_load("/music/c.flac")).await);
         assert!(!h.conductor.extra_is_lead);
-        assert!(take_cmds(&mut h.extra_rx).is_empty());
+        let extra = take_cmds(&mut h.extra_rx);
+        assert!(extra.iter().any(|cmd| matches!(cmd, PlayerCmd::Stop)));
         let primary = take_cmds(&mut h.primary_rx);
         assert!(
             primary
