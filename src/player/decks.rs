@@ -1483,7 +1483,10 @@ mod tests {
             PlayerEvent::file_scoped(4, PlayerEvent::TimePos(0.3)),
             &sink,
         );
-        assert!(matches!(proof_rx.try_recv(), Ok(ExtraProof::Ready)));
+        assert!(matches!(
+            proof_rx.try_recv(),
+            Ok(ExtraProof::Ready { epoch: _ })
+        ));
         assert!(matches!(
             take(&collected).as_slice(),
             [PlayerEvent::FileScoped {
@@ -1512,7 +1515,10 @@ mod tests {
             PlayerEvent::Error("incoming failed".to_owned()),
             &sink,
         );
-        assert!(matches!(proof_rx.try_recv(), Ok(ExtraProof::Failed)));
+        assert!(matches!(
+            proof_rx.try_recv(),
+            Ok(ExtraProof::Failed { epoch: _ })
+        ));
         assert!(
             take(&collected).is_empty(),
             "deck-local terminal events must be converted into fallback proof, not leaked"
