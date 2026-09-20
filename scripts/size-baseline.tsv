@@ -1,5 +1,6 @@
 1733	src/app/local.rs
 1628	src/ui/views/local_find.rs
+1596	src/player/decks.rs
 1357	src/app/local_import.rs
 1576	src/daemon/engine.rs
 1573	src/ui/anim/canvas.rs

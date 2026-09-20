@@ -152,12 +152,7 @@ impl EventGate {
         }
         if self.pending_generation.load(Ordering::Acquire) != 0 {
             if self.admit_pending_incoming(from_extra, &event) {
-                if from_extra {
-                    let generation = self.admitted.load(Ordering::Acquire);
-                    sink(rewrite_to_admitted_generation(event, generation));
-                } else {
-                    sink(event);
-                }
+                sink(event);
             }
             return;
         }
@@ -182,7 +177,14 @@ impl EventGate {
         }
         matches!(
             event.unscoped(),
-            PlayerEvent::TimePos(_) | PlayerEvent::Duration(Some(_)) | PlayerEvent::Paused(_)
+            PlayerEvent::TimePos(_)
+                | PlayerEvent::Duration(_)
+                | PlayerEvent::Paused(_)
+                | PlayerEvent::Metadata(_)
+                | PlayerEvent::Chapters(_)
+                | PlayerEvent::CacheTime(_)
+                | PlayerEvent::AudioCodec(_)
+                | PlayerEvent::FileFormat(_)
         )
     }
 }
@@ -805,7 +807,7 @@ async fn forward(tx: &Sender<PlayerCmd>, cmd: PlayerCmd) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::player::long_form_seek::CacheReason;
+    use crate::player::{Chapter, long_form_seek::CacheReason};
     use std::sync::Mutex;
 
     fn collecting_sink() -> (EventSink, Arc<Mutex<Vec<PlayerEvent>>>) {
@@ -1275,6 +1277,128 @@ mod tests {
             proof_rx.try_recv(),
             Ok(ExtraProof::TransportClosed { epoch }) if epoch == second
         ));
+    }
+
+    #[test]
+    fn event_gate_admits_pending_incoming_file_facts() {
+        let gate = EventGate::new(Arc::new(AtomicU64::new(4)));
+        gate.arm_pending(true, 4);
+        let (sink, collected) = collecting_sink();
+        let chapters = vec![Chapter {
+            title: "intro".to_owned(),
+            start_secs: 0.0,
+        }];
+
+        gate.emit(
+            true,
+            PlayerEvent::file_scoped(4, PlayerEvent::Metadata(serde_json::json!({"title": "b"}))),
+            &sink,
+        );
+        gate.emit(
+            true,
+            PlayerEvent::file_scoped(4, PlayerEvent::Chapters(chapters.clone())),
+            &sink,
+        );
+        gate.emit(
+            true,
+            PlayerEvent::file_scoped(4, PlayerEvent::CacheTime(Some(1.5))),
+            &sink,
+        );
+        gate.emit(
+            true,
+            PlayerEvent::file_scoped(4, PlayerEvent::AudioCodec(Some("flac".to_owned()))),
+            &sink,
+        );
+        gate.emit(
+            true,
+            PlayerEvent::file_scoped(4, PlayerEvent::FileFormat(Some("flac".to_owned()))),
+            &sink,
+        );
+        gate.emit(
+            true,
+            PlayerEvent::file_scoped(4, PlayerEvent::Duration(None)),
+            &sink,
+        );
+
+        let events = take(&collected);
+        assert!(
+            events.iter().any(|event| matches!(
+                event,
+                PlayerEvent::FileScoped {
+                    file_generation: 4,
+                    event
+                } if matches!(event.as_ref(), PlayerEvent::Metadata(value) if value["title"] == "b")
+            )),
+            "pending overlap must surface incoming Metadata before lead flip"
+        );
+        assert!(events.iter().any(|event| matches!(
+            event,
+            PlayerEvent::FileScoped {
+                file_generation: 4,
+                event
+            } if matches!(event.as_ref(), PlayerEvent::Chapters(got) if got == &chapters)
+        )));
+        assert!(events.iter().any(|event| matches!(
+            event,
+            PlayerEvent::FileScoped {
+                file_generation: 4,
+                event
+            } if matches!(event.as_ref(), PlayerEvent::CacheTime(Some(t)) if *t == 1.5)
+        )));
+        assert!(events.iter().any(|event| matches!(
+            event,
+            PlayerEvent::FileScoped {
+                file_generation: 4,
+                event
+            } if matches!(event.as_ref(), PlayerEvent::AudioCodec(Some(codec)) if codec == "flac")
+        )));
+        assert!(events.iter().any(|event| matches!(
+            event,
+            PlayerEvent::FileScoped {
+                file_generation: 4,
+                event
+            } if matches!(event.as_ref(), PlayerEvent::FileFormat(Some(format)) if format == "flac")
+        )));
+        assert!(events.iter().any(|event| matches!(
+            event,
+            PlayerEvent::FileScoped {
+                file_generation: 4,
+                event
+            } if matches!(event.as_ref(), PlayerEvent::Duration(None))
+        )));
+    }
+
+    #[test]
+    fn pending_extra_facts_keep_verified_generation_when_admitted_moves() {
+        let admitted = Arc::new(AtomicU64::new(4));
+        let gate = EventGate::new(Arc::clone(&admitted));
+        gate.arm_pending(true, 4);
+        admitted.store(9, Ordering::Release);
+        let (sink, collected) = collecting_sink();
+
+        gate.emit(
+            true,
+            PlayerEvent::file_scoped(4, PlayerEvent::Metadata(serde_json::json!({"title": "b"}))),
+            &sink,
+        );
+        gate.emit(
+            true,
+            PlayerEvent::file_scoped(4, PlayerEvent::Chapters(Vec::new())),
+            &sink,
+        );
+
+        let events = take(&collected);
+        assert!(
+            events.iter().all(|event| matches!(
+                event,
+                PlayerEvent::FileScoped {
+                    file_generation: 4,
+                    ..
+                }
+            )),
+            "pending extra facts must keep the verified generation, not the newer admitted counter"
+        );
+        assert_eq!(events.len(), 2);
     }
 
     #[test]
