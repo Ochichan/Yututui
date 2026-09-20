@@ -88,13 +88,29 @@ impl EventGate {
         self.pending_epoch.store(0, Ordering::Release);
     }
 
-    fn observe_pending(&self, from_extra: bool, event: &PlayerEvent) -> Option<ExtraProof> {
-        let generation = self.pending_generation.load(Ordering::Acquire);
-        let epoch = self.pending_epoch.load(Ordering::Acquire);
-        if generation == 0 || epoch == 0 {
-            return None;
+    fn pending_identity(&self) -> Option<(u64, u64, bool)> {
+        loop {
+            let epoch = self.pending_epoch.load(Ordering::Acquire);
+            if epoch == 0 {
+                return None;
+            }
+            let generation = self.pending_generation.load(Ordering::Acquire);
+            let incoming = self.pending_incoming_extra.load(Ordering::Acquire);
+            if self.pending_epoch.load(Ordering::Acquire) != epoch {
+                continue;
+            }
+            if generation == 0 {
+                return None;
+            }
+            return Some((generation, epoch, incoming));
         }
-        if from_extra != self.pending_incoming_extra.load(Ordering::Acquire) {
+    }
+
+    fn observe_pending(&self, from_extra: bool, event: &PlayerEvent) -> Option<ExtraProof> {
+        let Some((generation, epoch, incoming)) = self.pending_identity() else {
+            return None;
+        };
+        if from_extra != incoming {
             return None;
         }
         match event.unscoped() {
@@ -151,11 +167,10 @@ impl EventGate {
     }
 
     fn admit_pending_incoming(&self, from_extra: bool, event: &PlayerEvent) -> bool {
-        let generation = self.pending_generation.load(Ordering::Acquire);
-        if generation == 0
-            || from_extra != self.pending_incoming_extra.load(Ordering::Acquire)
-            || event.file_generation() != Some(generation)
-        {
+        let Some((generation, _, incoming)) = self.pending_identity() else {
+            return false;
+        };
+        if from_extra != incoming || event.file_generation() != Some(generation) {
             return false;
         }
         matches!(
@@ -1104,6 +1119,34 @@ mod tests {
         assert!(matches!(
             proof_rx.try_recv(),
             Ok(ExtraProof::Ready { epoch: 1 })
+        ));
+    }
+
+    #[test]
+    fn observe_pending_uses_one_generation_epoch_snapshot() {
+        let (proof_tx, mut proof_rx) = tokio::sync::mpsc::channel(8);
+        let gate = EventGate::with_proof(Arc::new(AtomicU64::new(4)), Some(proof_tx));
+        let first = gate.arm_pending(true, 4);
+        let second = gate.arm_pending(true, 9);
+        assert_ne!(first, second);
+        let (sink, _) = collecting_sink();
+        gate.emit(
+            true,
+            PlayerEvent::file_scoped(4, PlayerEvent::TimePos(0.1)),
+            &sink,
+        );
+        assert!(
+            proof_rx.try_recv().is_err(),
+            "old-generation TimePos must not stamp Ready with the replacement epoch"
+        );
+        gate.emit(
+            true,
+            PlayerEvent::file_scoped(9, PlayerEvent::TimePos(0.1)),
+            &sink,
+        );
+        assert!(matches!(
+            proof_rx.try_recv(),
+            Ok(ExtraProof::Ready { epoch }) if epoch == second
         ));
     }
 
