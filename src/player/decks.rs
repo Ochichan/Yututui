@@ -76,6 +76,7 @@ impl EventGate {
             .next_overlap_epoch
             .fetch_add(1, Ordering::AcqRel)
             .wrapping_add(1);
+        self.pending_epoch.store(0, Ordering::Release);
         self.pending_incoming_extra
             .store(incoming_extra, Ordering::Release);
         self.pending_generation.store(generation, Ordering::Release);
@@ -84,8 +85,8 @@ impl EventGate {
     }
 
     fn clear_pending(&self) {
-        self.pending_generation.store(0, Ordering::Release);
         self.pending_epoch.store(0, Ordering::Release);
+        self.pending_generation.store(0, Ordering::Release);
     }
 
     fn pending_identity(&self) -> Option<(u64, u64, bool)> {
@@ -114,9 +115,14 @@ impl EventGate {
             return None;
         }
         match event.unscoped() {
-            PlayerEvent::Error(_) | PlayerEvent::TransportClosed(_) => {
+            PlayerEvent::Error(_)
+                if event
+                    .file_generation()
+                    .is_none_or(|event_generation| event_generation == generation) =>
+            {
                 Some(ExtraProof::Failed { epoch })
             }
+            PlayerEvent::TransportClosed(_) => Some(ExtraProof::Failed { epoch }),
             PlayerEvent::TimePos(_) | PlayerEvent::Duration(Some(_))
                 if event.file_generation() == Some(generation) =>
             {
@@ -1147,6 +1153,62 @@ mod tests {
         assert!(matches!(
             proof_rx.try_recv(),
             Ok(ExtraProof::Ready { epoch }) if epoch == second
+        ));
+    }
+
+    #[test]
+    fn pending_identity_is_none_while_epoch_is_invalidated() {
+        let (proof_tx, mut proof_rx) = tokio::sync::mpsc::channel(8);
+        let gate = EventGate::with_proof(Arc::new(AtomicU64::new(4)), Some(proof_tx));
+        gate.arm_pending(true, 4);
+        gate.pending_epoch.store(0, Ordering::Release);
+        assert_eq!(gate.pending_generation.load(Ordering::Acquire), 4);
+        let (sink, _) = collecting_sink();
+        gate.emit(
+            true,
+            PlayerEvent::file_scoped(4, PlayerEvent::TimePos(0.1)),
+            &sink,
+        );
+        assert!(
+            proof_rx.try_recv().is_err(),
+            "generation without a published epoch is not a coherent pending snapshot"
+        );
+    }
+
+    #[test]
+    fn observe_pending_does_not_fail_replacement_from_stale_error() {
+        let (proof_tx, mut proof_rx) = tokio::sync::mpsc::channel(8);
+        let gate = EventGate::with_proof(Arc::new(AtomicU64::new(4)), Some(proof_tx));
+        let first = gate.arm_pending(true, 4);
+        let second = gate.arm_pending(true, 9);
+        assert_ne!(first, second);
+        let (sink, _) = collecting_sink();
+        gate.emit(
+            true,
+            PlayerEvent::file_scoped(4, PlayerEvent::Error("stale dest".to_owned())),
+            &sink,
+        );
+        assert!(
+            proof_rx.try_recv().is_err(),
+            "old-generation Error must not stamp Failed with the replacement epoch"
+        );
+        gate.emit(
+            true,
+            PlayerEvent::file_scoped(9, PlayerEvent::Error("incoming dest".to_owned())),
+            &sink,
+        );
+        assert!(matches!(
+            proof_rx.try_recv(),
+            Ok(ExtraProof::Failed { epoch }) if epoch == second
+        ));
+        gate.emit(
+            true,
+            PlayerEvent::TransportClosed("dead extra".to_owned()),
+            &sink,
+        );
+        assert!(matches!(
+            proof_rx.try_recv(),
+            Ok(ExtraProof::Failed { epoch }) if epoch == second
         ));
     }
 
