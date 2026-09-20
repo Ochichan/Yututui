@@ -667,9 +667,10 @@ impl PlayerHandle {
         }
         let admission =
             self.begin_file_admission(cmd.admitted_media_expected().map(|value| (1, value)));
-        let cmd = admission.as_ref().map_or(cmd, |admission| {
-            cmd.with_reserved_file_generation(admission.generation)
-        });
+        let cmd = match admission.as_ref() {
+            Some(admission) => cmd.with_reserved_file_generation(admission.generation),
+            None => cmd,
+        };
         if pending.drainer_running || !pending.cmds.is_empty() {
             return match pending.push(cmd) {
                 Ok(coalesced) => {
