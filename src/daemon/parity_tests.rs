@@ -383,7 +383,11 @@ async fn open_subsonic_load_uses_the_same_typed_destination_and_epoch_in_both_ow
         _ => panic!("daemon OpenSubsonic load"),
     };
 
-    assert_eq!(app_load, engine_load);
+    assert_eq!(app_load.destination(), engine_load.destination());
+    assert_eq!(app_load.source_context(), engine_load.source_context());
+    assert_eq!(app_load.handoff(), engine_load.handoff());
+    // reserved_file_generation is a PlayerHandle ingress stamp. App parity captures the
+    // reducer command before send; the daemon lane receives the stamped command.
     assert_eq!(
         app_load.destination().credentialed_target(),
         Some(
@@ -526,7 +530,11 @@ async fn loaded_transport_loss_has_the_same_restore_trace_and_projection_in_both
         crate::player::PlayerCmd::Load(load) => load,
         _ => panic!("paused daemon recovery must restore Load after player setup"),
     };
-    assert_eq!(app_load, &engine_load);
+    assert_eq!(app_load.destination(), engine_load.destination());
+    assert_eq!(app_load.source_context(), engine_load.source_context());
+    assert_eq!(app_load.handoff(), engine_load.handoff());
+    // reserved_file_generation is a PlayerHandle ingress stamp. App restore traces the
+    // reducer command; the daemon replacement player receives the stamped Load.
     assert!(matches!(
         recv_parity_player_command(&mut replacement_player).await,
         crate::player::PlayerCmd::CyclePause

@@ -91,6 +91,8 @@ pub struct PlaybackLoad {
     destination: crate::playback_target::PlaybackDestination,
     source_context: MediaSourceContext,
     handoff: crate::crossfade::TrackHandoff,
+    /// Set by `PlayerHandle::send` / `send_batch` at admission. Owner reducers leave this
+    /// unset; destination identity is the other fields.
     reserved_file_generation: Option<u64>,
 }
 

@@ -102,7 +102,7 @@ fn finish_load_validation(
     match validated {
         LoadValidationOutcome::Validated { url, route_lease } => {
             let wait_for_cache_reset = prepare_load_replacement(state);
-            Some(PendingLoadBoundary::Validated(ValidatedLoad {
+            Some(PendingLoadBoundary::Validated(Box::new(ValidatedLoad {
                 request_id: pending.request_id,
                 file_generation: pending.file_generation,
                 url,
@@ -110,7 +110,7 @@ fn finish_load_validation(
                 resume: pending.resume,
                 source_context: pending.source_context,
                 wait_for_cache_reset,
-            }))
+            })))
         }
         LoadValidationOutcome::Superseded => {
             record_resume_outcome(

@@ -229,7 +229,7 @@ async fn emergency_recovery_validation_retains_load_and_force_ram_only_after_use
 async fn validated_recovery_wait_keeps_physical_load_and_strips_only_resume_transport() {
     let (tx, mut rx) = tokio::sync::mpsc::channel(1);
     tx.try_send(PlayerCmd::interactive_seek(120.0)).unwrap();
-    let mut boundary = Some(PendingLoadBoundary::Validated(ValidatedLoad {
+    let mut boundary = Some(PendingLoadBoundary::Validated(Box::new(ValidatedLoad {
         request_id: 21,
         file_generation: 8,
         url: "https://example.invalid/fresh-source".to_owned(),
@@ -237,7 +237,7 @@ async fn validated_recovery_wait_keeps_physical_load_and_strips_only_resume_tran
         resume: resume::ResumeLoad::RestoreOwned(recovery_request(900.0, true)),
         source_context: super::super::super::MediaSourceContext::OnDemand,
         wait_for_cache_reset: true,
-    }));
+    })));
     let command = rx
         .try_recv()
         .expect("seek was admitted before cleanup completed");
