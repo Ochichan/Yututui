@@ -23,12 +23,15 @@ const OVERLAP_PROOF_TIMEOUT: Duration = Duration::from_secs(8);
 pub(super) enum ExtraProof {
     Ready { epoch: u64 },
     Failed { epoch: u64 },
+    TransportClosed { epoch: u64 },
 }
 
 impl ExtraProof {
     const fn epoch(self) -> u64 {
         match self {
-            Self::Ready { epoch } | Self::Failed { epoch } => epoch,
+            Self::Ready { epoch }
+            | Self::Failed { epoch }
+            | Self::TransportClosed { epoch } => epoch,
         }
     }
 }
@@ -120,7 +123,7 @@ impl EventGate {
             {
                 Some(ExtraProof::Failed { epoch })
             }
-            PlayerEvent::TransportClosed(_) => Some(ExtraProof::Failed { epoch }),
+            PlayerEvent::TransportClosed(_) => Some(ExtraProof::TransportClosed { epoch }),
             PlayerEvent::TimePos(_) | PlayerEvent::Duration(Some(_))
                 if event.file_generation() == Some(generation) =>
             {
@@ -490,6 +493,17 @@ impl Conductor {
             ExtraProof::Failed { .. } => {
                 if !self.extra_is_lead {
                     self.extra_has_file = false;
+                }
+                let _ = self
+                    .forward_lead(PlayerCmd::Load(
+                        pending.dest.with_handoff(TrackHandoff::Cut),
+                    ))
+                    .await;
+            }
+            ExtraProof::TransportClosed { .. } => {
+                if !self.extra_is_lead {
+                    self.extra_has_file = false;
+                    self.extra.take();
                 }
                 let _ = self
                     .forward_lead(PlayerCmd::Load(
@@ -1031,6 +1045,47 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn transport_closed_failed_overlap_drops_dead_standby() {
+        let mut h = harness();
+        assert!(
+            h.conductor
+                .handle_command(overlap_load("/music/b.flac"))
+                .await
+        );
+        drop(h.extra_rx);
+        let epoch = h
+            .conductor
+            .pending_overlap
+            .as_ref()
+            .expect("overlap is pending")
+            .epoch;
+        h.conductor
+            .apply_extra_proof(ExtraProof::TransportClosed { epoch })
+            .await;
+        assert!(
+            h.conductor.extra.is_none(),
+            "standby TransportClosed must drop the dead extra deck"
+        );
+        assert!(!h.conductor.extra_is_lead);
+        assert!(h.conductor.pending_overlap.is_none());
+        let survived = h
+            .conductor
+            .handle_command(overlap_load("/music/c.flac"))
+            .await;
+        assert!(
+            survived,
+            "next overlap must Cut-fall back instead of ending the conductor"
+        );
+        let primary = take_cmds(&mut h.primary_rx);
+        assert!(
+            primary
+                .iter()
+                .any(|cmd| load_url(cmd) == Some("/music/c.flac") && load_is_cut(cmd)),
+            "dead standby must Cut the next destination onto primary"
+        );
+    }
+
+    #[tokio::test]
     async fn failed_extra_keeps_primary_and_cuts_destination() {
         let mut h = harness();
         assert!(
@@ -1206,7 +1261,7 @@ mod tests {
         );
         assert!(matches!(
             proof_rx.try_recv(),
-            Ok(ExtraProof::Failed { epoch }) if epoch == second
+            Ok(ExtraProof::TransportClosed { epoch }) if epoch == second
         ));
     }
 
