@@ -21,8 +21,16 @@ const OVERLAP_PROOF_TIMEOUT: Duration = Duration::from_secs(8);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum ExtraProof {
-    Ready,
-    Failed,
+    Ready { epoch: u64 },
+    Failed { epoch: u64 },
+}
+
+impl ExtraProof {
+    const fn epoch(self) -> u64 {
+        match self {
+            Self::Ready { epoch } | Self::Failed { epoch } => epoch,
+        }
+    }
 }
 
 pub(super) struct EventGate {
@@ -31,6 +39,8 @@ pub(super) struct EventGate {
     admitted: Arc<AtomicU64>,
     pending_incoming_extra: AtomicBool,
     pending_generation: AtomicU64,
+    pending_epoch: AtomicU64,
+    next_overlap_epoch: AtomicU64,
     proof: Option<Sender<ExtraProof>>,
 }
 
@@ -50,6 +60,8 @@ impl EventGate {
             admitted,
             pending_incoming_extra: AtomicBool::new(false),
             pending_generation: AtomicU64::new(0),
+            pending_epoch: AtomicU64::new(0),
+            next_overlap_epoch: AtomicU64::new(0),
             proof,
         })
     }
@@ -59,30 +71,40 @@ impl EventGate {
         Arc::new(move |event| gate.emit(from_extra, event, &emit))
     }
 
-    fn arm_pending(&self, incoming_extra: bool, generation: u64) {
+    fn arm_pending(&self, incoming_extra: bool, generation: u64) -> u64 {
+        let epoch = self
+            .next_overlap_epoch
+            .fetch_add(1, Ordering::AcqRel)
+            .wrapping_add(1);
         self.pending_incoming_extra
             .store(incoming_extra, Ordering::Release);
         self.pending_generation.store(generation, Ordering::Release);
+        self.pending_epoch.store(epoch, Ordering::Release);
+        epoch
     }
 
     fn clear_pending(&self) {
         self.pending_generation.store(0, Ordering::Release);
+        self.pending_epoch.store(0, Ordering::Release);
     }
 
     fn observe_pending(&self, from_extra: bool, event: &PlayerEvent) -> Option<ExtraProof> {
         let generation = self.pending_generation.load(Ordering::Acquire);
-        if generation == 0 {
+        let epoch = self.pending_epoch.load(Ordering::Acquire);
+        if generation == 0 || epoch == 0 {
             return None;
         }
         if from_extra != self.pending_incoming_extra.load(Ordering::Acquire) {
             return None;
         }
         match event.unscoped() {
-            PlayerEvent::Error(_) | PlayerEvent::TransportClosed(_) => Some(ExtraProof::Failed),
+            PlayerEvent::Error(_) | PlayerEvent::TransportClosed(_) => {
+                Some(ExtraProof::Failed { epoch })
+            }
             PlayerEvent::TimePos(_) | PlayerEvent::Duration(Some(_))
                 if event.file_generation() == Some(generation) =>
             {
-                Some(ExtraProof::Ready)
+                Some(ExtraProof::Ready { epoch })
             }
             _ => None,
         }
@@ -162,6 +184,7 @@ struct PendingOverlap {
     dest: PlaybackLoad,
     fade: FadeLength,
     deadline: Instant,
+    epoch: u64,
 }
 
 struct Fade {
@@ -249,7 +272,14 @@ pub(super) async fn run_conductor(input: ConductorInput) {
                 if conductor.pending_overlap.as_ref().is_some_and(|pending| {
                     Instant::now() >= pending.deadline
                 }) {
-                    conductor.apply_extra_proof(ExtraProof::Failed).await;
+                    let epoch = conductor
+                        .pending_overlap
+                        .as_ref()
+                        .expect("deadline branch is guarded")
+                        .epoch;
+                    conductor
+                        .apply_extra_proof(ExtraProof::Failed { epoch })
+                        .await;
                     continue;
                 }
                 if conductor.fade.is_none() {
@@ -371,11 +401,12 @@ impl Conductor {
             self.extra_has_file = false;
         }
         let generation = self.gate.admitted.load(Ordering::Acquire);
-        self.gate.arm_pending(!self.extra_is_lead, generation);
+        let epoch = self.gate.arm_pending(!self.extra_is_lead, generation);
         self.pending_overlap = Some(PendingOverlap {
             dest: load,
             fade: length,
             deadline: Instant::now() + OVERLAP_PROOF_TIMEOUT,
+            epoch,
         });
         true
     }
@@ -408,15 +439,19 @@ impl Conductor {
     }
 
     async fn apply_extra_proof(&mut self, proof: ExtraProof) {
-        let Some(pending) = self.pending_overlap.take() else {
-            if matches!(proof, ExtraProof::Ready) {
-                self.extra_has_file = true;
-            }
+        let Some(pending) = self.pending_overlap.as_ref() else {
             return;
         };
+        if proof.epoch() != pending.epoch {
+            return;
+        }
+        let pending = self
+            .pending_overlap
+            .take()
+            .expect("pending overlap was just matched");
         self.gate.clear_pending();
         match proof {
-            ExtraProof::Ready => {
+            ExtraProof::Ready { .. } => {
                 self.extra_has_file = true;
                 self.set_extra_is_lead(!self.extra_is_lead);
                 self.gate.fading.store(true, Ordering::Release);
@@ -433,7 +468,7 @@ impl Conductor {
                 )
                 .await;
             }
-            ExtraProof::Failed => {
+            ExtraProof::Failed { .. } => {
                 if !self.extra_is_lead {
                     self.extra_has_file = false;
                 }
@@ -926,11 +961,54 @@ mod tests {
         );
         assert!(take_cmds(&mut h.primary_rx).is_empty());
 
-        h.conductor.apply_extra_proof(ExtraProof::Ready).await;
+        let epoch = h
+            .conductor
+            .pending_overlap
+            .as_ref()
+            .expect("overlap is pending")
+            .epoch;
+        h.conductor
+            .apply_extra_proof(ExtraProof::Ready { epoch })
+            .await;
         assert!(h.conductor.extra_is_lead);
         assert!(h.gate.extra_is_lead.load(Ordering::Acquire));
         assert!(h.conductor.extra_has_file);
         assert!(h.conductor.pending_overlap.is_none());
+    }
+
+    #[tokio::test]
+    async fn queued_ready_after_cancel_does_not_promote_replacement_overlap() {
+        let (proof_tx, mut proof_rx) = tokio::sync::mpsc::channel(8);
+        let gate = EventGate::with_proof(Arc::new(AtomicU64::new(4)), Some(proof_tx));
+        gate.arm_pending(true, 4);
+        let (sink, _) = collecting_sink();
+        gate.emit(
+            true,
+            PlayerEvent::file_scoped(4, PlayerEvent::TimePos(0.1)),
+            &sink,
+        );
+        let stale = proof_rx
+            .try_recv()
+            .expect("pending TimePos must enqueue Ready");
+
+        let mut h = harness();
+        h.gate = Arc::clone(&gate);
+        h.conductor.gate = gate;
+        assert!(
+            h.conductor
+                .handle_command(overlap_load("/music/b.flac"))
+                .await
+        );
+        assert!(h.conductor.pending_overlap.is_some());
+        h.conductor.apply_extra_proof(stale).await;
+        assert!(
+            !h.conductor.extra_is_lead,
+            "Ready from a cancelled overlap must not promote the replacement"
+        );
+        assert!(
+            h.conductor.pending_overlap.is_some(),
+            "replacement overlap must stay pending until its own proof"
+        );
     }
 
     #[tokio::test]
@@ -942,7 +1020,15 @@ mod tests {
                 .await
         );
         let _ = take_cmds(&mut h.extra_rx);
-        h.conductor.apply_extra_proof(ExtraProof::Failed).await;
+        let epoch = h
+            .conductor
+            .pending_overlap
+            .as_ref()
+            .expect("overlap is pending")
+            .epoch;
+        h.conductor
+            .apply_extra_proof(ExtraProof::Failed { epoch })
+            .await;
         assert!(!h.conductor.extra_is_lead);
         assert!(!h.gate.extra_is_lead.load(Ordering::Acquire));
         assert!(!h.conductor.extra_has_file);
@@ -1015,7 +1101,10 @@ mod tests {
                 event
             } if matches!(event.as_ref(), PlayerEvent::TimePos(pos) if *pos == 0.2)
         )));
-        assert!(matches!(proof_rx.try_recv(), Ok(ExtraProof::Ready)));
+        assert!(matches!(
+            proof_rx.try_recv(),
+            Ok(ExtraProof::Ready { epoch: 1 })
+        ));
     }
 
     #[test]
@@ -1115,6 +1204,7 @@ mod tests {
             ),
             fade: FadeLength::from_tenths(10).expect("test fade"),
             deadline: Instant::now() + OVERLAP_PROOF_TIMEOUT,
+            epoch: 1,
         });
         assert!(h.conductor.handle_command(PlayerCmd::RetireExtra).await);
         assert!(h.conductor.extra_is_lead);
