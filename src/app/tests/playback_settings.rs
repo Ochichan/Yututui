@@ -331,10 +331,17 @@ fn local_deck_bracket_keys_nudge_crossfade_and_leave_player_speed_alone() {
         }),
         "turning Off mid-session retires the extra deck"
     );
-    app.update(Msg::Key(key(KeyCode::Char('['))));
+    let already_off_cmds = app.update(Msg::Key(key(KeyCode::Char('['))));
     assert!(
         app.audio.local_crossfade.is_off(),
         "the nudge saturates at off instead of wrapping"
+    );
+    assert!(
+        !already_off_cmds.iter().any(|cmd| {
+            cmd.player_commands()
+                .any(|command| matches!(command, PlayerCmd::RetireExtra))
+        }),
+        "an already-Off setting must not repeatedly retire the standby deck"
     );
 
     app.mode = Mode::Player;

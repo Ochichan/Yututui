@@ -1436,6 +1436,110 @@ mod tests {
     }
 
     #[test]
+    fn pending_readiness_requires_the_incoming_deck_and_exact_generation() {
+        let (proof_tx, mut proof_rx) = tokio::sync::mpsc::channel(8);
+        let gate = EventGate::with_proof(Arc::new(AtomicU64::new(4)), Some(proof_tx));
+        gate.arm_pending(true, 4);
+        let (sink, collected) = collecting_sink();
+
+        gate.emit(
+            false,
+            PlayerEvent::file_scoped(4, PlayerEvent::TimePos(0.1)),
+            &sink,
+        );
+        gate.emit(
+            true,
+            PlayerEvent::file_scoped(3, PlayerEvent::TimePos(0.2)),
+            &sink,
+        );
+        assert!(proof_rx.try_recv().is_err());
+        assert!(
+            take(&collected).is_empty(),
+            "wrong deck or generation must not admit pending file facts"
+        );
+
+        gate.emit(
+            true,
+            PlayerEvent::file_scoped(4, PlayerEvent::Duration(None)),
+            &sink,
+        );
+        assert!(
+            proof_rx.try_recv().is_err(),
+            "Duration(None) is incoming file fact, not Ready proof"
+        );
+        assert!(matches!(
+            take(&collected).as_slice(),
+            [PlayerEvent::FileScoped {
+                file_generation: 4,
+                event
+            }] if matches!(event.as_ref(), PlayerEvent::Duration(None))
+        ));
+
+        gate.emit(
+            true,
+            PlayerEvent::file_scoped(4, PlayerEvent::Paused(false)),
+            &sink,
+        );
+        assert!(
+            proof_rx.try_recv().is_err(),
+            "pause telemetry is useful but does not prove the new file can advance"
+        );
+        assert!(matches!(
+            take(&collected).as_slice(),
+            [PlayerEvent::FileScoped {
+                file_generation: 4,
+                event
+            }] if matches!(event.as_ref(), PlayerEvent::Paused(false))
+        ));
+
+        gate.emit(
+            true,
+            PlayerEvent::file_scoped(4, PlayerEvent::TimePos(0.3)),
+            &sink,
+        );
+        assert!(matches!(
+            proof_rx.try_recv(),
+            Ok(ExtraProof::Ready { epoch: _ })
+        ));
+        assert!(matches!(
+            take(&collected).as_slice(),
+            [PlayerEvent::FileScoped {
+                file_generation: 4,
+                event
+            }] if matches!(event.as_ref(), PlayerEvent::TimePos(pos) if *pos == 0.3)
+        ));
+    }
+
+    #[test]
+    fn only_the_pending_incoming_deck_can_report_overlap_failure() {
+        let (proof_tx, mut proof_rx) = tokio::sync::mpsc::channel(8);
+        let gate = EventGate::with_proof(Arc::new(AtomicU64::new(4)), Some(proof_tx));
+        gate.arm_pending(true, 4);
+        let (sink, collected) = collecting_sink();
+
+        gate.emit(
+            false,
+            PlayerEvent::TransportClosed("outgoing closed".to_owned()),
+            &sink,
+        );
+        assert!(proof_rx.try_recv().is_err());
+
+        gate.emit(
+            true,
+            PlayerEvent::Error("incoming failed".to_owned()),
+            &sink,
+        );
+        assert!(matches!(
+            proof_rx.try_recv(),
+            Ok(ExtraProof::Failed { epoch: _ })
+        ));
+        assert!(
+            take(&collected).is_empty(),
+            "deck-local terminal events must be converted into fallback proof, not leaked"
+        );
+    }
+
+    #[test]
     fn event_gate_drops_outgoing_time_pos_and_admits_incoming_primary_during_pending() {
         let gate = EventGate::new(Arc::new(AtomicU64::new(5)));
         gate.extra_is_lead.store(true, Ordering::Release);
@@ -1566,6 +1670,35 @@ mod tests {
                 .any(|cmd| load_url(cmd) == Some("/music/c.flac") && load_is_cut(cmd)),
             "Off → RetireExtra must return subsequent Cut to primary"
         );
+    }
+
+    #[tokio::test]
+    async fn replacing_a_pending_overlap_stops_it_before_loading_the_new_destination() {
+        let mut h = harness();
+        assert!(
+            h.conductor
+                .handle_command(overlap_load("/music/b.flac"))
+                .await
+        );
+        let _ = take_cmds(&mut h.extra_rx);
+
+        h.gate.admitted.store(5, Ordering::Release);
+        assert!(
+            h.conductor
+                .handle_command(overlap_load("/music/c.flac"))
+                .await
+        );
+
+        let extra = take_cmds(&mut h.extra_rx);
+        assert_eq!(extra.len(), 3);
+        assert!(matches!(extra[0], PlayerCmd::Stop));
+        assert!(matches!(extra[1], PlayerCmd::SetVolume(0)));
+        assert!(
+            load_url(&extra[2]) == Some("/music/c.flac") && load_is_cut(&extra[2]),
+            "the replacement must load only after the abandoned incoming file is stopped"
+        );
+        assert_eq!(h.gate.pending_generation.load(Ordering::Acquire), 5);
+        assert!(take_cmds(&mut h.primary_rx).is_empty());
     }
 
     #[tokio::test]
