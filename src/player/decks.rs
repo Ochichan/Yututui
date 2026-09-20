@@ -23,12 +23,15 @@ const OVERLAP_PROOF_TIMEOUT: Duration = Duration::from_secs(8);
 pub(super) enum ExtraProof {
     Ready { epoch: u64 },
     Failed { epoch: u64 },
+    TransportClosed { epoch: u64 },
 }
 
 impl ExtraProof {
     const fn epoch(self) -> u64 {
         match self {
-            Self::Ready { epoch } | Self::Failed { epoch } => epoch,
+            Self::Ready { epoch } | Self::Failed { epoch } | Self::TransportClosed { epoch } => {
+                epoch
+            }
         }
     }
 }
@@ -120,7 +123,7 @@ impl EventGate {
             {
                 Some(ExtraProof::Failed { epoch })
             }
-            PlayerEvent::TransportClosed(_) => Some(ExtraProof::Failed { epoch }),
+            PlayerEvent::TransportClosed(_) => Some(ExtraProof::TransportClosed { epoch }),
             PlayerEvent::TimePos(_) | PlayerEvent::Duration(Some(_))
                 if event.file_generation() == Some(generation) =>
             {
@@ -237,6 +240,8 @@ struct Conductor {
     intentional_close: Arc<AtomicBool>,
     file_generation_rx: watch::Receiver<u64>,
     pending_overlap: Option<PendingOverlap>,
+    #[cfg(test)]
+    standby_spawn: Option<fn() -> Result<ExtraDeck, OverlapBlocker>>,
 }
 
 pub(super) async fn run_conductor(input: ConductorInput) {
@@ -266,6 +271,8 @@ pub(super) async fn run_conductor(input: ConductorInput) {
         intentional_close,
         file_generation_rx,
         pending_overlap: None,
+        #[cfg(test)]
+        standby_spawn: None,
     };
     let mut tick = tokio::time::interval(FADE_TICK);
     tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
@@ -497,6 +504,17 @@ impl Conductor {
                     ))
                     .await;
             }
+            ExtraProof::TransportClosed { .. } => {
+                if !self.extra_is_lead {
+                    self.extra_has_file = false;
+                    self.extra.take();
+                }
+                let _ = self
+                    .forward_lead(PlayerCmd::Load(
+                        pending.dest.with_handoff(TrackHandoff::Cut),
+                    ))
+                    .await;
+            }
         }
     }
 
@@ -604,6 +622,12 @@ impl Conductor {
         if let Some(task) = self.warming.take()
             && let Ok(Ok(deck)) = task.await
         {
+            self.extra = Some(deck);
+            return Ok(());
+        }
+        #[cfg(test)]
+        if let Some(spawn) = self.standby_spawn {
+            let deck = spawn()?;
             self.extra = Some(deck);
             return Ok(());
         }
@@ -951,6 +975,7 @@ mod tests {
             intentional_close: Arc::new(AtomicBool::new(false)),
             file_generation_rx: fg_rx,
             pending_overlap: None,
+            standby_spawn: None,
         };
         Harness {
             conductor,
@@ -1027,6 +1052,48 @@ mod tests {
         assert!(
             h.conductor.pending_overlap.is_some(),
             "replacement overlap must stay pending until its own proof"
+        );
+    }
+
+    #[tokio::test]
+    async fn transport_closed_failed_overlap_drops_dead_standby() {
+        let mut h = harness();
+        assert!(
+            h.conductor
+                .handle_command(overlap_load("/music/b.flac"))
+                .await
+        );
+        drop(h.extra_rx);
+        let epoch = h
+            .conductor
+            .pending_overlap
+            .as_ref()
+            .expect("overlap is pending")
+            .epoch;
+        h.conductor
+            .apply_extra_proof(ExtraProof::TransportClosed { epoch })
+            .await;
+        assert!(
+            h.conductor.extra.is_none(),
+            "standby TransportClosed must drop the dead extra deck"
+        );
+        assert!(!h.conductor.extra_is_lead);
+        assert!(h.conductor.pending_overlap.is_none());
+        h.conductor.standby_spawn = Some(|| Err(OverlapBlocker::Mpv));
+        let survived = h
+            .conductor
+            .handle_command(overlap_load("/music/c.flac"))
+            .await;
+        assert!(
+            survived,
+            "next overlap must Cut-fall back instead of ending the conductor"
+        );
+        let primary = take_cmds(&mut h.primary_rx);
+        assert!(
+            primary
+                .iter()
+                .any(|cmd| load_url(cmd) == Some("/music/c.flac") && load_is_cut(cmd)),
+            "dead standby must Cut the next destination onto primary"
         );
     }
 
@@ -1206,7 +1273,7 @@ mod tests {
         );
         assert!(matches!(
             proof_rx.try_recv(),
-            Ok(ExtraProof::Failed { epoch }) if epoch == second
+            Ok(ExtraProof::TransportClosed { epoch }) if epoch == second
         ));
     }
 
