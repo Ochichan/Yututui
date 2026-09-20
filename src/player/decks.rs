@@ -29,9 +29,9 @@ pub(super) enum ExtraProof {
 impl ExtraProof {
     const fn epoch(self) -> u64 {
         match self {
-            Self::Ready { epoch }
-            | Self::Failed { epoch }
-            | Self::TransportClosed { epoch } => epoch,
+            Self::Ready { epoch } | Self::Failed { epoch } | Self::TransportClosed { epoch } => {
+                epoch
+            }
         }
     }
 }
@@ -240,6 +240,8 @@ struct Conductor {
     intentional_close: Arc<AtomicBool>,
     file_generation_rx: watch::Receiver<u64>,
     pending_overlap: Option<PendingOverlap>,
+    #[cfg(test)]
+    standby_spawn: Option<fn() -> Result<ExtraDeck, OverlapBlocker>>,
 }
 
 pub(super) async fn run_conductor(input: ConductorInput) {
@@ -269,6 +271,8 @@ pub(super) async fn run_conductor(input: ConductorInput) {
         intentional_close,
         file_generation_rx,
         pending_overlap: None,
+        #[cfg(test)]
+        standby_spawn: None,
     };
     let mut tick = tokio::time::interval(FADE_TICK);
     tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
@@ -621,6 +625,12 @@ impl Conductor {
             self.extra = Some(deck);
             return Ok(());
         }
+        #[cfg(test)]
+        if let Some(spawn) = self.standby_spawn {
+            let deck = spawn()?;
+            self.extra = Some(deck);
+            return Ok(());
+        }
         match spawn_extra(
             &self.audio,
             self.next_deck_generation,
@@ -965,6 +975,7 @@ mod tests {
             intentional_close: Arc::new(AtomicBool::new(false)),
             file_generation_rx: fg_rx,
             pending_overlap: None,
+            standby_spawn: None,
         };
         Harness {
             conductor,
@@ -1068,6 +1079,7 @@ mod tests {
         );
         assert!(!h.conductor.extra_is_lead);
         assert!(h.conductor.pending_overlap.is_none());
+        h.conductor.standby_spawn = Some(|| Err(OverlapBlocker::Mpv));
         let survived = h
             .conductor
             .handle_command(overlap_load("/music/c.flac"))
