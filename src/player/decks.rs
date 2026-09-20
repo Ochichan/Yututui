@@ -435,7 +435,9 @@ impl Conductor {
         if !self.extra_is_lead {
             self.extra_has_file = false;
         }
-        let epoch = self.gate.arm_pending(!self.extra_is_lead, incoming_generation);
+        let epoch = self
+            .gate
+            .arm_pending(!self.extra_is_lead, incoming_generation);
         self.pending_overlap = Some(PendingOverlap {
             dest: load,
             fade: length,
