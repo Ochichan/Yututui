@@ -1452,14 +1452,28 @@ mod tests {
             PlayerEvent::file_scoped(3, PlayerEvent::TimePos(0.2)),
             &sink,
         );
+        assert!(proof_rx.try_recv().is_err());
+        assert!(
+            take(&collected).is_empty(),
+            "wrong deck or generation must not admit pending file facts"
+        );
+
         gate.emit(
             true,
             PlayerEvent::file_scoped(4, PlayerEvent::Duration(None)),
             &sink,
         );
-
-        assert!(proof_rx.try_recv().is_err());
-        assert!(take(&collected).is_empty());
+        assert!(
+            proof_rx.try_recv().is_err(),
+            "Duration(None) is incoming file fact, not Ready proof"
+        );
+        assert!(matches!(
+            take(&collected).as_slice(),
+            [PlayerEvent::FileScoped {
+                file_generation: 4,
+                event
+            }] if matches!(event.as_ref(), PlayerEvent::Duration(None))
+        ));
 
         gate.emit(
             true,
