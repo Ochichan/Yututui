@@ -417,9 +417,14 @@ impl Conductor {
         {
             return false;
         }
+        let incoming_generation = self.gate.admitted.load(Ordering::Acquire);
         if !forward(
             &incoming_tx,
-            PlayerCmd::Load(load.clone().with_handoff(TrackHandoff::Cut)),
+            PlayerCmd::Load(
+                load.clone()
+                    .with_handoff(TrackHandoff::Cut)
+                    .with_reserved_file_generation(incoming_generation),
+            ),
         )
         .await
         {

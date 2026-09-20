@@ -77,9 +77,41 @@ fn file_generation_advances_only_for_admitted_load_and_stop_barriers() {
     assert!(handle.send(PlayerCmd::Stop).is_ok());
     assert_eq!(handle.current_file_generation(), 2);
 
-    assert!(matches!(rx.try_recv(), Ok(PlayerCmd::Load(_))));
+    assert!(matches!(
+        rx.try_recv(),
+        Ok(PlayerCmd::Load(load)) if load.reserved_file_generation() == Some(1)
+    ));
     assert!(matches!(rx.try_recv(), Ok(PlayerCmd::SetVolume(20))));
     assert!(matches!(rx.try_recv(), Ok(PlayerCmd::Stop)));
+}
+
+#[test]
+fn handle_stamps_distinct_generations_on_two_queued_loads() {
+    let (tx, mut rx) = tokio::sync::mpsc::channel(4);
+    let handle = PlayerHandle::test_handle(tx);
+    assert!(
+        handle
+            .send(PlayerCmd::load(
+                "https://example.invalid/a",
+                MediaSourceContext::OnDemand,
+            ))
+            .is_ok()
+    );
+    assert!(
+        handle
+            .send(PlayerCmd::load(
+                "https://example.invalid/b",
+                MediaSourceContext::OnDemand,
+            ))
+            .is_ok()
+    );
+    match (rx.try_recv(), rx.try_recv()) {
+        (Ok(PlayerCmd::Load(first)), Ok(PlayerCmd::Load(second))) => {
+            assert_eq!(first.reserved_file_generation(), Some(1));
+            assert_eq!(second.reserved_file_generation(), Some(2));
+        }
+        other => panic!("expected two stamped loads, got {other:?}"),
+    }
 }
 
 #[test]

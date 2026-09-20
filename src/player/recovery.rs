@@ -59,6 +59,7 @@ pub struct LoadWithResume {
     pub episode_id: RecoveryEpisodeId,
     pub transport_epoch: TransportIntentEpoch,
     origin: ResumeOrigin,
+    reserved_file_generation: Option<u64>,
 }
 
 impl LoadWithResume {
@@ -77,6 +78,7 @@ impl LoadWithResume {
             episode_id: ticket.episode_id(),
             transport_epoch: ticket.transport_epoch(),
             origin: ResumeOrigin::SourceRecovery(ticket),
+            reserved_file_generation: None,
         }
     }
 
@@ -95,6 +97,7 @@ impl LoadWithResume {
             episode_id: RecoveryEpisodeId(0),
             transport_epoch: TransportIntentEpoch(0),
             origin: ResumeOrigin::CacheSafetyRamOnly,
+            reserved_file_generation: None,
         }
     }
 
@@ -112,6 +115,15 @@ impl LoadWithResume {
 
     pub(crate) const fn forces_ram_only(&self) -> bool {
         matches!(self.origin, ResumeOrigin::CacheSafetyRamOnly)
+    }
+
+    pub(crate) fn with_reserved_file_generation(mut self, generation: u64) -> Self {
+        self.reserved_file_generation = Some(generation);
+        self
+    }
+
+    pub(crate) const fn reserved_file_generation(&self) -> Option<u64> {
+        self.reserved_file_generation
     }
 }
 

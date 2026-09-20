@@ -91,6 +91,7 @@ pub struct PlaybackLoad {
     destination: crate::playback_target::PlaybackDestination,
     source_context: MediaSourceContext,
     handoff: crate::crossfade::TrackHandoff,
+    reserved_file_generation: Option<u64>,
 }
 
 impl PlaybackLoad {
@@ -109,12 +110,22 @@ impl PlaybackLoad {
             destination,
             source_context,
             handoff: crate::crossfade::TrackHandoff::Cut,
+            reserved_file_generation: None,
         }
     }
 
     pub fn with_handoff(mut self, handoff: crate::crossfade::TrackHandoff) -> Self {
         self.handoff = handoff;
         self
+    }
+
+    pub(crate) fn with_reserved_file_generation(mut self, generation: u64) -> Self {
+        self.reserved_file_generation = Some(generation);
+        self
+    }
+
+    pub(crate) const fn reserved_file_generation(&self) -> Option<u64> {
+        self.reserved_file_generation
     }
 
     /// Compatibility accessor for direct targets. Credentialed targets never expose an upstream
@@ -149,6 +160,7 @@ impl std::fmt::Debug for PlaybackLoad {
             .field("destination", &self.destination)
             .field("source_context", &self.source_context)
             .field("handoff", &self.handoff)
+            .field("reserved_file_generation", &self.reserved_file_generation)
             .finish()
     }
 }
@@ -231,6 +243,16 @@ pub struct TrackedProperty {
 impl PlayerCmd {
     pub fn load(url: impl Into<String>, source_context: MediaSourceContext) -> Self {
         Self::Load(PlaybackLoad::new(url, source_context))
+    }
+
+    fn with_reserved_file_generation(self, generation: u64) -> Self {
+        match self {
+            Self::Load(load) => Self::Load(load.with_reserved_file_generation(generation)),
+            Self::LoadWithResume(resume) => {
+                Self::LoadWithResume(resume.with_reserved_file_generation(generation))
+            }
+            other => other,
+        }
     }
 
     pub fn load_destination(
@@ -645,6 +667,9 @@ impl PlayerHandle {
         }
         let admission =
             self.begin_file_admission(cmd.admitted_media_expected().map(|value| (1, value)));
+        let cmd = admission.as_ref().map_or(cmd, |admission| {
+            cmd.with_reserved_file_generation(admission.generation)
+        });
         if pending.drainer_running || !pending.cmds.is_empty() {
             return match pending.push(cmd) {
                 Ok(coalesced) => {
@@ -748,8 +773,29 @@ impl PlayerHandle {
         };
 
         let admission = self.begin_file_admission(admission_shape);
+        let mut assigned = admission
+            .as_ref()
+            .map(|admission| {
+                admission
+                    .generation
+                    .wrapping_sub(admission_shape.map_or(0, |(count, _)| count.saturating_sub(1)))
+            })
+            .unwrap_or(0);
+        let stamped: std::collections::VecDeque<PlayerCmd> = staged
+            .cmds
+            .into_iter()
+            .map(|cmd| {
+                if cmd.invalidates_file_generation() {
+                    let generation = assigned;
+                    assigned = assigned.wrapping_add(1);
+                    cmd.with_reserved_file_generation(generation)
+                } else {
+                    cmd
+                }
+            })
+            .collect();
         self.publish_file_generation(admission);
-        pending.cmds = staged.cmds;
+        pending.cmds = stamped;
         if needs_drainer {
             pending.drainer_running = true;
         }

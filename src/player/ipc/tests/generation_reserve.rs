@@ -22,6 +22,20 @@ fn actor_fifo_reservations_match_two_queued_load_admissions() {
 }
 
 #[test]
+fn captured_ingress_generations_stay_distinct_when_watch_already_shows_latest() {
+    let mut state = DispatchState::default();
+    let load_b = reserve_captured_file_generation(&mut state, 2, Some(1));
+    let load_c = reserve_captured_file_generation(&mut state, 2, Some(2));
+    assert_eq!(
+        (load_b, load_c),
+        (1, 2),
+        "watch latest=2 must not assign both queued loads generation 2"
+    );
+    assert_eq!(state.admitted_file_generation, 2);
+    assert_eq!(state.issued_file_generation, 0);
+}
+
+#[test]
 fn actor_fifo_reservations_match_stop_then_load_batch() {
     let mut state = DispatchState::default();
     let stop = reserve_next(&mut state);
