@@ -16,10 +16,16 @@ async fn begin_or_dispatch_command(
         return Ok(None);
     }
     let load = match cmd {
-        PlayerCmd::Load(load) => Some((load.destination().clone(), load.source_context(), None)),
+        PlayerCmd::Load(load) => Some((
+            load.destination().clone(),
+            load.source_context(),
+            load.reserved_file_generation(),
+            None,
+        )),
         PlayerCmd::LoadWithResume(resume) => Some((
             resume.destination.clone(),
             resume.source_context,
+            resume.reserved_file_generation(),
             Some(resume),
         )),
         cmd => {
@@ -31,14 +37,17 @@ async fn begin_or_dispatch_command(
             None
         }
     };
-    if let Some((destination, source_context, resume)) = load {
+    if let Some((destination, source_context, reserved_generation, resume)) = load {
         *request_id = request_id.wrapping_add(1);
         // The public handle has already admitted this generation, but the actor does not publish
         // it as issued until validation has succeeded and `loadfile` is actually dispatched.
         // A seek/pause that supersedes recovery validation can therefore keep using the ready
         // current generation instead of waiting forever for a file that was never sent to mpv.
-        let file_generation =
-            reserve_published_file_generation(state, *file_generation_rx.borrow());
+        let file_generation = reserve_captured_file_generation(
+            state,
+            *file_generation_rx.borrow(),
+            reserved_generation,
+        );
         let load_request_id = *request_id;
         let task = tokio::spawn(validate_load_until_superseded(
             destination,
@@ -68,6 +77,18 @@ fn admit_owner_generation_without_issuing(state: &mut DispatchState, published: 
 }
 
 fn reserve_published_file_generation(state: &mut DispatchState, published: u64) -> u64 {
+    reserve_captured_file_generation(state, published, None)
+}
+
+fn reserve_captured_file_generation(
+    state: &mut DispatchState,
+    published: u64,
+    captured: Option<u64>,
+) -> u64 {
+    if let Some(captured) = captured {
+        state.admitted_file_generation = state.admitted_file_generation.max(captured);
+        return captured;
+    }
     let local = state
         .admitted_file_generation
         .max(state.issued_file_generation);

@@ -417,9 +417,16 @@ impl Conductor {
         {
             return false;
         }
+        let incoming_generation = load
+            .reserved_file_generation()
+            .unwrap_or_else(|| self.gate.admitted.load(Ordering::Acquire));
         if !forward(
             &incoming_tx,
-            PlayerCmd::Load(load.clone().with_handoff(TrackHandoff::Cut)),
+            PlayerCmd::Load(
+                load.clone()
+                    .with_handoff(TrackHandoff::Cut)
+                    .with_reserved_file_generation(incoming_generation),
+            ),
         )
         .await
         {
@@ -428,8 +435,9 @@ impl Conductor {
         if !self.extra_is_lead {
             self.extra_has_file = false;
         }
-        let generation = self.gate.admitted.load(Ordering::Acquire);
-        let epoch = self.gate.arm_pending(!self.extra_is_lead, generation);
+        let epoch = self
+            .gate
+            .arm_pending(!self.extra_is_lead, incoming_generation);
         self.pending_overlap = Some(PendingOverlap {
             dest: load,
             fade: length,
@@ -985,6 +993,32 @@ mod tests {
             extra_rx,
             gate,
         }
+    }
+
+    #[tokio::test]
+    async fn overlap_forwards_reserved_ingress_generation_not_latest_admitted() {
+        let mut h = harness();
+        h.gate.admitted.store(9, Ordering::Release);
+        let load = crate::player::PlaybackLoad::new(
+            "/music/b.flac",
+            crate::player::MediaSourceContext::OnDemand,
+        )
+        .with_handoff(TrackHandoff::Overlap {
+            fade: FadeLength::from_tenths(10).expect("test fade"),
+        })
+        .with_reserved_file_generation(4);
+        assert!(h.conductor.handle_command(PlayerCmd::Load(load)).await);
+        let extra = take_cmds(&mut h.extra_rx);
+        assert!(
+            extra.iter().any(|cmd| matches!(
+                cmd,
+                PlayerCmd::Load(load)
+                    if load.as_str() == "/music/b.flac"
+                        && load.reserved_file_generation() == Some(4)
+            )),
+            "overlap must forward the load's reserved generation, not gate.admitted"
+        );
+        assert_eq!(h.gate.pending_generation.load(Ordering::Acquire), 4);
     }
 
     #[tokio::test]

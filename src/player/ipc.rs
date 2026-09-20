@@ -581,7 +581,7 @@ pub(super) async fn run_actor(input: ActorInput) {
                 .expect("ready load boundary remains installed");
             let result = match boundary {
                 PendingLoadBoundary::Validated(load) => {
-                    dispatch_validated_load(&conn, &mut state, &mut request_id, load).await
+                    dispatch_validated_load(&conn, &mut state, &mut request_id, *load).await
                 }
                 PendingLoadBoundary::RejectedStop {
                     file_generation, ..

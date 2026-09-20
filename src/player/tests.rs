@@ -77,9 +77,82 @@ fn file_generation_advances_only_for_admitted_load_and_stop_barriers() {
     assert!(handle.send(PlayerCmd::Stop).is_ok());
     assert_eq!(handle.current_file_generation(), 2);
 
-    assert!(matches!(rx.try_recv(), Ok(PlayerCmd::Load(_))));
+    assert!(matches!(
+        rx.try_recv(),
+        Ok(PlayerCmd::Load(load)) if load.reserved_file_generation() == Some(1)
+    ));
     assert!(matches!(rx.try_recv(), Ok(PlayerCmd::SetVolume(20))));
     assert!(matches!(rx.try_recv(), Ok(PlayerCmd::Stop)));
+}
+
+#[test]
+fn handle_stamps_distinct_generations_on_two_queued_loads() {
+    let (tx, mut rx) = tokio::sync::mpsc::channel(4);
+    let handle = PlayerHandle::test_handle(tx);
+    assert!(
+        handle
+            .send(PlayerCmd::load(
+                "https://example.invalid/a",
+                MediaSourceContext::OnDemand,
+            ))
+            .is_ok()
+    );
+    assert!(
+        handle
+            .send(PlayerCmd::load(
+                "https://example.invalid/b",
+                MediaSourceContext::OnDemand,
+            ))
+            .is_ok()
+    );
+    match (rx.try_recv(), rx.try_recv()) {
+        (Ok(PlayerCmd::Load(first)), Ok(PlayerCmd::Load(second))) => {
+            assert_eq!(first.reserved_file_generation(), Some(1));
+            assert_eq!(second.reserved_file_generation(), Some(2));
+        }
+        _ => panic!("expected two stamped loads"),
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn send_batch_preserves_stamped_prefix_generations() {
+    let (tx, _rx) = mpsc::channel(4);
+    let handle = PlayerHandle::test_handle(tx);
+    assert_eq!(
+        handle.send_batch(vec![
+            PlayerCmd::load("https://example.invalid/a", MediaSourceContext::OnDemand),
+            PlayerCmd::load("https://example.invalid/b", MediaSourceContext::OnDemand),
+        ]),
+        Ok(DeliveryReceipt::Deferred)
+    );
+    assert_eq!(
+        handle.send_batch(vec![
+            PlayerCmd::load("https://example.invalid/c", MediaSourceContext::OnDemand),
+            PlayerCmd::SetVolume(1),
+        ]),
+        Ok(DeliveryReceipt::Deferred)
+    );
+
+    let pending = handle
+        .pending
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let gens: Vec<(&str, Option<u64>)> = pending
+        .cmds
+        .iter()
+        .filter_map(|cmd| match cmd {
+            PlayerCmd::Load(load) => Some((load.as_str(), load.reserved_file_generation())),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        gens,
+        [
+            ("https://example.invalid/a", Some(1)),
+            ("https://example.invalid/b", Some(2)),
+            ("https://example.invalid/c", Some(3)),
+        ]
+    );
 }
 
 #[test]

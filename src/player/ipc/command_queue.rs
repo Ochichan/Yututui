@@ -17,7 +17,7 @@ struct ValidatedLoad {
 }
 
 enum PendingLoadBoundary {
-    Validated(ValidatedLoad),
+    Validated(Box<ValidatedLoad>),
     RejectedStop {
         file_generation: u64,
         wait_for_cache_reset: bool,
