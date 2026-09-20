@@ -152,12 +152,7 @@ impl EventGate {
         }
         if self.pending_generation.load(Ordering::Acquire) != 0 {
             if self.admit_pending_incoming(from_extra, &event) {
-                if from_extra {
-                    let generation = self.admitted.load(Ordering::Acquire);
-                    sink(rewrite_to_admitted_generation(event, generation));
-                } else {
-                    sink(event);
-                }
+                sink(event);
             }
             return;
         }
@@ -1371,6 +1366,39 @@ mod tests {
                 event
             } if matches!(event.as_ref(), PlayerEvent::Duration(None))
         )));
+    }
+
+    #[test]
+    fn pending_extra_facts_keep_verified_generation_when_admitted_moves() {
+        let admitted = Arc::new(AtomicU64::new(4));
+        let gate = EventGate::new(Arc::clone(&admitted));
+        gate.arm_pending(true, 4);
+        admitted.store(9, Ordering::Release);
+        let (sink, collected) = collecting_sink();
+
+        gate.emit(
+            true,
+            PlayerEvent::file_scoped(4, PlayerEvent::Metadata(serde_json::json!({"title": "b"}))),
+            &sink,
+        );
+        gate.emit(
+            true,
+            PlayerEvent::file_scoped(4, PlayerEvent::Chapters(Vec::new())),
+            &sink,
+        );
+
+        let events = take(&collected);
+        assert!(
+            events.iter().all(|event| matches!(
+                event,
+                PlayerEvent::FileScoped {
+                    file_generation: 4,
+                    ..
+                }
+            )),
+            "pending extra facts must keep the verified generation, not the newer admitted counter"
+        );
+        assert_eq!(events.len(), 2);
     }
 
     #[test]
