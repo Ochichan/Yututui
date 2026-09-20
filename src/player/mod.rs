@@ -781,17 +781,18 @@ impl PlayerHandle {
                     .wrapping_sub(admission_shape.map_or(0, |(count, _)| count.saturating_sub(1)))
             })
             .unwrap_or(0);
+        let prefix_len = pending.cmds.len();
         let stamped: std::collections::VecDeque<PlayerCmd> = staged
             .cmds
             .into_iter()
-            .map(|cmd| {
-                if cmd.invalidates_file_generation() {
-                    let generation = assigned;
-                    assigned = assigned.wrapping_add(1);
-                    cmd.with_reserved_file_generation(generation)
-                } else {
-                    cmd
+            .enumerate()
+            .map(|(index, cmd)| {
+                if index < prefix_len || !cmd.invalidates_file_generation() {
+                    return cmd;
                 }
+                let generation = assigned;
+                assigned = assigned.wrapping_add(1);
+                cmd.with_reserved_file_generation(generation)
             })
             .collect();
         self.publish_file_generation(admission);

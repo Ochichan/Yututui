@@ -110,8 +110,49 @@ fn handle_stamps_distinct_generations_on_two_queued_loads() {
             assert_eq!(first.reserved_file_generation(), Some(1));
             assert_eq!(second.reserved_file_generation(), Some(2));
         }
-        other => panic!("expected two stamped loads, got {other:?}"),
+        _ => panic!("expected two stamped loads"),
     }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn send_batch_preserves_stamped_prefix_generations() {
+    let (tx, _rx) = mpsc::channel(4);
+    let handle = PlayerHandle::test_handle(tx);
+    assert_eq!(
+        handle.send_batch(vec![
+            PlayerCmd::load("https://example.invalid/a", MediaSourceContext::OnDemand),
+            PlayerCmd::load("https://example.invalid/b", MediaSourceContext::OnDemand),
+        ]),
+        Ok(DeliveryReceipt::Deferred)
+    );
+    assert_eq!(
+        handle.send_batch(vec![
+            PlayerCmd::load("https://example.invalid/c", MediaSourceContext::OnDemand),
+            PlayerCmd::SetVolume(1),
+        ]),
+        Ok(DeliveryReceipt::Deferred)
+    );
+
+    let pending = handle
+        .pending
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let gens: Vec<(&str, Option<u64>)> = pending
+        .cmds
+        .iter()
+        .filter_map(|cmd| match cmd {
+            PlayerCmd::Load(load) => Some((load.as_str(), load.reserved_file_generation())),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        gens,
+        [
+            ("https://example.invalid/a", Some(1)),
+            ("https://example.invalid/b", Some(2)),
+            ("https://example.invalid/c", Some(3)),
+        ]
+    );
 }
 
 #[test]
