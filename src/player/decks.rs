@@ -108,9 +108,7 @@ impl EventGate {
     }
 
     fn observe_pending(&self, from_extra: bool, event: &PlayerEvent) -> Option<ExtraProof> {
-        let Some((generation, epoch, incoming)) = self.pending_identity() else {
-            return None;
-        };
+        let (generation, epoch, incoming) = self.pending_identity()?;
         if from_extra != incoming {
             return None;
         }
