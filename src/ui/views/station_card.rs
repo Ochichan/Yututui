@@ -32,7 +32,17 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         card.selected.min(entries.len() - 1)
     };
     let list_height = entries.len().clamp(1, VISIBLE_ROWS) as u16;
-    let popup_height = list_height.saturating_add(6).min(area.height).max(7);
+    // The key hint wraps to a second row on a narrow card rather than losing its end.
+    let hint_lines: Vec<String> =
+        crate::ui::text::wrap_to_width(&parse_hint(&card.input), usize::from(content_width))
+            .into_iter()
+            .take(2)
+            .collect();
+    let hint_rows = hint_lines.len().max(1) as u16;
+    let popup_height = list_height
+        .saturating_add(5 + hint_rows)
+        .min(area.height)
+        .max(7);
     let popup = centered_fixed(area, popup_width, popup_height);
 
     crate::ui::render_popup_background(frame, app, popup);
@@ -46,14 +56,18 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
 
     let rows = Layout::vertical([
         Constraint::Length(1),
-        Constraint::Length(1),
+        Constraint::Length(hint_rows),
         Constraint::Min(1),
         Constraint::Length(1),
     ])
     .split(inner);
 
     draw_input(frame, app, rows[0], card, content_width);
-    draw_parse_hint(frame, app, rows[1], &card.input);
+    frame.render_widget(
+        Paragraph::new(hint_lines.into_iter().map(Line::from).collect::<Vec<_>>())
+            .style(crate::ui::popup_style(app, R::TextMuted)),
+        rows[1],
+    );
     draw_entries(frame, app, rows[2], &entries, selected, content_width);
     draw_close_hint(frame, app, rows[3]);
 
@@ -86,8 +100,9 @@ fn draw_input(
     frame.render_widget(Paragraph::new(line), area);
 }
 
-fn draw_parse_hint(frame: &mut Frame, app: &App, area: Rect, raw: &str) {
-    let hint = if raw.trim().is_empty() {
+/// What Enter will do with the typed term (or how to use the box while it is empty).
+fn parse_hint(raw: &str) -> String {
+    if raw.trim().is_empty() {
         t!(
             "Enter: more like the playing artist · leading - excludes",
             "Enter: 재생 중인 아티스트와 비슷하게 · 앞에 - 는 제외",
@@ -113,12 +128,7 @@ fn draw_parse_hint(frame: &mut Frame, app: &App, area: Rect, raw: &str) {
             )
             .to_owned(),
         }
-    };
-    frame.render_widget(
-        Paragraph::new(truncate_to_width(&hint, usize::from(area.width.max(1))))
-            .style(crate::ui::popup_style(app, R::TextMuted)),
-        area,
-    );
+    }
 }
 
 fn draw_entries(

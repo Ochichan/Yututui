@@ -173,6 +173,11 @@ impl App {
         if st.tab == SettingsTab::Keys {
             return None;
         }
+        // Prefer the length the last frame drew: it counts detail rows and Sync pane text that
+        // the field and section counts below cannot see.
+        if let Some(len) = self.bridges.settings_list_len.get() {
+            return Some(len);
+        }
         if st.tab == SettingsTab::Sync {
             return Some(self.sync_settings_model().rows.len());
         }

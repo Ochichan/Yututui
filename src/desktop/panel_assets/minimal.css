@@ -174,25 +174,42 @@
       visibility: visible;
     }
 
-    html[data-theme="minimal"]:not(.shared-sheet) .recovery {
+    /* The recovery actions share the 48px slot on a fixed two-row grid: the primary action
+       across the top, the others side by side below. A label that outgrows its cell ends in
+       an ellipsis (its tooltip carries the whole label) rather than wrapping out of sight. */
+    html[data-theme="minimal"]:not(.shared-sheet) .recovery:not([hidden]) {
       position: absolute;
       z-index: 6;
       top: 8px;
       right: 66px;
       left: 68px;
       height: 48px;
-      align-items: center;
-      justify-content: center;
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      grid-auto-rows: 22px;
+      align-content: center;
       gap: 4px;
+      margin: 0;
       padding: 0;
       border: 0;
       background: var(--mantle);
     }
 
     html[data-theme="minimal"]:not(.shared-sheet) .recovery button {
-      height: 32px;
-      padding: 0 7px;
-      font-size: 9.5px;
+      display: block;
+      min-width: 0;
+      min-height: 0;
+      height: 22px;
+      padding: 0 3px;
+      border-radius: 11px;
+      font-size: 9px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    html[data-theme="minimal"]:not(.shared-sheet) .recovery .primary-recovery,
+    html[data-theme="minimal"]:not(.shared-sheet) .recovery button:only-of-type {
+      grid-column: 1 / -1;
     }
 
     html[data-theme="minimal"]:not(.shared-sheet) .player-shell.recovering .now-copy,
@@ -264,24 +281,128 @@
       padding: 0;
     }
 
+    /* The error takes the artist line inside the copy column instead of a strip across the
+       whole capsule, which covered the art, the title, and the ⋯ button. It steps aside
+       while the transport or the recovery actions occupy that column; it is still
+       announced through its alert role. */
     html[data-theme="minimal"]:not(.shared-sheet) .alert {
       position: absolute;
-      z-index: 20;
-      right: 8px;
-      bottom: 3px;
-      left: 8px;
-      height: 24px;
-      padding: 4px 8px;
+      z-index: 5;
+      top: 32px;
+      right: 72px;
+      left: 74px;
+      height: 20px;
+      padding: 2px 8px;
       font-size: 9px;
+      line-height: 14px;
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
+      transition: opacity 0.12s ease, visibility 0.12s;
+    }
+
+    html[data-theme="minimal"]:not(.shared-sheet) .player-shell:has(#error:not([hidden])) .artist {
+      visibility: hidden;
+    }
+
+    /* While the transport or the recovery actions hold the copy column, the error shrinks to
+       a "!" badge on the art tile: still visible, still focusable, covering no control. */
+    html[data-theme="minimal"]:not(.shared-sheet) .player-shell.recovering .alert:not(.expanded),
+    html[data-theme="minimal"]:not(.shared-sheet) .player-shell:hover .alert:not(.expanded),
+    html[data-theme="minimal"]:not(.shared-sheet) .player-shell:has(#transportSlot:focus-within) .alert:not(.expanded),
+    html[data-theme="minimal"].keyboard-nav:not(.shared-sheet) .alert:not(.expanded) {
+      top: 38px;
+      right: auto;
+      left: 38px;
+      width: 22px;
+      height: 22px;
+      padding: 0;
+      border-radius: 50%;
+      font-size: 0;
+      line-height: 0;
+    }
+
+    html[data-theme="minimal"]:not(.shared-sheet) .player-shell.recovering .alert:not(.expanded)::before,
+    html[data-theme="minimal"]:not(.shared-sheet) .player-shell:hover .alert:not(.expanded)::before,
+    html[data-theme="minimal"]:not(.shared-sheet) .player-shell:has(#transportSlot:focus-within) .alert:not(.expanded)::before,
+    html[data-theme="minimal"].keyboard-nav:not(.shared-sheet) .alert:not(.expanded)::before {
+      content: "!";
+      position: absolute;
+      inset: 0;
+      display: grid;
+      place-items: center;
+      font-size: 12px;
+      font-weight: 900;
+      line-height: 1;
+    }
+
+    html[data-theme="minimal"]:not(.shared-sheet) .player-shell.recovering .alert:not(.expanded)::after,
+    html[data-theme="minimal"]:not(.shared-sheet) .player-shell:hover .alert:not(.expanded)::after,
+    html[data-theme="minimal"]:not(.shared-sheet) .player-shell:has(#transportSlot:focus-within) .alert:not(.expanded)::after,
+    html[data-theme="minimal"].keyboard-nav:not(.shared-sheet) .alert:not(.expanded)::after {
+      content: none;
+    }
+
+    html[data-theme="minimal"]:not(.shared-sheet) .alert[data-truncated] {
+      padding-right: 18px;
+    }
+
+    html[data-theme="minimal"]:not(.shared-sheet) .alert[data-truncated]::after {
+      right: 7px;
+    }
+
+    /* Opened, the whole message fills the capsule left of the pin/close/⋯ cluster. */
+    html[data-theme="minimal"]:not(.shared-sheet) .alert.expanded {
+      z-index: 30;
+      top: 4px;
+      right: 68px;
+      bottom: 4px;
+      left: 4px;
+      width: auto;
+      height: auto;
+      max-height: none;
+      padding: 5px 10px;
+      border-radius: 12px;
+      background: var(--mantle);
+      font-size: 10px;
+      line-height: 14px;
+      overflow-y: auto;
+      text-overflow: clip;
+      white-space: normal;
     }
 
     @media (hover: none) {
       html[data-theme="minimal"]:not(.shared-sheet) .now-copy {
         opacity: 0;
         visibility: hidden;
+      }
+
+      /* No hover means the transport is always up, so the error always takes the badge. */
+      html[data-theme="minimal"]:not(.shared-sheet) .alert:not(.expanded) {
+        top: 38px;
+        right: auto;
+        left: 38px;
+        width: 22px;
+        height: 22px;
+        padding: 0;
+        border-radius: 50%;
+        font-size: 0;
+        line-height: 0;
+      }
+
+      html[data-theme="minimal"]:not(.shared-sheet) .alert:not(.expanded)::before {
+        content: "!";
+        position: absolute;
+        inset: 0;
+        display: grid;
+        place-items: center;
+        font-size: 12px;
+        font-weight: 900;
+        line-height: 1;
+      }
+
+      html[data-theme="minimal"]:not(.shared-sheet) .alert:not(.expanded)::after {
+        content: none;
       }
 
       html[data-theme="minimal"]:not(.shared-sheet) #transportSlot {

@@ -279,11 +279,51 @@ fn render_panel(frame: &mut Frame, app: &App, area: Rect) {
     if inner.height < 3 || inner.width < 8 {
         return;
     }
+    let hint = match atlas.active_country {
+        Some(_) => format!(
+            "{} · {}",
+            atlas.active_country_name,
+            t!("Enter plays", "Enter로 재생", "Enterで再生")
+        ),
+        None => t!(
+            "Enter plays · n/p cycle · c country",
+            "Enter 재생 · n/p 이동 · c 국가",
+            "Enter再生 · n/p切替 · c国"
+        )
+        .to_owned(),
+    };
+    // The key hint wraps onto a second row in a narrow panel rather than losing its end,
+    // breaking between hints so a key never lands on a different row from its label.
+    let width = usize::from(inner.width);
+    let mut hint_lines: Vec<String> = Vec::new();
+    for part in hint.split(" · ") {
+        // A part wider than the panel (a long country name) ends in `…` on its own row, so
+        // "Enter plays" still gets the next one.
+        let part = if crate::ui::buttons::text_width(part) as usize > width {
+            format!("{}…", truncate_to_width(part, width.saturating_sub(1)))
+        } else {
+            part.to_owned()
+        };
+        let part = part.as_str();
+        match hint_lines.last_mut() {
+            Some(line)
+                if crate::ui::buttons::text_width(line) as usize
+                    + 3
+                    + crate::ui::buttons::text_width(part) as usize
+                    <= width =>
+            {
+                line.push_str(" · ");
+                line.push_str(part);
+            }
+            _ => hint_lines.push(part.to_owned()),
+        }
+    }
+    hint_lines.truncate(2);
     let rows = Layout::vertical([
-        Constraint::Length(1), // tabs
-        Constraint::Length(1), // search
-        Constraint::Min(1),    // list
-        Constraint::Length(1), // hint
+        Constraint::Length(1),                       // tabs
+        Constraint::Length(1),                       // search
+        Constraint::Min(1),                          // list
+        Constraint::Length(hint_lines.len() as u16), // hint
     ])
     .split(inner);
 
@@ -471,21 +511,8 @@ fn render_panel(frame: &mut Frame, app: &App, area: Rect) {
         }
     }
 
-    let hint = match atlas.active_country {
-        Some(_) => format!(
-            "{} · {}",
-            atlas.active_country_name,
-            t!("Enter plays", "Enter로 재생", "Enterで再生")
-        ),
-        None => t!(
-            "Enter plays · n/p cycle · c country",
-            "Enter 재생 · n/p 이동 · c 국가",
-            "Enter再生 · n/p切替 · c国"
-        )
-        .to_owned(),
-    };
     frame.render_widget(
-        Paragraph::new(truncate_to_width(&hint, usize::from(rows[3].width)))
+        Paragraph::new(hint_lines.into_iter().map(Line::from).collect::<Vec<_>>())
             .style(app.theme.style(R::TextSubtle)),
         rows[3],
     );

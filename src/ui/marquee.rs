@@ -80,6 +80,11 @@ pub fn selected_marquee(
     let elapsed = app
         .anim_frame()
         .wrapping_sub(app.bridges.marquee_origin.get());
+    // While the crawl holds at the start, end the window with `…` so the clipped text reads
+    // as continuing rather than silently cut; the crawl then reveals the rest.
+    if elapsed / MARQUEE_FRAME_DIV < MARQUEE_START_HOLD {
+        return format!("{}…", col_window(text, 0, avail - 1));
+    }
     let mut cache = app.bridges.marquee_cache.borrow_mut();
     cache.refresh(surface, index, text, avail, total);
     let start =

@@ -971,3 +971,66 @@ fn load_art_data_uri_handles_missing_and_oversized() {
     std::fs::remove_file(&big_path).ok();
     assert_eq!(rejected, None);
 }
+
+#[test]
+fn compact_skins_keep_recovery_and_errors_inside_their_own_space() {
+    // The shared sheet's Back reads as "back", not as "previous track".
+    assert!(PANEL_HTML.contains(
+        r##"<button id="sharedSheetBack" title="Back" aria-label="Back"><svg class="icon" aria-hidden="true"><use href="#icon-chevron-left"/>"##
+    ));
+    // Minimal: every recovery action on a fixed two-row grid, and the error on the artist
+    // line instead of a strip across the capsule.
+    assert!(PANEL_HTML.contains("grid-template-columns: repeat(2, minmax(0, 1fr));"));
+    assert!(PANEL_HTML.contains(".player-shell:has(#error:not([hidden])) .artist"));
+    assert!(PANEL_HTML.contains(
+        r#"html[data-theme="minimal"]:not(.shared-sheet) .player-shell.recovering .alert"#
+    ));
+    // Tamagotchi: one recovery action per row, and the error as a line on the LCD.
+    assert!(PANEL_HTML.contains("padding: 10px 8px 30px;"));
+    assert!(PANEL_HTML.contains(
+        "background: var(--tama-ink);\n      color: var(--tama-lcd);\n      font-family"
+    ));
+    // Cushion: the state chip never shrinks; the brand gives way instead.
+    assert!(PANEL_HTML.contains(r#"<span class="brand-name">YuTuTui!</span>"#));
+    // Truncated recovery labels keep their full wording in a tooltip.
+    assert!(PANEL_HTML.contains("function renderRecoveryLabels()"));
+}
+
+#[test]
+fn every_skin_opens_the_full_error_text() {
+    // Click, Enter/Space open the whole message; Escape closes it first, before any other
+    // Escape action, keeping focus on the error.
+    assert!(PANEL_HTML.contains("els.error.addEventListener(\"click\", toggleAlert);"));
+    assert!(PANEL_HTML.contains("if (els.error.classList.contains(\"expanded\")) {"));
+    assert!(PANEL_HTML.contains(".alert[data-truncated]::after"));
+    assert!(PANEL_HTML.contains(".alert.expanded {"));
+    // Minimal keeps a visible, focusable "!" badge instead of hiding the error.
+    assert!(PANEL_HTML.contains(r#"html[data-theme="minimal"].keyboard-nav:not(.shared-sheet) .alert:not(.expanded)::before"#));
+    assert!(
+        !PANEL_HTML
+            .contains(r#"html[data-theme="minimal"].keyboard-nav:not(.shared-sheet) .alert {"#)
+    );
+}
+
+#[test]
+fn an_open_error_scrolls_from_the_keyboard_without_leaking_keys() {
+    // Arrows, Page keys, and Home/End move a long open message, bounded to its content, and
+    // stop there so they never reach the page or the global shortcuts.
+    assert!(PANEL_HTML.contains("function scrollAlert(key)"));
+    for key in [
+        "ArrowDown:",
+        "ArrowUp:",
+        "PageDown:",
+        "PageUp:",
+        "End:",
+        "Home:",
+    ] {
+        assert!(PANEL_HTML.contains(key), "missing {key}");
+    }
+    assert!(PANEL_HTML.contains("alert.scrollTop = Math.min(max, Math.max(0, next));"));
+    assert!(PANEL_HTML.contains(
+        "if (els.error.classList.contains(\"expanded\") && scrollAlert(event.key)) {\n        event.preventDefault();\n        event.stopPropagation();"
+    ));
+    // Every opening starts at the top of the message.
+    assert!(PANEL_HTML.contains("els.error.scrollTop = 0;"));
+}

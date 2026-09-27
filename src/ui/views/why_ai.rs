@@ -27,7 +27,8 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     }
 
     let popup_width = CARD_WIDTH.min(area.width);
-    let content_width = popup_width.saturating_sub(2).max(1);
+    // Borders plus one cell of padding on each side.
+    let content_width = popup_width.saturating_sub(4).max(1);
     let title = app.display_title(song);
     let artist = app.display_artist(song);
     let safe_title = truncate_to_width(title.as_ref(), usize::from(content_width));
@@ -48,7 +49,8 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         .map(|value| value.clamp(0.0, 1.0));
 
     let source_text = format!("{}: {}", why_gem::origin_label(), origin);
-    let mut body_rows = 2_u16.saturating_add(wrapped_rows(&source_text, content_width));
+    // Title, artist, and a blank row before the details.
+    let mut body_rows = 3_u16.saturating_add(wrapped_rows(&source_text, content_width));
     if let Some(role) = role {
         let role_text = format!("{}: {role}", why_gem::role_label());
         body_rows = body_rows.saturating_add(wrapped_rows(&role_text, content_width));
@@ -57,7 +59,8 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         body_rows = body_rows.saturating_add(wrapped_rows(reason, content_width.saturating_sub(2)));
     }
     if confidence.is_some() {
-        let confidence_text = format!("{}: 100%", why_gem::confidence_label());
+        // Same width as the drawn row: label, ten-cell meter, and the percentage.
+        let confidence_text = format!("{}: ■■■■■■■■■■ 100%", why_gem::confidence_label());
         body_rows = body_rows.saturating_add(wrapped_rows(&confidence_text, content_width));
     }
     let popup_height = body_rows.saturating_add(3).min(area.height); // borders + close hint
@@ -74,9 +77,9 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
 
     let hint_height = inner.height.min(1);
     let body = Rect {
-        x: inner.x,
+        x: inner.x.saturating_add(1),
         y: inner.y,
-        width: inner.width,
+        width: inner.width.saturating_sub(2),
         height: inner.height.saturating_sub(hint_height),
     };
     let hint = Rect {
@@ -128,6 +131,7 @@ fn draw_details(
     let mut lines = Vec::with_capacity(5 + reasons.len());
     lines.push(Line::from(Span::styled(title.to_owned(), heading)));
     lines.push(Line::from(Span::styled(artist.to_owned(), label)));
+    lines.push(Line::default());
     lines.push(labelled_line(why_gem::origin_label(), origin, label, value));
     if let Some(role) = role {
         lines.push(labelled_line(why_gem::role_label(), role, label, value));
@@ -139,8 +143,19 @@ fn draw_details(
     );
     if let Some(confidence) = confidence {
         let percent = format!("{:.0}%", (confidence * 100.0).round());
+        // A ten-cell meter beside the number, so confidence reads at a glance.
+        let filled = (confidence * 10.0).round() as usize;
+        let (full, empty) = if app.retro_mode() {
+            ('#', '.')
+        } else {
+            ('■', '□')
+        };
+        let meter: String = (0..10)
+            .map(|cell| if cell < filled { full } else { empty })
+            .collect();
         lines.push(Line::from(vec![
             Span::styled(format!("{}: ", why_gem::confidence_label()), label),
+            Span::styled(format!("{meter} "), reason_style),
             Span::styled(percent, value),
         ]));
     }

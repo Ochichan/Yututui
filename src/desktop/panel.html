@@ -17,12 +17,13 @@
     <symbol id="icon-repeat" viewBox="0 0 24 24"><path d="m17 1 4 4-4 4"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><path d="m7 23-4-4 4-4"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></symbol>
     <symbol id="icon-sparkles" viewBox="0 0 24 24"><path d="m12 3-1.9 4.8a2 2 0 0 1-1.1 1.1L4 11l5 2.1a2 2 0 0 1 1.1 1.1L12 19l1.9-4.8a2 2 0 0 1 1.1-1.1l5-2.1-5-2.1a2 2 0 0 1-1.1-1.1L12 3Z"/><path d="M5 3v4"/><path d="M3 5h4"/><path d="M19 17v4"/><path d="M17 19h4"/></symbol>
     <symbol id="icon-volume" viewBox="0 0 24 24"><path d="M11 5 6 9H2v6h4l5 4V5Z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/><path d="M19.1 4.9a10 10 0 0 1 0 14.2"/></symbol>
+    <symbol id="icon-chevron-left" viewBox="0 0 24 24"><path d="m15 18-6-6 6-6"/></symbol>
     <symbol id="icon-ellipsis" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/></symbol>
   </svg>
 
   <div class="player-shell" id="playerRoot" aria-label="YuTuTui mini player">
     <header id="dragRegion">
-      <div class="brand"><span class="cat">=^..^=</span> YuTuTui!</div>
+      <div class="brand"><span class="cat">=^..^=</span> <span class="brand-name">YuTuTui!</span></div>
       <div class="chip" id="stateLabel" data-state="disconnected" role="status">Disconnected</div>
       <button class="icon-btn pin" data-action="set_pinned" id="pin" title="Keep player visible" aria-label="Keep player visible" aria-pressed="false"><svg class="icon" aria-hidden="true"><use href="#icon-pin"/></svg></button>
       <button class="icon-btn" data-action="refresh" id="refreshTop" title="Refresh" aria-label="Refresh status"><svg class="icon" aria-hidden="true"><use href="#icon-refresh-cw"/></svg></button>
@@ -45,7 +46,7 @@
     </div>
 
     <div id="sharedSheetBar">
-      <button id="sharedSheetBack" title="Back" aria-label="Back"><svg class="icon" aria-hidden="true"><use href="#icon-skip-back"/></svg></button>
+      <button id="sharedSheetBack" title="Back" aria-label="Back"><svg class="icon" aria-hidden="true"><use href="#icon-chevron-left"/></svg></button>
       <div id="sharedSheetTitle">Queue</div>
     </div>
 

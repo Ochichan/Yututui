@@ -147,23 +147,36 @@ fn render_section(frame: &mut Frame, app: &App, area: Rect, section: ArtistSecti
     );
     let visible_sel = (offset..offset + list_area.height as usize).contains(&selected);
 
+    // Marker gutter (2) and heart slot (2) precede the shared title/artist/duration body.
+    let body_w = (list_area.width as usize).saturating_sub(4);
     let items: Vec<ListItem> = rows
         .iter()
+        .enumerate()
         .skip(offset)
         .take(list_area.height as usize)
-        .map(|song| {
+        .map(|(index, song)| {
             let is_favorite =
                 song.youtube_playlist_id().is_none() && app.library.is_favorite(&song.video_id);
             let heart = if is_favorite { "♥ " } else { "  " };
             let title = app.display_title(song);
             let artist = app.display_artist(song);
-            let text = match (artist.is_empty(), song.duration.is_empty()) {
-                (true, true) => title.into_owned(),
-                (true, false) => format!("{title}  ({})", song.duration),
-                (false, true) => format!("{title} — {artist}"),
-                (false, false) => format!("{title} — {artist}  ({})", song.duration),
+            // The highlighted row keeps one color so the selection reads as a block.
+            let muted = if visible_sel && index == selected {
+                Style::default()
+            } else {
+                app.theme.style(R::TextMuted)
             };
-            ListItem::new(format!("{heart}{text}")).style(app.theme.style(R::TextPrimary))
+            let mut spans = vec![ratatui::text::Span::raw(heart)];
+            spans.extend(crate::ui::track_row::spans(
+                &title,
+                &artist,
+                &song.duration,
+                body_w,
+                None,
+                Style::default(),
+                muted,
+            ));
+            ListItem::new(Line::from(spans)).style(app.theme.style(R::TextPrimary))
         })
         .collect();
     let highlight = if focused {

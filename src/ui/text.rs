@@ -262,6 +262,20 @@ fn push_word(out: &mut Vec<String>, cur: &mut String, cur_w: &mut usize, word: &
     }
 }
 
+/// Like [`truncate_owned_to_width`], but a string that does not fit ends in `…` (within
+/// `max`), so a clipped row reads as continuing rather than silently cut.
+pub fn ellipsize_owned_to_width(s: String, max: usize) -> String {
+    if UnicodeWidthStr::width(s.as_str()) <= max {
+        return s;
+    }
+    if max == 0 {
+        return String::new();
+    }
+    let mut out = truncate_to_width(&s, max - 1);
+    out.push('…');
+    out
+}
+
 /// Truncate an owned string in place when needed, avoiding a second allocation for the common
 /// already-fitting path.
 pub fn truncate_owned_to_width(mut s: String, max: usize) -> String {

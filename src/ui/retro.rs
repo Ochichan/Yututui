@@ -90,7 +90,10 @@ fn replacement_for(c: char) -> &'static str {
         'ı' => "i",
         '▒' | '░' | '▧' => "/",
         '█' | '▄' | '▀' | '▁' | '▂' | '▃' | '▅' | '▆' | '▇' | '▔' => "#",
-        '⌕' => "?",
+        // The filter icon becomes the filter key itself; `?` read as the help key.
+        '⌕' => "/",
+        // Dropdown carets keep their "opens a list" shape instead of turning into `?`.
+        '▾' | '▿' | '▽' => "v",
         '👍' => "+",
         '👎' => "-",
         '🤔' => "?",

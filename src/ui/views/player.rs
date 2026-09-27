@@ -179,10 +179,10 @@ pub(in crate::ui) fn render_queue_popup(frame: &mut Frame, app: &App, area: Rect
         let artist = app.display_artist(song);
         let actions_w = queue_actions::reserved_width(app, &song.video_id);
         let body_w = list.width.saturating_sub(actions_w) as usize;
-        let text = crate::ui::text::truncate_owned_to_width(
-            format!("{marker}{:>3} {title} — {artist}", i + 1),
-            body_w.saturating_sub(1),
-        );
+        let prefix = format!("{marker}{:>3} ", i + 1);
+        let row_w = body_w
+            .saturating_sub(1)
+            .saturating_sub(UnicodeWidthStr::width(prefix.as_str()));
 
         let mut base = if selected {
             crate::ui::anim::selection_style(
@@ -199,13 +199,30 @@ pub(in crate::ui) fn render_queue_popup(frame: &mut Frame, app: &App, area: Rect
         if is_current {
             base = base.add_modifier(Modifier::BOLD);
         }
+        // Number, title, a quieter artist, and the duration in its own column; a highlighted
+        // or now-playing row keeps one color.
+        let muted = if selected || is_current {
+            Style::default()
+        } else {
+            app.theme.style(R::TextMuted)
+        };
+        let mut spans = vec![ratatui::text::Span::styled(prefix, muted)];
+        spans.extend(crate::ui::track_row::spans(
+            &title,
+            &artist,
+            &song.duration,
+            row_w,
+            None,
+            Style::default(),
+            muted,
+        ));
         let row = Rect {
             x: list.x,
             y,
             width: list.width,
             height: 1,
         };
-        frame.render_widget(Paragraph::new(Line::from(text).style(base)), row);
+        frame.render_widget(Paragraph::new(Line::from(spans).style(base)), row);
 
         let actions_w = queue_actions::render(frame, app, row, i, &song.video_id, selected);
 
@@ -294,6 +311,88 @@ fn render_filler(frame: &mut Frame, app: &App, player_area: Rect, area: Rect) {
     }
     if let Some(lyrics) = layout.lyrics {
         super::player_lyrics::render(frame, app, lyrics);
+    }
+    // With nothing loaded and no canvas effect, lyrics, or art, the filler would otherwise be
+    // blank (animations are off by default), so it shows where to start instead.
+    if app.queue.current().is_none()
+        && layout.art.is_none()
+        && layout.lyrics.is_none()
+        && !app.bridges.canvas_active.get()
+    {
+        render_idle_card(frame, app, area);
+    }
+}
+
+/// The empty Player: a heading and one row per way in (search, library, DJ Gem), each naming
+/// its current key and clickable. Drawn only when it fits whole.
+fn render_idle_card(frame: &mut Frame, app: &App, area: Rect) {
+    use crate::keymap::{Action, KeyContext};
+    let retro = app.retro_mode();
+    let rows: Vec<(Action, String, &str)> = [
+        (
+            Action::OpenSearch,
+            t!("Search for music", "음악 검색", "音楽を検索"),
+        ),
+        (
+            Action::OpenLibrary,
+            t!("Open your library", "라이브러리 열기", "ライブラリを開く"),
+        ),
+        (
+            Action::OpenAi,
+            t!("Ask DJ Gem", "DJ Gem에게 요청", "DJ Gem に頼む"),
+        ),
+    ]
+    .into_iter()
+    .map(|(action, label)| {
+        let key = app
+            .keymap
+            .label_for_display(KeyContext::Player, action, retro);
+        (action, key, label)
+    })
+    .collect();
+    // The docked bar's title already says nothing is playing; this names what to do.
+    let heading = t!("♪  Start listening", "♪  음악 듣기 시작", "♪  聴きはじめる");
+    let key_width = rows
+        .iter()
+        .map(|(_, key, _)| UnicodeWidthStr::width(key.as_str()))
+        .max()
+        .unwrap_or(1);
+    let width = rows
+        .iter()
+        .map(|(_, _, label)| key_width + 2 + UnicodeWidthStr::width(*label))
+        .chain(std::iter::once(UnicodeWidthStr::width(heading)))
+        .max()
+        .unwrap_or(0) as u16;
+    // Heading, a blank row, then one row per action.
+    let height = rows.len() as u16 + 2;
+    if area.width < width + 2 || area.height < height {
+        return;
+    }
+    let x = area.x + (area.width - width) / 2;
+    let y = area.y + (area.height - height) / 2;
+    let row = |offset: u16| Rect {
+        x,
+        y: y + offset,
+        width,
+        height: 1,
+    };
+    frame.render_widget(
+        Paragraph::new(heading).style(app.theme.style(R::TextPrimary).add_modifier(Modifier::BOLD)),
+        row(0),
+    );
+    for (index, (action, key, label)) in rows.into_iter().enumerate() {
+        let rect = row(index as u16 + 2);
+        frame.render_widget(
+            Paragraph::new(Line::from(vec![
+                ratatui::text::Span::styled(
+                    crate::ui::text::pad_to_width(&key, key_width + 2),
+                    app.theme.style(R::Accent),
+                ),
+                ratatui::text::Span::styled(label.to_owned(), app.theme.style(R::TextMuted)),
+            ])),
+            rect,
+        );
+        app.register_mouse_button(rect, MouseTarget::Player(action));
     }
 }
 

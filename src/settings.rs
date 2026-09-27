@@ -30,7 +30,9 @@ mod atlas;
 pub use atlas::AtlasField;
 mod color_picker;
 mod display;
+mod field_help;
 mod field_meta;
+pub use field_help::anim_cost;
 pub mod sync;
 pub use actions::{FieldKind, PersonalDataExportStatus};
 pub use color_picker::{
@@ -257,13 +259,34 @@ impl SettingsTab {
     /// tab renders as a flat list with no headers.
     pub fn sections(self) -> Vec<(&'static str, usize)> {
         match self {
+            SettingsTab::General => general_sections(),
             SettingsTab::Playback => playback_sections(),
             SettingsTab::Graphics => graphics_sections(),
             SettingsTab::Accounts => accounts_sections(),
             SettingsTab::Ai => ai_sections(),
-            SettingsTab::General | SettingsTab::Keys | SettingsTab::Sync => Vec::new(),
+            SettingsTab::Keys | SettingsTab::Sync => Vec::new(),
         }
     }
+}
+
+fn general_sections() -> Vec<(&'static str, usize)> {
+    // Boundaries follow the existing field order, so row indices (and every test or coach
+    // step that looks a General field up by position) are unchanged.
+    vec![
+        (t!("Basics", "기본", "基本"), 2),
+        (t!("Search sources", "검색 소스", "検索ソース"), 10),
+        (
+            t!(
+                "Files & library",
+                "파일 · 라이브러리",
+                "ファイル · ライブラリ"
+            ),
+            5,
+        ),
+        (t!("Display & input", "화면 · 입력", "表示 · 入力"), 4),
+        (t!("Behavior", "동작", "動作"), 3),
+        (t!("Data & reset", "데이터 · 초기화", "データ · 初期化"), 3),
+    ]
 }
 
 fn playback_sections() -> Vec<(&'static str, usize)> {

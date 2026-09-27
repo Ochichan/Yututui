@@ -32,9 +32,11 @@
       cursor: grabbing;
     }
 
+    /* The brand gives way before the state chip: "Disconnected" must read whole. */
     .brand {
       display: inline-flex;
-      flex: none;
+      flex: 0 1 auto;
+      min-width: 0;
       align-items: center;
       gap: 7px;
       color: var(--lavender);
@@ -42,6 +44,12 @@
       font-weight: 800;
       letter-spacing: 0.2px;
       white-space: nowrap;
+    }
+
+    .brand .brand-name {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
     }
 
     .brand .cat {
@@ -60,6 +68,7 @@
 
     .chip {
       display: inline-flex;
+      flex: none;
       align-items: center;
       gap: 6px;
       min-width: 0;
@@ -245,10 +254,14 @@
       padding-right: 4px;
     }
 
+    /* Now scrolls too when recovery buttons push it past the window (idle, disconnected);
+       a visible thumb says so, instead of controls silently sliding under the dock. */
+    .tab-panel[data-panel="now"]::-webkit-scrollbar,
     .tab-panel[data-panel="more"]::-webkit-scrollbar {
       width: 6px;
     }
 
+    .tab-panel[data-panel="now"]::-webkit-scrollbar-thumb,
     .tab-panel[data-panel="more"]::-webkit-scrollbar-thumb {
       border-radius: 999px;
       background: var(--surface1);
@@ -946,6 +959,40 @@
       display: none;
     }
 
+    /* The error opens to its whole text (click, or Enter/Space when focused). A cut line
+       carries a "›" cue on the right; the open state wraps and scrolls. */
+    .alert {
+      position: relative;
+      cursor: pointer;
+    }
+
+    .alert[data-truncated] {
+      padding-right: 26px;
+    }
+
+    .alert[data-truncated]::after {
+      content: "›";
+      position: absolute;
+      top: 50%;
+      right: 12px;
+      transform: translateY(-50%);
+      font-weight: 800;
+    }
+
+    .alert:focus-visible {
+      outline: 2px solid var(--lavender);
+      outline-offset: 2px;
+    }
+
+    .alert.expanded {
+      max-height: 132px;
+      overflow-y: auto;
+      border-radius: 14px;
+      text-align: left;
+      text-overflow: clip;
+      white-space: normal;
+    }
+
     .alert[data-kind="success"],
     .compact-alert[data-kind="success"] {
       border-color: rgba(166, 218, 149, 0.75);
@@ -993,9 +1040,10 @@
       box-shadow: 0 0 0 3px rgba(183, 189, 248, 0.25);
     }
 
+    /* Dim enough to read as unavailable, light enough that the label stays legible. */
     button:disabled,
     select:disabled {
-      opacity: 0.38;
+      opacity: 0.5;
     }
 
     button.pending,

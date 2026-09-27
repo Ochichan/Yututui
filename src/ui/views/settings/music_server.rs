@@ -4,7 +4,7 @@ use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
+use ratatui::widgets::{Block, Borders, Clear, ListItem, Paragraph, Wrap};
 use zeroize::Zeroizing;
 
 use crate::app::{
@@ -28,14 +28,26 @@ pub(crate) fn render_sync_area_selector(
         return;
     }
     let theme = &settings.draft.theme;
+    // Full names when all four fit; the compact names otherwise (they fit 28 columns).
+    let separators = 3 * (SyncArea::ALL.len() - 1);
+    let full_width: usize = SyncArea::ALL
+        .iter()
+        .map(|area| usize::from(buttons::text_width(area.label())))
+        .sum::<usize>()
+        + separators;
+    let full = full_width <= usize::from(area.width);
     let mut x = area.x;
     let mut spans = Vec::new();
     for (index, sync_area) in SyncArea::ALL.iter().copied().enumerate() {
         if index > 0 {
-            spans.push(Span::styled(" | ", theme.style(R::TextMuted)));
+            spans.push(Span::styled(" · ", theme.style(R::TextMuted)));
             x = x.saturating_add(3);
         }
-        let label = compact_area_label(sync_area);
+        let label = if full {
+            sync_area.label()
+        } else {
+            compact_area_label(sync_area)
+        };
         let width = buttons::text_width(label).min(area.right().saturating_sub(x));
         let selected = app.server.settings.area == sync_area;
         spans.push(Span::styled(
@@ -74,102 +86,174 @@ fn compact_area_label(area: SyncArea) -> &'static str {
     }
 }
 
+/// A block heading: bold title, then a colored dot and the state in the same color.
+fn state_heading(settings: &SettingsState, title: &str, state: &str, role: R) -> Line<'static> {
+    let theme = &settings.draft.theme;
+    Line::from(vec![
+        Span::styled(
+            title.to_owned(),
+            theme.style(R::SettingsGroup).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled("  ● ", theme.style(role)),
+        Span::styled(state.to_owned(), theme.style(role)),
+    ])
+}
+
+/// Wrap every `\n`-separated line of `text` to `width` cells without dropping any of it. The
+/// first source line takes `first`; the rest (the recovery step in attention copy) take `rest`.
+fn wrapped(text: &str, width: usize, first: Style, rest: Style) -> Vec<Line<'static>> {
+    let width = width.max(1);
+    let mut lines = Vec::new();
+    for (index, source) in text.lines().enumerate() {
+        let style = if index == 0 { first } else { rest };
+        for part in crate::ui::text::wrap_to_width(source, width) {
+            lines.push(Line::from(Span::styled(part, style)));
+        }
+    }
+    lines
+}
+
+fn server_health_label(health: MusicServerHealth) -> (&'static str, R) {
+    match health {
+        MusicServerHealth::Off => (t!("Off", "꺼짐", "オフ"), R::TextMuted),
+        MusicServerHealth::UpToDate => (t!("Up to date", "최신 상태", "最新"), R::Success),
+        MusicServerHealth::NeedsAttention => {
+            (t!("Needs attention", "확인 필요", "要確認"), R::Error)
+        }
+    }
+}
+
+/// The attention message for the most urgent pending server decision, if any.
+fn server_attention(summary: &crate::app::MusicServerSummary) -> Option<String> {
+    if summary.playlist_creates_needing_decision > 0 {
+        Some(playlist_create_attention_detail(
+            summary.playlist_creates_needing_decision,
+            &summary.playlist_create_attention,
+        ))
+    } else if summary.playlist_links_needing_decision > 0 {
+        Some(playlist_link_attention_detail(
+            summary.playlist_links_needing_decision,
+        ))
+    } else if summary.playlist_contents_needing_decision > 0 {
+        Some(playlist_content_attention_detail(
+            summary.playlist_contents_needing_decision,
+        ))
+    } else if summary.playlist_projections_needing_decision > 0 {
+        Some(playlist_projection_attention_detail(
+            summary.playlist_projections_needing_decision,
+        ))
+    } else if summary.playback_reports_needing_decision > 0 {
+        Some(playback_report_attention_detail(
+            summary.playback_reports_needing_decision,
+        ))
+    } else {
+        None
+    }
+}
+
 pub(crate) fn render_status(frame: &mut Frame, app: &App, settings: &SettingsState, area: Rect) {
+    if area.is_empty() {
+        return;
+    }
     let theme = &settings.draft.theme;
     let personal = app.sync_settings_model();
     let server = &app.server.settings.summary;
-    let rows = Layout::vertical([
-        Constraint::Length(1),
-        Constraint::Length(2),
-        Constraint::Length(1),
-        Constraint::Length(2),
-        Constraint::Min(0),
-    ])
-    .split(area);
-    frame.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled(
-                t!("Personal state", "개인 상태", "個人データ"),
-                theme.style(R::SettingsGroup).add_modifier(Modifier::BOLD),
-            ),
-            Span::styled("  ", theme.style(R::TextMuted)),
-            Span::styled(health_label(personal.health), theme.style(R::SettingsValue)),
-        ])),
-        rows[0],
-    );
-    frame.render_widget(
-        Paragraph::new(t!(
+    let muted = theme.style(R::TextMuted);
+    let width = super::sync::pane_text_width(area);
+    let mut lines = vec![state_heading(
+        settings,
+        t!("Personal state", "개인 상태", "個人データ"),
+        health_label(personal.health),
+        super::sync::health_role(personal.health),
+    )];
+    lines.extend(wrapped(
+        t!(
             "Encrypted changes stay local when the network is unavailable.",
             "네트워크를 사용할 수 없어도 암호화된 변경 사항은 로컬에 보관돼요.",
             "ネットワークが使えない間も暗号化された変更はローカルに保持されます。"
-        ))
-        .style(theme.style(R::TextMuted))
-        .wrap(Wrap { trim: true }),
-        rows[1],
+        ),
+        width,
+        muted,
+        muted,
+    ));
+    lines.push(Line::default());
+    let (state, role) = server_health_label(server.health);
+    lines.push(state_heading(
+        settings,
+        t!("Music server", "음악 서버", "音楽サーバー"),
+        state,
+        role,
+    ));
+    match server_attention(server) {
+        Some(detail) => lines.extend(wrapped(
+            &detail,
+            width,
+            theme.style(R::Error),
+            theme.style(R::SettingsValue),
+        )),
+        None => lines.extend(wrapped(
+            if server.configured {
+                t!(
+                    "Server browsing is optional; local search and playback stay independent.",
+                    "서버 탐색은 선택 사항이며 로컬 검색과 재생은 독립적으로 동작해요.",
+                    "サーバー閲覧は任意で、ローカル検索と再生は独立して動作します。"
+                )
+            } else {
+                t!(
+                    "No music server is connected.",
+                    "연결된 음악 서버가 없어요.",
+                    "音楽サーバーは接続されていません。"
+                )
+            },
+            width,
+            muted,
+            muted,
+        )),
+    }
+    // Text only: the pane scrolls with the wheel and scrollbar when it runs past the bottom.
+    super::sync::render_pane(
+        frame,
+        app,
+        settings,
+        area,
+        lines,
+        Vec::new(),
+        None,
+        MouseTarget::SettingsMusicServerRow,
     );
-    let server_health = match server.health {
-        MusicServerHealth::Off => t!("Off", "꺼짐", "オフ"),
-        MusicServerHealth::UpToDate => t!("Up to date", "최신 상태", "最新"),
-        MusicServerHealth::NeedsAttention => {
-            t!("Needs attention", "확인 필요", "要確認")
+}
+
+/// One `key  value` row of the server connection summary, the value wrapped under itself.
+fn summary_rows(
+    settings: &SettingsState,
+    rows: &[(&str, String)],
+    width: usize,
+) -> Vec<Line<'static>> {
+    let theme = &settings.draft.theme;
+    let key_width = rows
+        .iter()
+        .map(|(key, _)| usize::from(buttons::text_width(key)))
+        .max()
+        .unwrap_or(0)
+        + 2;
+    let value_width = width.saturating_sub(key_width).max(8);
+    let mut lines = Vec::new();
+    for (key, value) in rows {
+        for (index, part) in crate::ui::text::wrap_to_width(value, value_width)
+            .into_iter()
+            .enumerate()
+        {
+            let key = if index == 0 { *key } else { "" };
+            lines.push(Line::from(vec![
+                Span::styled(
+                    crate::ui::text::pad_to_width(key, key_width),
+                    theme.style(R::SettingsLabel),
+                ),
+                Span::styled(part, theme.style(R::SettingsValue)),
+            ]));
         }
-    };
-    frame.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled(
-                t!("Music server", "음악 서버", "音楽サーバー"),
-                theme.style(R::SettingsGroup).add_modifier(Modifier::BOLD),
-            ),
-            Span::styled("  ", theme.style(R::TextMuted)),
-            Span::styled(server_health, theme.style(R::SettingsValue)),
-        ])),
-        rows[2],
-    );
-    let server_detail = if server.playlist_creates_needing_decision > 0 {
-        playlist_create_attention_detail(
-            server.playlist_creates_needing_decision,
-            &server.playlist_create_attention,
-        )
-    } else if server.playlist_links_needing_decision > 0 {
-        playlist_link_attention_detail(server.playlist_links_needing_decision)
-    } else if server.playlist_contents_needing_decision > 0 {
-        playlist_content_attention_detail(server.playlist_contents_needing_decision)
-    } else if server.playlist_projections_needing_decision > 0 {
-        playlist_projection_attention_detail(server.playlist_projections_needing_decision)
-    } else if server.playback_reports_needing_decision > 0 {
-        playback_report_attention_detail(server.playback_reports_needing_decision)
-    } else if server.configured {
-        t!(
-            "Server browsing is optional; local search and playback stay independent.",
-            "서버 탐색은 선택 사항이며 로컬 검색과 재생은 독립적으로 동작해요.",
-            "サーバー閲覧は任意で、ローカル検索と再生は独立して動作します。"
-        )
-        .to_owned()
-    } else {
-        t!(
-            "No music server is connected.",
-            "연결된 음악 서버가 없어요.",
-            "音楽サーバーは接続されていません。"
-        )
-        .to_owned()
-    };
-    frame.render_widget(
-        Paragraph::new(server_detail)
-            .style(theme.style(
-                if server.playback_reports_needing_decision > 0
-                    || server.playlist_creates_needing_decision > 0
-                    || server.playlist_links_needing_decision > 0
-                    || server.playlist_contents_needing_decision > 0
-                    || server.playlist_projections_needing_decision > 0
-                {
-                    R::Error
-                } else {
-                    R::TextMuted
-                },
-            ))
-            .wrap(Wrap { trim: true }),
-        rows[3],
-    );
+    }
+    lines
 }
 
 pub(crate) fn render_music_server(
@@ -178,93 +262,82 @@ pub(crate) fn render_music_server(
     settings: &SettingsState,
     area: Rect,
 ) {
+    if area.is_empty() {
+        return;
+    }
     let theme = &settings.draft.theme;
-    let rows = Layout::vertical([
-        Constraint::Length(1),
-        Constraint::Length(2),
-        Constraint::Min(0),
-    ])
-    .split(area);
     let summary = &app.server.settings.summary;
-    let state = if app.server.settings.busy.is_some() {
-        t!("Working…", "처리 중…", "処理中…")
+    let (state, role) = if app.server.settings.busy.is_some() {
+        (t!("Working…", "처리 중…", "処理中…"), R::Accent)
     } else {
-        match summary.health {
-            MusicServerHealth::Off => t!("Off", "꺼짐", "オフ"),
-            MusicServerHealth::UpToDate => t!("Up to date", "최신 상태", "最新"),
-            MusicServerHealth::NeedsAttention => {
-                t!("Needs attention", "확인 필요", "要確認")
-            }
-        }
+        server_health_label(summary.health)
     };
-    frame.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled(
-                summary.display_name(),
-                theme.style(R::SettingsGroup).add_modifier(Modifier::BOLD),
+    let width = super::sync::pane_text_width(area);
+    let mut lines = vec![state_heading(settings, summary.display_name(), state, role)];
+    if let Some(failure) = app.server.settings.failure {
+        // The problem and its recovery step on separate lines, each wrapped whole.
+        lines.extend(wrapped(
+            &format!("{}\n› {}", failure.label(), failure.recovery_label()),
+            width,
+            theme.style(R::Error),
+            theme.style(R::SettingsValueFocused),
+        ));
+    } else if let Some(detail) = server_attention(summary) {
+        lines.extend(wrapped(
+            &detail,
+            width,
+            theme.style(R::Error),
+            theme.style(R::SettingsValue),
+        ));
+    } else if !summary.configured {
+        let muted = theme.style(R::TextMuted);
+        lines.extend(wrapped(
+            t!(
+                "Connect one OpenSubsonic or Navidrome server.",
+                "OpenSubsonic 또는 Navidrome 서버 하나를 연결하세요.",
+                "OpenSubsonic または Navidrome サーバーを1台接続します。"
             ),
-            Span::styled("  ", theme.style(R::TextMuted)),
-            Span::styled(state, theme.style(R::SettingsValue)),
-        ])),
-        rows[0],
-    );
-    let detail = app.server.settings.failure.map_or_else(
-        || {
-            if summary.playlist_creates_needing_decision > 0 {
-                playlist_create_attention_detail(
-                    summary.playlist_creates_needing_decision,
-                    &summary.playlist_create_attention,
-                )
-            } else if summary.playlist_links_needing_decision > 0 {
-                playlist_link_attention_detail(summary.playlist_links_needing_decision)
-            } else if summary.playlist_contents_needing_decision > 0 {
-                playlist_content_attention_detail(summary.playlist_contents_needing_decision)
-            } else if summary.playlist_projections_needing_decision > 0 {
-                playlist_projection_attention_detail(summary.playlist_projections_needing_decision)
-            } else if summary.playback_reports_needing_decision > 0 {
-                playback_report_attention_detail(summary.playback_reports_needing_decision)
-            } else if summary.configured {
-                let auth = summary
+            width,
+            muted,
+            muted,
+        ));
+    }
+    if summary.configured {
+        let rows = [
+            (
+                t!("Sign-in", "로그인", "ログイン"),
+                summary
                     .credential_kind
                     .map(MusicServerCredentialMode::label)
-                    .unwrap_or("—");
-                format!(
-                    "{}  ·  {}  ·  {}",
-                    auth,
-                    if summary.lan_http {
-                        t!("LAN HTTP allowed", "LAN HTTP 허용", "LAN HTTP 許可")
-                    } else {
-                        "HTTPS"
-                    },
-                    history_health_label(summary.history, summary.credential_kind),
-                )
-            } else {
-                t!(
-                    "Connect one OpenSubsonic or Navidrome server.",
-                    "OpenSubsonic 또는 Navidrome 서버 하나를 연결하세요.",
-                    "OpenSubsonic または Navidrome サーバーを1台接続します。"
-                )
-                .to_owned()
-            }
-        },
-        |failure| format!("{}  ·  {}", failure.label(), failure.recovery_label()),
-    );
-    let detail_is_error = app.server.settings.failure.is_some()
-        || summary.playback_reports_needing_decision > 0
-        || summary.playlist_creates_needing_decision > 0
-        || summary.playlist_links_needing_decision > 0
-        || summary.playlist_contents_needing_decision > 0
-        || summary.playlist_projections_needing_decision > 0;
-    frame.render_widget(
-        Paragraph::new(detail)
-            .style(theme.style(if detail_is_error {
-                R::Error
-            } else {
-                R::TextMuted
-            }))
-            .wrap(Wrap { trim: true }),
-        rows[1],
-    );
+                    .unwrap_or("—")
+                    .to_owned(),
+            ),
+            (
+                t!("Connection", "연결", "接続"),
+                if summary.lan_http {
+                    t!("LAN HTTP allowed", "LAN HTTP 허용", "LAN HTTP 許可")
+                } else {
+                    "HTTPS"
+                }
+                .to_owned(),
+            ),
+            (
+                t!("Certificate", "인증서", "証明書"),
+                if summary.custom_ca {
+                    t!("Custom CA file", "사용자 CA 파일", "カスタムCAファイル")
+                } else {
+                    t!("System trust", "시스템 신뢰", "システムの信頼")
+                }
+                .to_owned(),
+            ),
+            (
+                t!("History", "이력", "履歴"),
+                history_health_label(summary.history, summary.credential_kind).to_owned(),
+            ),
+        ];
+        lines.push(Line::default());
+        lines.extend(summary_rows(settings, &rows, width));
+    }
 
     let labels: Vec<String> = if summary.configured {
         let mut labels = vec![
@@ -297,28 +370,29 @@ pub(crate) fn render_music_server(
         .map(str::to_owned)
         .collect()
     };
-    for (index, label) in labels.iter().enumerate().take(rows[2].height as usize) {
-        let selected = index == app.server.settings.selected;
-        let rect = Rect {
-            x: rows[2].x,
-            y: rows[2].y + index as u16,
-            width: rows[2].width,
-            height: 1,
-        };
-        frame.render_widget(
-            Paragraph::new(format!("{}↵ {label}", if selected { "▶ " } else { "  " })).style(
-                if selected {
-                    theme
-                        .style(R::SettingsValueFocused)
-                        .add_modifier(Modifier::BOLD)
-                } else {
-                    theme.style(R::SettingsValue)
-                },
-            ),
-            rect,
-        );
-        app.register_mouse_button(rect, MouseTarget::SettingsMusicServerRow(index));
-    }
+    let remove_index = summary.configured.then(|| labels.len() - 1);
+    let actions = labels
+        .iter()
+        .enumerate()
+        .map(|(index, label)| {
+            let style = if Some(index) == remove_index {
+                theme.style(R::Error)
+            } else {
+                theme.style(R::Accent)
+            };
+            ListItem::new(Line::from(Span::styled(format!("↵ {label}"), style)))
+        })
+        .collect();
+    super::sync::render_pane(
+        frame,
+        app,
+        settings,
+        area,
+        lines,
+        actions,
+        Some(app.server.settings.selected),
+        MouseTarget::SettingsMusicServerRow,
+    );
 }
 
 fn playback_report_attention_detail(count: usize) -> String {
@@ -480,7 +554,7 @@ pub(crate) fn render_music_server_wizard(frame: &mut Frame, app: &App, area: Rec
         area,
         64,
         match wizard {
-            MusicServerWizard::Setup(_) => 16,
+            MusicServerWizard::Setup(_) => 17,
             MusicServerWizard::AbandonPlaylistCreateConfirm(_) => 13,
             MusicServerWizard::Waiting | MusicServerWizard::RemoveConfirm => 8,
         },
@@ -677,15 +751,44 @@ fn render_setup_form(
     area: Rect,
 ) {
     let fields = MusicServerSetupField::ALL;
-    for (index, field) in fields.iter().copied().enumerate() {
-        if index >= area.height.saturating_sub(2) as usize {
-            break;
-        }
+    let inputs = fields.len() - 2;
+    // Labels share one column when it leaves room for a readable value; otherwise each row
+    // falls back to `label: value`.
+    let label_width = fields[..inputs]
+        .iter()
+        .map(|field| usize::from(buttons::text_width(setup_field_label(*field))))
+        .max()
+        .unwrap_or(0)
+        + 2;
+    let label_width = (label_width + 2 + 12 <= usize::from(area.width)).then_some(label_width);
+    // Inputs, a blank row, the Save/Cancel row, then the two-row key hint. On a short popup
+    // the hint goes first, then the blank row; the inputs scroll so the focused one stays
+    // visible, and the button row is always drawn.
+    let hint_rows: u16 = if area.height >= inputs as u16 + 4 {
+        2
+    } else {
+        0
+    };
+    let gap: u16 = u16::from(area.height >= inputs as u16 + 2);
+    let input_rows = usize::from(area.height.saturating_sub(hint_rows + gap + 1));
+    let offset = form
+        .selected
+        .min(inputs - 1)
+        .saturating_add(1)
+        .saturating_sub(input_rows);
+    for (row, (index, field)) in fields[..inputs]
+        .iter()
+        .copied()
+        .enumerate()
+        .skip(offset)
+        .take(input_rows)
+        .enumerate()
+    {
         let selected = form.selected == index;
         let label = setup_field_label(field);
         let rect = Rect {
             x: area.x,
-            y: area.y + index as u16,
+            y: area.y + row as u16,
             width: area.width,
             height: 1,
         };
@@ -695,15 +798,33 @@ fn render_setup_form(
             width: rect.width.saturating_sub(reveal_width),
             ..rect
         };
-        let text = setup_field_text(form, field, label, selected, field_rect.width as usize);
+        let (label_text, value_text, placeholder) = setup_field_text(
+            form,
+            field,
+            label,
+            label_width,
+            selected,
+            field_rect.width as usize,
+        );
+        let value_style = if selected {
+            app.theme
+                .style(R::SettingsValueFocused)
+                .add_modifier(Modifier::BOLD)
+        } else if placeholder {
+            app.theme.style(R::TextMuted)
+        } else {
+            app.theme.style(R::SettingsValue)
+        };
+        let label_style = if selected {
+            value_style
+        } else {
+            app.theme.style(R::SettingsLabel)
+        };
         frame.render_widget(
-            Paragraph::new(text.as_str()).style(if selected {
-                app.theme
-                    .style(R::SettingsValueFocused)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                app.theme.style(R::TextPrimary)
-            }),
+            Paragraph::new(Line::from(vec![
+                Span::styled(label_text.to_string(), label_style),
+                Span::styled(value_text.to_string(), value_style),
+            ])),
             field_rect,
         );
         app.register_mouse_button(field_rect, MouseTarget::MusicServerWizardField(index));
@@ -726,38 +847,81 @@ fn render_setup_form(
             app.register_mouse_button(reveal_rect, MouseTarget::MusicServerWizardReveal);
         }
     }
+
+    // Save and Cancel sit together on their own row, the focused one highlighted.
+    let button_y = area.y + (input_rows.min(inputs) as u16) + gap;
+    if button_y < area.bottom() {
+        let mut x = area.x + 2;
+        for (index, field) in fields.iter().copied().enumerate().skip(inputs) {
+            let label = format!(" {} ", setup_field_label(field));
+            let width = buttons::text_width(&label).min(area.right().saturating_sub(x));
+            if width == 0 {
+                break;
+            }
+            let style = if form.selected == index {
+                app.theme
+                    .style(R::SettingsValueFocused)
+                    .add_modifier(Modifier::BOLD | Modifier::REVERSED)
+            } else if field == MusicServerSetupField::SaveAndTest {
+                app.theme.style(R::Accent).add_modifier(Modifier::BOLD)
+            } else {
+                app.theme.style(R::TextMuted)
+            };
+            let rect = Rect {
+                x,
+                y: button_y,
+                width,
+                height: 1,
+            };
+            frame.render_widget(Paragraph::new(label).style(style), rect);
+            app.register_mouse_button(rect, MouseTarget::MusicServerWizardField(index));
+            x = x.saturating_add(width).saturating_add(2);
+        }
+    }
     let hint = t!(
         "↑/↓ fields  ·  Enter reveal/action  ·  Esc cancel",
         "↑/↓ 필드  ·  Enter 표시/실행  ·  Esc 취소",
         "↑/↓ 項目  ·  Enter 表示/実行  ·  Esc キャンセル"
     );
-    frame.render_widget(
-        Paragraph::new(hint)
-            .style(app.theme.style(R::TextMuted))
-            .wrap(Wrap { trim: true }),
-        Rect {
-            y: area.bottom().saturating_sub(2),
-            height: 2,
-            ..area
-        },
-    );
+    if hint_rows > 0 {
+        frame.render_widget(
+            Paragraph::new(hint)
+                .style(app.theme.style(R::TextMuted))
+                .wrap(Wrap { trim: true }),
+            Rect {
+                y: area.bottom().saturating_sub(hint_rows),
+                height: hint_rows,
+                ..area
+            },
+        );
+    }
 }
 
+/// The label cell and the value cell of one setup input row, plus whether the value is a
+/// placeholder. With a shared `label_width` column the label is padded to it; without one the
+/// row reads `label: value`. The row being edited shows a caret window over the raw value.
 fn setup_field_text(
     form: &crate::app::MusicServerSetupForm,
     field: MusicServerSetupField,
     label: &str,
+    label_width: Option<usize>,
     selected: bool,
     width: usize,
-) -> Zeroizing<String> {
-    if selected && let Some(raw) = form.text_value(field) {
-        let full_prefix = format!("▶ {label}: ");
-        let full_prefix_width = usize::from(buttons::text_width(&full_prefix));
-        let prefix = if full_prefix_width.saturating_add(8) <= width {
-            full_prefix
-        } else {
-            "▶ ".to_owned()
+) -> (String, Zeroizing<String>, bool) {
+    let marker = if selected { "▶ " } else { "  " };
+    let label_cell = |min_value: usize| {
+        let cell = match label_width {
+            Some(column) => format!("{marker}{}", crate::ui::text::pad_to_width(label, column)),
+            None => format!("{marker}{label}: "),
         };
+        if usize::from(buttons::text_width(&cell)).saturating_add(min_value) <= width {
+            cell
+        } else {
+            marker.to_owned()
+        }
+    };
+    if selected && let Some(raw) = form.text_value(field) {
+        let prefix = label_cell(8);
         let prefix_width = usize::from(buttons::text_width(&prefix));
         let shown = Zeroizing::new(crate::ui::text::editable_value(
             raw,
@@ -766,11 +930,7 @@ fn setup_field_text(
             '│',
             field == MusicServerSetupField::Secret && !form.reveal_secret,
         ));
-        let mut text = Zeroizing::new(format!("{prefix}{}", shown.as_str()));
-        return Zeroizing::new(crate::ui::text::truncate_owned_to_width(
-            std::mem::take(&mut *text),
-            width,
-        ));
+        return (prefix, shown, false);
     }
 
     let value = Zeroizing::new(match field {
@@ -815,20 +975,20 @@ fn setup_field_text(
         .to_owned(),
         MusicServerSetupField::SaveAndTest | MusicServerSetupField::Cancel => String::new(),
     });
-    let mut text = Zeroizing::new(if value.is_empty() {
-        format!("{}{}", if selected { "▶ " } else { "  " }, label)
+    let placeholder = value.is_empty();
+    let value = if placeholder {
+        Zeroizing::new("—".to_owned())
     } else {
-        format!(
-            "{}{}: {}",
-            if selected { "▶ " } else { "  " },
-            label,
-            value.as_str()
-        )
-    });
-    Zeroizing::new(crate::ui::text::truncate_owned_to_width(
-        std::mem::take(&mut *text),
-        width,
-    ))
+        value
+    };
+    let prefix = label_cell(1);
+    let available = width.saturating_sub(usize::from(buttons::text_width(&prefix)));
+    let mut value = value;
+    let clipped = Zeroizing::new(crate::ui::text::truncate_owned_to_width(
+        std::mem::take(&mut *value),
+        available,
+    ));
+    (prefix, clipped, placeholder)
 }
 
 fn setup_field_label(field: MusicServerSetupField) -> &'static str {

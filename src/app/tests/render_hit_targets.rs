@@ -323,11 +323,13 @@ fn minimum_full_finish_primary_turns_beginner_mode_off_for_mouse_users() {
 fn rendering_settings_registers_clickable_controls() {
     // Each control kind must publish its own hit target *on top of* the row-select rect, so a
     // click changes/activates the value rather than only moving the cursor onto it.
-    let render_targets = |tab: SettingsTab| -> Vec<MouseTarget> {
+    let render_targets_at = |tab: SettingsTab, row: usize| -> Vec<MouseTarget> {
         let mut app = app_playing(1, 0);
         app.update(Msg::Key(key(KeyCode::Char('o')))); // open settings (mode → Settings)
         app.settings.as_mut().unwrap().tab = tab;
-        // Tall enough for every General row with the docked player bar reserving 5 rows.
+        // Focusing the row scrolls it into view; General's section headers make it taller
+        // than one screen.
+        app.settings.as_mut().unwrap().row = row;
         let backend = TestBackend::new(80, 40);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal.draw(|f| crate::ui::render(f, &app)).unwrap();
@@ -337,6 +339,7 @@ fn rendering_settings_registers_clickable_controls() {
             .map(|b| b.target.clone())
             .collect()
     };
+    let render_targets = |tab: SettingsTab| render_targets_at(tab, 0);
 
     // Graphics: a Toggle (RetroMode, field 0), a Select (ThemePreset, field 1), a Toggle
     // (BackgroundNone, field 2), and a Text color row (first ThemeColor, field 3).
@@ -380,7 +383,6 @@ fn rendering_settings_registers_clickable_controls() {
     );
 
     // General's non-destructive export and destructive Reset buttons activate on click.
-    let general = render_targets(SettingsTab::General);
     let export = SettingsTab::General
         .fields()
         .iter()
@@ -392,11 +394,17 @@ fn rendering_settings_registers_clickable_controls() {
         .position(|f| *f == Field::ResetAll)
         .unwrap();
     assert!(
-        has(&general, MouseTarget::SettingsActivate(export)),
+        has(
+            &render_targets_at(SettingsTab::General, export),
+            MouseTarget::SettingsActivate(export)
+        ),
         "personal-data export button"
     );
     assert!(
-        has(&general, MouseTarget::SettingsActivate(reset_all)),
+        has(
+            &render_targets_at(SettingsTab::General, reset_all),
+            MouseTarget::SettingsActivate(reset_all)
+        ),
         "reset-all button"
     );
 }
@@ -526,12 +534,13 @@ fn settings_control_hit_rects_land_on_their_glyphs() {
         ">",
         "preset increase lands on >"
     );
-    // BackgroundNone (Graphics field 2): a Toggle, rect over the [ ] / [x] checkbox.
+    // BackgroundNone (Graphics field 2): a Toggle, rect over the 3-cell switch, whose first
+    // cell is the hollow knob when off or the heavy track when on.
     let toggle = MouseTarget::SettingsChange { row: 2, delta: 1 };
-    assert_eq!(
-        cell_at(SettingsTab::Graphics, toggle),
-        "[",
-        "background toggle lands on ["
+    let first = cell_at(SettingsTab::Graphics, toggle);
+    assert!(
+        first == "○" || first == "━",
+        "background toggle lands on the switch, got {first:?}"
     );
 }
 

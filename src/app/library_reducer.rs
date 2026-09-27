@@ -216,13 +216,11 @@ impl App {
         if let Some(text) = cached {
             return text;
         }
+        // The duration has its own right-aligned column (see `ui::track_row`), so the cached
+        // text is only the title/artist body the cursor row marquees.
         let title = self.display_title(song);
         let artist = self.display_artist(song);
-        let text: Arc<str> = if song.duration.is_empty() {
-            Arc::from(format!("{title} — {artist}"))
-        } else {
-            Arc::from(format!("{title} — {artist}  ({})", song.duration))
-        };
+        let text: Arc<str> = Arc::from(crate::ui::track_row::body_text(&title, &artist));
         if playlist {
             if let Some(cache) = self.playlist_rows_cache.borrow().as_ref() {
                 insert_bounded_library_value(&cache.row_text, index, Arc::clone(&text));
@@ -878,7 +876,7 @@ mod tests {
         let first = app.library_row_text_at(0, &app.library.favorites[0]);
         let second = app.library_row_text_at(0, &app.library.favorites[0]);
 
-        assert_eq!(first.as_ref(), "Cached title — Artist  (3:00)");
+        assert_eq!(first.as_ref(), "Cached title — Artist");
         assert!(Arc::ptr_eq(&first, &second));
     }
 

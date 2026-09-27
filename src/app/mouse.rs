@@ -537,11 +537,9 @@ impl App {
                 self.dirty = true;
             }
             // Settings is an interactive form, not a browse list, so the wheel keeps walking
-            // the focused field (which the render then keeps on-screen with a margin).
-            Mode::Settings => {
-                let delta = if up { -1 } else { 1 } * n as i32;
-                self.settings_move_row(delta);
-            }
+            // the focused field (which the render then keeps on-screen with a margin), after
+            // first scrolling through detail or Sync text the selection alone cannot reach.
+            Mode::Settings => self.settings_wheel(up, n),
             Mode::Artist => self.artist_mouse_scroll(up, col, row, n),
             _ => {}
         }

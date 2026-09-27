@@ -46,9 +46,11 @@ pub(super) fn render(
 
     // Delete owns the final two cells on every queue row.
     let del_rect = action_rect(ACTION_WIDTH);
+    // On a highlighted row the actions take the selection's own text color: the error and
+    // accent colors can sit almost on the selection background (about 1.1:1 in Default).
     let del_style = selected_bg.map_or_else(
         || app.theme.style(R::Error),
-        |bg| Style::default().fg(app.theme.color(R::Error)).bg(bg),
+        |bg| Style::default().fg(app.theme.color(R::SelectionFg)).bg(bg),
     );
     frame.render_widget(Paragraph::new(Line::from("✗").style(del_style)), del_rect);
     if !del_rect.is_empty() {
@@ -61,7 +63,7 @@ pub(super) fn render(
         let why_rect = action_rect(ACTION_WIDTH.saturating_mul(2));
         let why_style = selected_bg.map_or_else(
             || app.theme.style(R::Accent),
-            |bg| Style::default().fg(app.theme.color(R::Accent)).bg(bg),
+            |bg| Style::default().fg(app.theme.color(R::SelectionFg)).bg(bg),
         );
         frame.render_widget(Paragraph::new(Line::from("?").style(why_style)), why_rect);
         app.register_mouse_button(why_rect, MouseTarget::QueueWhyGem(index));

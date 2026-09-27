@@ -734,8 +734,9 @@ impl ThemeRole {
             // Mocha base (`#1E1E2E`) where a concrete dark is needed (e.g. text on accents).
             ThemeRole::Background => "none",
             ThemeRole::TextPrimary => "#CDD6F4",
-            // Lifted from overlay0 to overlay1 so quiet hints/empty states stay legible.
-            ThemeRole::TextMuted => "#7F849C",
+            // Overlay1, nudged lighter to 4.6:1 on the Mocha base so quiet hints, empty states,
+            // and dimmed metadata meet the 4.5:1 text minimum.
+            ThemeRole::TextMuted => "#82879E",
             ThemeRole::TextSubtle => "#A6ADC8",
             ThemeRole::TextInverse => "#1E1E2E",
             ThemeRole::BorderPrimary
@@ -907,13 +908,15 @@ impl ThemeRole {
         match self {
             ThemeRole::Background => "#F7F7F2",
             ThemeRole::TextPrimary => "#16181D",
-            ThemeRole::TextMuted => "#6B7280",
+            // Each text-bearing color below is darkened just enough (same hue) to reach 4.6:1 on
+            // the paper background, or on the gauge track for the seek-bar time.
+            ThemeRole::TextMuted => "#69707E",
             ThemeRole::TextSubtle => "#4B5563",
             ThemeRole::TextInverse => "#FFFFFF",
             ThemeRole::BorderPrimary
             | ThemeRole::BorderFocused
             | ThemeRole::AccentAlt
-            | ThemeRole::SelectionBg => "#C026D3",
+            | ThemeRole::SelectionBg => "#BA25CD",
             ThemeRole::BorderMuted
             | ThemeRole::GaugeEmpty
             | ThemeRole::LyricsDim
@@ -924,10 +927,10 @@ impl ThemeRole {
             | ThemeRole::SettingsValueFocused
             | ThemeRole::AiUser
             | ThemeRole::LyricsCurrent
-            | ThemeRole::SettingsGroup => "#0284C7",
-            ThemeRole::Success | ThemeRole::GaugeFilled | ThemeRole::AiAssistant => "#15803D",
+            | ThemeRole::SettingsGroup => "#0276B2",
+            ThemeRole::Success | ThemeRole::GaugeFilled | ThemeRole::AiAssistant => "#116932",
             ThemeRole::Warning | ThemeRole::HelpKey | ThemeRole::AiThinking => "#A16207",
-            ThemeRole::Error | ThemeRole::AiError => "#DC2626",
+            ThemeRole::Error | ThemeRole::AiError => "#DA2323",
             ThemeRole::SelectionFg => "#FFFFFF",
             ThemeRole::SelectionInactiveFg
             | ThemeRole::PlayerControl
@@ -1275,7 +1278,7 @@ mod tests {
         let mut cfg = ThemeConfig::default();
         assert_eq!(cfg.effective_hex(ThemeRole::BorderPrimary), "#CBA6F7");
         cfg.set_preset(ThemePreset::Light);
-        assert_eq!(cfg.effective_hex(ThemeRole::BorderPrimary), "#C026D3");
+        assert_eq!(cfg.effective_hex(ThemeRole::BorderPrimary), "#BA25CD");
         cfg.set_override(ThemeRole::BorderPrimary, "#123456")
             .unwrap();
         assert_eq!(cfg.effective_hex(ThemeRole::BorderPrimary), "#123456");
@@ -1440,7 +1443,7 @@ mod tests {
         assert_ne!(cfg.color(ThemeRole::BorderPrimary), before);
         assert_eq!(
             cfg.color(ThemeRole::BorderPrimary),
-            Color::Rgb(0xC0, 0x26, 0xD3)
+            Color::Rgb(0xBA, 0x25, 0xCD)
         );
 
         cfg.set_override(ThemeRole::BorderPrimary, "#123456")
@@ -1461,7 +1464,7 @@ mod tests {
         cfg.reset_role(ThemeRole::BorderPrimary);
         assert_eq!(
             cfg.color(ThemeRole::BorderPrimary),
-            Color::Rgb(0xC0, 0x26, 0xD3)
+            Color::Rgb(0xBA, 0x25, 0xCD)
         );
 
         cfg.ensure_override_for_edit(ThemeRole::Accent);
@@ -1471,7 +1474,7 @@ mod tests {
         let clone = cfg.clone();
         assert_eq!(
             clone.color(ThemeRole::BorderPrimary),
-            Color::Rgb(0xC0, 0x26, 0xD3)
+            Color::Rgb(0xBA, 0x25, 0xCD)
         );
         cfg.set_preset(ThemePreset::Retro);
         assert_eq!(

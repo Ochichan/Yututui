@@ -48,7 +48,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     let rows = Layout::vertical([
         Constraint::Length(1), // spacer
         Constraint::Length(1), // input
-        Constraint::Length(1), // hint / error
+        Constraint::Length(2), // hint / error, wrapped
         Constraint::Length(1), // spacer
         Constraint::Min(1),    // buttons
     ])
@@ -91,9 +91,16 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     } else {
         crate::ui::popup_style(app, R::TextMuted)
     };
+    // Indented to the input's text column and wrapped over two rows, so the whole note (and
+    // the "off" instruction at its end) fits a narrow popup instead of running into the border.
     frame.render_widget(
-        Paragraph::new(Line::from(Span::styled(hint, hint_style))),
-        rows[2],
+        Paragraph::new(Line::from(Span::styled(hint, hint_style)))
+            .wrap(ratatui::widgets::Wrap { trim: true }),
+        Rect {
+            x: rows[2].x + 2,
+            width: rows[2].width.saturating_sub(4),
+            ..rows[2]
+        },
     );
 
     let segs = [

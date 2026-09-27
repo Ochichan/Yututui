@@ -97,13 +97,7 @@
       els.sharedTransport.setAttribute("aria-label", copy.playbackControls);
       document.querySelectorAll(".theme-pick").forEach(group => group.setAttribute("aria-label", copy.playerSkin));
       document.getElementById("modeFocused").parentElement.setAttribute("aria-label", copy.autoplayMode);
-      document.querySelectorAll('[data-recovery="resume"]').forEach(button => {
-        button.textContent = button.closest("#recovery") ? copy.resumePrevious : copy.resume;
-      });
-      document.querySelectorAll('[data-recovery="start"]').forEach(button => {
-        button.textContent = button.closest("#recovery") ? copy.startNew : copy.start;
-      });
-      document.querySelectorAll('[data-recovery="tui"]').forEach(button => { button.textContent = copy.openTui; });
+      renderRecoveryLabels();
       document.querySelectorAll('[data-i18n]').forEach(element => {
         const value = copy[element.dataset.i18n];
         if (value) element.textContent = value;
@@ -372,6 +366,27 @@
       if (!sendPending("set_pinned", requested, controls, { onSuccess: commit })) commit();
     }
 
+    // Recovery button labels depend on the locale and, for Minimal's narrow capsule, the skin,
+    // so they are redone on either change.
+    function renderRecoveryLabels() {
+      document.querySelectorAll('[data-recovery="resume"]').forEach(button => {
+        button.textContent = button.closest("#recovery") ? copy.resumePrevious : copy.resume;
+      });
+      // The Minimal capsule's recovery row has room for "Start" beside "Open Player", not
+      // "Start new player"; its tooltip keeps the full wording.
+      const shortRecovery = document.documentElement.dataset.theme === "minimal";
+      document.querySelectorAll('[data-recovery="start"]').forEach(button => {
+        const inRecovery = button.closest("#recovery");
+        button.textContent = inRecovery && !shortRecovery ? copy.startNew : copy.start;
+        button.title = inRecovery ? copy.startNew : copy.start;
+      });
+      document.querySelectorAll('[data-recovery="tui"]').forEach(button => { button.textContent = copy.openTui; });
+      // A compact skin may still shorten a label with an ellipsis; the tooltip keeps it whole.
+      document.querySelectorAll('[data-recovery="resume"], [data-recovery="tui"]').forEach(button => {
+        button.title = button.textContent;
+      });
+    }
+
     // Flip the page to the picked skin; the host resizes the window, persists the
     // choice, and bakes it into future rebuilds. `data-theme` on <html> is the one
     // source of truth for the active theme (never carried in status payloads).
@@ -384,6 +399,7 @@
       const commit = () => {
         closeSharedSheet(false);
         document.documentElement.dataset.theme = id;
+        renderRecoveryLabels();
         resetThemeLocalUi();
         syncThemeButtons();
         updateMarquee(); // tama text was unmeasurable while display:none
@@ -1167,13 +1183,77 @@
     function renderFeedback(message, kind = "error") {
       clearTimeout(feedbackTimer);
       [els.error].forEach(alert => {
+        // A new message starts collapsed; re-rendering the same one keeps it open.
+        if (alert.textContent !== (message || "")) setAlertExpanded(false);
         alert.hidden = !message;
         alert.textContent = message || "";
         alert.title = message || "";
         alert.dataset.kind = kind;
         alert.tabIndex = message && kind === "error" ? 0 : -1;
       });
+      requestAnimationFrame(markAlertTruncation);
     }
+
+    /* ---------- full error text ----------
+       Every skin shows the error on one line (Minimal as a "!" badge while its controls are
+       up). Clicking it, or Enter/Space while it has focus, opens the whole message wrapped
+       in place; Escape or a second activation closes it and keeps focus on the error. */
+
+    function setAlertExpanded(expanded) {
+      els.error.classList.toggle("expanded", expanded);
+      // Each opening starts at the top of the message.
+      els.error.scrollTop = 0;
+      if (expanded) els.error.removeAttribute("data-truncated");
+      else requestAnimationFrame(markAlertTruncation);
+    }
+
+    // `data-truncated` draws the "open" cue only when the line actually cuts the text.
+    function markAlertTruncation() {
+      const alert = els.error;
+      const cut = !alert.hidden && !alert.classList.contains("expanded")
+        && alert.scrollWidth > alert.clientWidth + 1;
+      alert.toggleAttribute("data-truncated", cut);
+    }
+
+    function toggleAlert() {
+      if (els.error.hidden) return;
+      setAlertExpanded(!els.error.classList.contains("expanded"));
+    }
+
+    // While open, a message taller than its box scrolls from the keyboard: arrows by a line,
+    // Page keys by a box less one line, Home/End to either end. The keys stop here so they
+    // never reach the page or the player's global shortcuts.
+    function scrollAlert(key) {
+      const alert = els.error;
+      const line = parseFloat(getComputedStyle(alert).lineHeight) || 14;
+      const page = Math.max(line, alert.clientHeight - line);
+      const max = Math.max(0, alert.scrollHeight - alert.clientHeight);
+      const next = {
+        ArrowDown: alert.scrollTop + line,
+        ArrowUp: alert.scrollTop - line,
+        PageDown: alert.scrollTop + page,
+        PageUp: alert.scrollTop - page,
+        End: max,
+        Home: 0,
+      }[key];
+      if (next === undefined) return false;
+      alert.scrollTop = Math.min(max, Math.max(0, next));
+      return true;
+    }
+
+    els.error.addEventListener("click", toggleAlert);
+    els.error.addEventListener("keydown", event => {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        toggleAlert();
+        return;
+      }
+      if (els.error.classList.contains("expanded") && scrollAlert(event.key)) {
+        event.preventDefault();
+        event.stopPropagation();
+      }
+    });
+    window.addEventListener("resize", () => requestAnimationFrame(markAlertTruncation));
 
     function renderError(message) {
       renderFeedback(message, "error");
@@ -1459,6 +1539,11 @@
       if (event.key === "Tab") document.documentElement.classList.add("keyboard-nav");
       if (event.key !== "Escape") return;
       event.preventDefault();
+      if (els.error.classList.contains("expanded")) {
+        setAlertExpanded(false);
+        els.error.focus();
+        return;
+      }
       if (clearRemoveConfirmation()) return;
       if (closeSharedSheet()) return;
       if (els.playerRoot.classList.contains("menu")) {

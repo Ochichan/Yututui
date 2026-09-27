@@ -6,7 +6,7 @@ use ratatui::style::Modifier;
 use ratatui::text::Line;
 use ratatui::widgets::{Block, Borders, Paragraph};
 
-use super::{bar, centered_fixed, slider_str};
+use super::{bar, centered_fixed, slider_str, switch_str};
 use crate::app::{App, MouseTarget};
 use crate::t;
 use crate::theme::ThemeRole as R;
@@ -66,6 +66,7 @@ pub fn render_recording_settings(frame: &mut Frame, app: &App, area: Rect) {
                     d.recording_min_seconds as f64,
                     RECORDING_MIN_SECONDS_MIN as f64,
                     RECORDING_MIN_SECONDS_MAX as f64,
+                    app.retro_mode(),
                 ),
                 &format!("{}s", d.recording_min_seconds),
             ),
@@ -77,6 +78,7 @@ pub fn render_recording_settings(frame: &mut Frame, app: &App, area: Rect) {
                     d.recording_max_seconds as f64,
                     RECORDING_MAX_SECONDS_MIN as f64,
                     RECORDING_MAX_SECONDS_MAX as f64,
+                    app.retro_mode(),
                 ),
                 &format!("{} min", d.recording_max_seconds / 60),
             ),
@@ -92,17 +94,14 @@ pub fn render_recording_settings(frame: &mut Frame, app: &App, area: Rect) {
                     d.recording_past_tracks as f64,
                     RECORDING_PAST_TRACKS_MIN as f64,
                     RECORDING_PAST_TRACKS_MAX as f64,
+                    app.retro_mode(),
                 ),
                 &format!("{}", d.recording_past_tracks),
             ),
         ),
         (
             t!("Notifications", "알림", "通知").to_owned(),
-            if d.recording_notify {
-                "[x]".to_owned()
-            } else {
-                "[ ]".to_owned()
-            },
+            switch_str(d.recording_notify, app.retro_mode()),
         ),
         (
             t!("Browse recordings…", "녹음 목록 보기…", "録音一覧を表示…").to_owned(),

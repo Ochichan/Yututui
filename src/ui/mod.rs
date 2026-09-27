@@ -10,6 +10,7 @@ pub mod mascot;
 pub mod retro;
 pub mod scroll;
 pub mod text;
+pub mod track_row;
 pub mod views;
 
 use ratatui::Frame;

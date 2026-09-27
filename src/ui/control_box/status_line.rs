@@ -127,7 +127,13 @@ fn push_playback_state(
     // cells on some terminals (Windows), which drifts every later segment's hit rect
     // off its rendered text and makes `R:`/`EQ:` unclickable. See `render_controls`.
     if !(minimal && labels.beginner()) {
+        // Nothing loaded is its own state: "playing" beside "Nothing playing" contradicted
+        // the title line. `■` is one cell and in the console font, like `▸`/`‖`.
+        let idle = app.queue.current().is_none();
         let state = match (minimal, app.playback.paused, labels.beginner() && retro) {
+            (true, _, _) if idle => "■",
+            (false, _, true) if idle => "■ stopped",
+            (false, _, false) if idle => t!("■ stopped", "■ 정지", "■ 停止中"),
             (true, true, _) => "‖",
             (true, false, _) => "▸",
             (false, true, true) => "‖ paused",

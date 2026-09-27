@@ -350,30 +350,41 @@ fn render_list(
         } else {
             "  "
         };
-        let text = app.library_row_text_at(i, song);
+        // Title and artist, then the duration in its own right-aligned column.
+        let row_w = body_w.saturating_sub(ROW_GUTTER + ROW_RIGHT_MARGIN);
         // The cursor row marquees when clipped (the gutter stays put) so the full text stays
-        // readable even in a sliver-narrow window; every other row hard-truncates.
-        let text = if i == cursor {
-            std::borrow::Cow::Owned(crate::ui::anim::selected_marquee(
+        // readable even in a sliver-narrow window; every other row clips with `…`.
+        let marquee = (i == cursor).then(|| {
+            crate::ui::anim::selected_marquee(
                 app,
                 ScrollSurface::Library,
                 i,
-                &text,
-                body_w.saturating_sub(ROW_GUTTER + ROW_RIGHT_MARGIN),
-            ))
-        } else {
-            std::borrow::Cow::Borrowed(text.as_ref())
-        };
-        let body = crate::ui::text::truncate_owned_to_width(
-            format!("{marker}{heart}{text}"),
-            body_w.saturating_sub(ROW_RIGHT_MARGIN),
-        );
+                &app.library_row_text_at(i, song),
+                crate::ui::track_row::body_width(&song.duration, row_w),
+            )
+        });
 
         let base = if selected {
             crate::ui::selection_highlight(app)
         } else {
             app.theme.style(R::TextPrimary)
         };
+        // Artist and duration recede, except on a highlighted row, which reads as one block.
+        let muted = if selected {
+            Style::default()
+        } else {
+            app.theme.style(R::TextMuted)
+        };
+        let mut body = vec![Span::raw(marker), Span::raw(heart)];
+        body.extend(crate::ui::track_row::spans(
+            &app.display_title(song),
+            &app.display_artist(song),
+            &song.duration,
+            row_w,
+            marquee,
+            Style::default(),
+            muted,
+        ));
         // Rows cascade in top-to-bottom right after a tab/view switch (identity when off).
         let base = crate::ui::anim::stagger_style(app, crate::app::Mode::Library, vis, base);
         let row = Rect {
@@ -402,9 +413,13 @@ fn render_list(
                 width: del_w,
                 height: 1,
             };
+            // On a highlighted row the ✗ takes the selection's text color; red on the
+            // selection background fell to about 1.1:1.
             let mut del_style = app.theme.style(R::Error);
             if selected {
-                del_style = del_style.bg(app.theme.color(R::SelectionBg));
+                del_style = Style::default()
+                    .fg(app.theme.color(R::SelectionFg))
+                    .bg(app.theme.color(R::SelectionBg));
             }
             frame.render_widget(Paragraph::new(Line::from("✗").style(del_style)), del_rect);
             app.register_mouse_button(del_rect, MouseTarget::LibraryDel(i));
