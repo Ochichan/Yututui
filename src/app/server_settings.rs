@@ -443,12 +443,18 @@ impl App {
     pub(in crate::app) fn on_sync_settings_action(
         &mut self,
         action: Option<Action>,
-        key: KeyEvent,
     ) -> Option<Vec<Cmd>> {
         let area = self.server.settings.area;
         match action {
-            Some(Action::MoveUp | Action::MoveDown) if area == SyncArea::MusicServer => {
-                Some(self.on_key_music_server_settings(key))
+            // The already-resolved action, so a remapped MoveUp/MoveDown/Confirm works here too;
+            // the literal arrows and Enter still arrive through the Settings safety keys.
+            Some(Action::MoveUp) if area == SyncArea::MusicServer => {
+                self.settings_step_selection(-1);
+                Some(Vec::new())
+            }
+            Some(Action::MoveDown) if area == SyncArea::MusicServer => {
+                self.settings_step_selection(1);
+                Some(Vec::new())
             }
             Some(Action::MoveUp | Action::MoveDown)
                 if matches!(area, SyncArea::PersonalState | SyncArea::DevicesRecovery) =>
@@ -462,11 +468,15 @@ impl App {
                 self.dirty = true;
                 Some(Vec::new())
             }
-            Some(Action::MoveUp | Action::MoveDown) => Some(Vec::new()),
+            // Status has nothing to select, so ↑/↓ scroll its text.
+            Some(scroll @ (Action::MoveUp | Action::MoveDown)) => {
+                self.settings_scroll_view(scroll);
+                Some(Vec::new())
+            }
             Some(Action::ChangeDecrease) => Some(self.switch_sync_area(false)),
             Some(Action::ChangeIncrease) => Some(self.switch_sync_area(true)),
             Some(Action::Confirm) if area == SyncArea::MusicServer => {
-                Some(self.on_key_music_server_settings(key))
+                Some(self.activate_music_server_row(self.server.settings.selected))
             }
             Some(Action::Confirm)
                 if matches!(area, SyncArea::PersonalState | SyncArea::DevicesRecovery) =>

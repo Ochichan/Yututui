@@ -94,6 +94,7 @@ impl App {
                 picked: BTreeSet::new(),
                 kind: SearchKind::default(),
                 searching: false,
+                failed: false,
                 request_id: 0,
                 artist: None,
             },

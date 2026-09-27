@@ -15,6 +15,8 @@ use crate::t;
 use crate::theme::ThemeRole as R;
 use crate::ui::buttons;
 
+use super::player_decor::{radio_art_animation_on, render_art_animation_separator};
+use super::player_idle::render_idle_card;
 use super::player_layout::calculate_player_filler_layout;
 use super::queue_actions;
 
@@ -179,10 +181,10 @@ pub(in crate::ui) fn render_queue_popup(frame: &mut Frame, app: &App, area: Rect
         let artist = app.display_artist(song);
         let actions_w = queue_actions::reserved_width(app, &song.video_id);
         let body_w = list.width.saturating_sub(actions_w) as usize;
-        let text = crate::ui::text::truncate_owned_to_width(
-            format!("{marker}{:>3} {title} — {artist}", i + 1),
-            body_w.saturating_sub(1),
-        );
+        let prefix = format!("{marker}{:>3} ", i + 1);
+        let row_w = body_w
+            .saturating_sub(1)
+            .saturating_sub(UnicodeWidthStr::width(prefix.as_str()));
 
         let mut base = if selected {
             crate::ui::anim::selection_style(
@@ -199,13 +201,30 @@ pub(in crate::ui) fn render_queue_popup(frame: &mut Frame, app: &App, area: Rect
         if is_current {
             base = base.add_modifier(Modifier::BOLD);
         }
+        // Number, title, a quieter artist, and the duration in its own column; a highlighted
+        // or now-playing row keeps one color.
+        let muted = if selected || is_current {
+            Style::default()
+        } else {
+            app.theme.style(R::TextMuted)
+        };
+        let mut spans = vec![ratatui::text::Span::styled(prefix, muted)];
+        spans.extend(crate::ui::track_row::spans(
+            &title,
+            &artist,
+            &song.duration,
+            row_w,
+            None,
+            Style::default(),
+            muted,
+        ));
         let row = Rect {
             x: list.x,
             y,
             width: list.width,
             height: 1,
         };
-        frame.render_widget(Paragraph::new(Line::from(text).style(base)), row);
+        frame.render_widget(Paragraph::new(Line::from(spans).style(base)), row);
 
         let actions_w = queue_actions::render(frame, app, row, i, &song.video_id, selected);
 
@@ -295,71 +314,15 @@ fn render_filler(frame: &mut Frame, app: &App, player_area: Rect, area: Rect) {
     if let Some(lyrics) = layout.lyrics {
         super::player_lyrics::render(frame, app, lyrics);
     }
-}
-
-fn render_art_animation_separator(frame: &mut Frame, app: &App, area: Rect) {
-    if area.width == 0 || area.height == 0 {
-        return;
+    // With nothing loaded and no canvas effect, lyrics, or art, the filler would otherwise be
+    // blank (animations are off by default), so it shows where to start instead.
+    if app.queue.current().is_none()
+        && layout.art.is_none()
+        && layout.lyrics.is_none()
+        && !app.bridges.canvas_active.get()
+    {
+        render_idle_card(frame, app, area);
     }
-    // The trailing space is deliberate: the motif is tiled edge-to-edge, and it keeps
-    // each repetition from butting straight into the next one's leading note.
-    const MOTIF: &str = "♫♪.ılılıll|̲̅●̲̅|̲̅=̲̅|̲̅●̲̅|llılılı.♫♪ ";
-    // Clustered once — the motif is a compile-time constant and this runs every radio frame.
-    static MOTIF_CLUSTERS: std::sync::LazyLock<Vec<String>> =
-        std::sync::LazyLock::new(|| display_clusters(MOTIF));
-    let width = usize::from(area.width);
-    let offset = if radio_art_animation_on(app) {
-        (app.anim_frame() / 6) as usize
-    } else {
-        0
-    };
-    let line = repeated_motif_line(&MOTIF_CLUSTERS, width, offset);
-    frame.render_widget(
-        Paragraph::new(
-            Line::from(line)
-                .style(app.theme.style(R::Accent).add_modifier(Modifier::BOLD))
-                .alignment(Alignment::Center),
-        ),
-        area,
-    );
-}
-
-fn repeated_motif_line(clusters: &[String], width: usize, offset: usize) -> String {
-    if clusters.is_empty() {
-        return " ".repeat(width);
-    }
-    let mut line = String::new();
-    let mut i = offset % clusters.len();
-    while UnicodeWidthStr::width(line.as_str()) < width {
-        line.push_str(&clusters[i]);
-        i = (i + 1) % clusters.len();
-    }
-    crate::ui::text::pad_to_width(
-        &crate::ui::text::truncate_owned_to_width(line, width),
-        width,
-    )
-}
-
-fn display_clusters(s: &str) -> Vec<String> {
-    let mut clusters = Vec::new();
-    let mut current = String::new();
-    for ch in s.chars() {
-        if UnicodeWidthChar::width(ch).unwrap_or(0) > 0 && !current.is_empty() {
-            clusters.push(std::mem::take(&mut current));
-        }
-        current.push(ch);
-    }
-    if !current.is_empty() {
-        clusters.push(current);
-    }
-    clusters
-}
-
-fn radio_art_animation_on(app: &App) -> bool {
-    app.radio_dedicated_mode
-        && app.animations().master
-        && !app.playback.paused
-        && app.queue.current().is_some()
 }
 
 fn render_radio_filler(frame: &mut Frame, app: &App, area: Rect) {

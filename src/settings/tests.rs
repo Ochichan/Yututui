@@ -106,6 +106,14 @@ fn playback_sections_partition_in_both_radio_states() {
 }
 
 #[test]
+fn general_sections_partition_the_field_list() {
+    let _guard = crate::i18n::lock_for_test();
+    let st = state_on(SettingsTab::General, false, false);
+    let sum: usize = st.sections().iter().map(|(_, n)| n).sum();
+    assert_eq!(sum, st.fields().len());
+}
+
+#[test]
 fn ai_sections_partition_under_retro() {
     let _guard = crate::i18n::lock_for_test();
     for retro in [false, true] {

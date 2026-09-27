@@ -1,13 +1,13 @@
 //! Presentation-only renderer for the Sync settings tab.
 
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::style::Modifier;
+use ratatui::layout::Rect;
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{HighlightSpacing, List, ListItem, ListState, Paragraph, Wrap};
+use ratatui::widgets::{HighlightSpacing, List, ListItem, ListState};
 
 use crate::app::App;
-use crate::app::MouseTarget;
+use crate::app::{MouseTarget, ScrollSurface};
 use crate::settings::SettingsState;
 use crate::settings::sync::{
     SyncAuditRow, SyncDeviceRow, SyncMergeSummary, SyncRow, SyncSettingsModel, audit_action_label,
@@ -16,6 +16,7 @@ use crate::settings::sync::{
 use crate::sync::{SyncAuditOutcome, SyncHealthState};
 use crate::t;
 use crate::theme::ThemeRole as R;
+use crate::ui::buttons;
 
 /// Render a privacy-safe Sync snapshot. Form inputs and connection secrets are intentionally
 /// absent from [`SyncSettingsModel`] and should be rendered by their owning modal.
@@ -30,53 +31,114 @@ pub(crate) fn render_sync(
         return;
     }
     let theme = &settings.draft.theme;
-    let rows = Layout::vertical([
-        Constraint::Length(1),
-        Constraint::Length(2),
-        Constraint::Min(0),
-    ])
-    .split(area);
-
-    let state_role = match model.health {
-        SyncHealthState::Off => R::TextMuted,
-        SyncHealthState::UpToDate => R::Success,
-        SyncHealthState::Syncing => R::Accent,
-        SyncHealthState::OfflineWillRetry => R::Warning,
-        SyncHealthState::NeedsAttention => R::Error,
-    };
-    frame.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled(
-                model.page.title(),
-                theme.style(R::SettingsGroup).add_modifier(Modifier::BOLD),
-            ),
-            Span::styled("  ", theme.style(R::TextMuted)),
-            Span::styled(health_label(model.health), theme.style(state_role)),
-        ])),
-        rows[0],
-    );
-
-    let detail = model.failure.map_or_else(
-        || Line::from(model.page.description()).style(theme.style(R::TextMuted)),
-        |failure| {
-            Line::from(vec![
-                Span::styled(failure_label(failure), theme.style(R::Error)),
-                Span::styled("  ·  ", theme.style(R::TextMuted)),
-                Span::styled(
-                    failure_recovery_label(failure),
-                    theme.style(R::SettingsValueFocused),
-                ),
-            ])
-        },
-    );
-    frame.render_widget(Paragraph::new(detail).wrap(Wrap { trim: true }), rows[1]);
-
-    let items: Vec<ListItem<'static>> = model
+    let state_role = health_role(model.health);
+    let mut head = vec![Line::from(vec![
+        Span::styled(
+            model.page.title(),
+            theme.style(R::SettingsGroup).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled("  ", theme.style(R::TextMuted)),
+        // The dot repeats the state in color so it reads before the words do.
+        Span::styled("● ", theme.style(state_role)),
+        Span::styled(health_label(model.health), theme.style(state_role)),
+    ])];
+    // The page description, or the failure and its recovery step on separate lines.
+    let width = pane_text_width(area);
+    match model.failure {
+        None => head.extend(wrap_lines(
+            model.page.description(),
+            width,
+            theme.style(R::TextMuted),
+        )),
+        Some(failure) => {
+            head.extend(wrap_lines(
+                failure_label(failure),
+                width,
+                theme.style(R::Error),
+            ));
+            head.extend(wrap_lines(
+                &format!("› {}", failure_recovery_label(failure)),
+                width,
+                theme.style(R::SettingsValueFocused),
+            ));
+        }
+    }
+    let actions = model
         .rows
         .iter()
         .map(|row| render_row(row, model.busy, settings))
         .collect();
-    let selected = model.selected();
+    render_pane(
+        frame,
+        app,
+        settings,
+        area,
+        head,
+        actions,
+        model.selected(),
+        MouseTarget::SettingsSyncRow,
+    );
+}
+
+/// Cells a Sync pane's text can use: the pane minus the list's marker gutter.
+pub(super) fn pane_text_width(area: Rect) -> usize {
+    usize::from(area.width).saturating_sub(2).max(1)
+}
+
+/// `text` wrapped whole to `width` cells, one styled line per row.
+pub(super) fn wrap_lines(text: &str, width: usize, style: Style) -> Vec<Line<'static>> {
+    crate::ui::text::wrap_to_width(text, width)
+        .into_iter()
+        .map(|part| Line::from(Span::styled(part, style)))
+        .collect()
+}
+
+/// Draw a Sync pane as one scrolling list: the `head` text rows, a blank row, then the
+/// `actions`. Keeping text and actions in one list means nothing is clipped on a short
+/// terminal: the wheel and scrollbar reach every row, and keyboard focus scrolls its action
+/// just into view (at the bottom edge when it starts below), keeping as much of the text above
+/// it as fits. Visible actions publish `target(index)` click rects.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn render_pane(
+    frame: &mut Frame,
+    app: &App,
+    settings: &SettingsState,
+    area: Rect,
+    head: Vec<Line<'static>>,
+    actions: Vec<ListItem<'static>>,
+    selected: Option<usize>,
+    target: impl Fn(usize) -> MouseTarget,
+) {
+    let theme = &settings.draft.theme;
+    let action_count = actions.len();
+    let first_action = if action_count > 0 && !head.is_empty() {
+        head.len() + 1
+    } else {
+        head.len()
+    };
+    let mut items: Vec<ListItem<'static>> = head.into_iter().map(ListItem::new).collect();
+    if first_action > items.len() {
+        items.push(ListItem::new(Line::default()));
+    }
+    items.extend(actions);
+    let len = items.len();
+    app.bridges.settings_list_len.set(Some(len));
+    let selected = selected
+        .filter(|_| action_count > 0)
+        .map(|index| first_action + index.min(action_count - 1));
+    app.bridges
+        .settings_focus
+        .set(selected.map(|row| (first_action, row, row)));
+    let offset = match selected {
+        Some(row) => super::resolve_keeping_cursor_on_resize(
+            &app.bridges.settings_scroll,
+            row,
+            area.height,
+            len,
+            0,
+        ),
+        None => app.bridges.settings_scroll.view(area.height, len),
+    };
     let list = List::new(items)
         .style(theme.style(R::TextPrimary))
         .highlight_style(
@@ -86,35 +148,59 @@ pub(crate) fn render_sync(
         )
         .highlight_symbol("▶ ")
         .highlight_spacing(HighlightSpacing::Always);
-    let offset = selected.map_or_else(
-        || {
-            app.bridges
-                .settings_scroll
-                .view(rows[2].height, model.rows.len())
-        },
-        |selected| {
-            app.bridges
-                .settings_scroll
-                .resolve(selected, rows[2].height, model.rows.len(), 0)
-        },
-    );
+    // Select only while the focused action is inside the window: ratatui scrolls any
+    // selection back into view (overriding a wheel offset that moved past it), and
+    // `select(None)` resets the offset to 0.
     let mut state = ListState::default().with_offset(offset);
-    state.select(selected);
-    frame.render_stateful_widget(list, rows[2], &mut state);
-    for visible in 0..rows[2].height {
-        let row = state.offset() + visible as usize;
-        if row >= model.rows.len() {
+    if let Some(row) = selected
+        && (offset..offset + usize::from(area.height)).contains(&row)
+    {
+        state.select(Some(row));
+    }
+    frame.render_stateful_widget(list, area, &mut state);
+    let offset = state.offset();
+    for visible in 0..area.height {
+        let Some(action) = (offset + usize::from(visible)).checked_sub(first_action) else {
+            continue;
+        };
+        if action >= action_count {
             break;
         }
         app.register_mouse_button(
             Rect {
-                x: rows[2].x,
-                y: rows[2].y + visible,
-                width: rows[2].width,
+                x: area.x,
+                y: area.y + visible,
+                width: area.width,
                 height: 1,
             },
-            MouseTarget::SettingsSyncRow(row),
+            target(action),
         );
+    }
+    // A scrollbar on the frame border, like the field tabs; a no-op when every row fits.
+    buttons::render_list_scrollbar(
+        frame,
+        app,
+        Rect {
+            x: area.right(),
+            y: area.y,
+            width: 1,
+            height: area.height,
+        },
+        ScrollSurface::Settings,
+        len,
+        offset,
+        usize::from(area.height),
+    );
+}
+
+/// The color for a personal-sync health state, shared by every Sync pane that shows it.
+pub(super) fn health_role(health: SyncHealthState) -> R {
+    match health {
+        SyncHealthState::Off => R::TextMuted,
+        SyncHealthState::UpToDate => R::Success,
+        SyncHealthState::Syncing => R::Accent,
+        SyncHealthState::OfflineWillRetry => R::Warning,
+        SyncHealthState::NeedsAttention => R::Error,
     }
 }
 

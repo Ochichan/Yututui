@@ -113,6 +113,15 @@ pub struct RenderBridges {
     /// visible row focuses it in place instead of letting ratatui re-derive the offset from 0
     /// each frame (which snapped the clicked row across the viewport).
     pub settings_scroll: crate::ui::scroll::ScrollState,
+    /// Row count of the list `settings_scroll` last drew. The field list expands the focused
+    /// row with its detail lines and the Sync panes mix text with actions, so only the render
+    /// pass knows the real length; the wheel and scrollbar clamp against it.
+    pub settings_list_len: Cell<Option<usize>>,
+    /// The focus the last Settings frame drew, as display rows: `(first, focused, block_end)`
+    /// where `first` is the first selectable row and `block_end` the last row of the focused
+    /// row's expanded detail. `None` for a pane with nothing to select (Sync Status) and for the
+    /// Keys tab. The wheel and the off-screen-cursor guard read it between frames.
+    pub settings_focus: Cell<Option<(usize, usize, usize)>>,
     /// One offset per column of the two-column Keys tab; only the focused column re-anchors.
     pub settings_keys_scroll: [crate::ui::scroll::ScrollState; 2],
     /// Wheel / arrow-key offset for the help and mouse cheat-sheet overlays (one state is
@@ -149,6 +158,8 @@ impl RenderBridges {
     /// tab/session can't carry over onto a different, shorter set of rows.
     pub fn reset_settings_scroll(&self) {
         self.settings_scroll.reset();
+        self.settings_list_len.set(None);
+        self.settings_focus.set(None);
         self.settings_keys_scroll[0].reset();
         self.settings_keys_scroll[1].reset();
     }
@@ -522,6 +533,9 @@ pub struct SearchState {
     pub picked: BTreeSet<usize>,
     /// True between issuing a search request and its results arriving.
     pub searching: bool,
+    /// Whether the latest search ended in an error (not "no results"). Cleared when the next
+    /// search starts or results arrive; the empty results area then says how to retry.
+    pub failed: bool,
     /// Monotonic id of the most recently *submitted* search. Stamped on the request and echoed
     /// back on its results/error so a slow older response can't overwrite a newer search — the
     /// id is stable while the user keeps typing, unlike the live `input`.

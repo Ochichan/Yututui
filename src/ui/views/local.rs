@@ -184,6 +184,12 @@ fn render_status(frame: &mut Frame, app: &App, local_rows: &LocalRowsSnapshot, a
             "ローカルオーディオのインデックスを使用中。r で再スキャン、R で完全再構築。"
         )
         .to_owned()
+    } else if app.library_ui.downloaded.is_empty()
+        && app.local_mode.ui.section == LocalSection::Home
+    {
+        // Home's body already explains the empty index and the scan key; the strip only
+        // states the scan status so the two don't repeat each other.
+        t!("Not indexed yet", "아직 인덱스 없음", "未インデックス").to_owned()
     } else if app.library_ui.downloaded.is_empty() {
         t!(
             "No local downloads indexed yet - press r to scan the download folder.",
@@ -354,7 +360,7 @@ fn render_sidebar(frame: &mut Frame, app: &App, area: Rect) {
             (i + 1).to_string()
         };
         let label = format!("{key} {}", section.label());
-        let text = crate::ui::text::truncate_owned_to_width(
+        let text = crate::ui::text::ellipsize_owned_to_width(
             format!("{marker}{label}"),
             width.saturating_sub(1),
         );
@@ -423,7 +429,8 @@ fn render_rows(frame: &mut Frame, app: &App, local_rows: &LocalRowsSnapshot, are
             let mut body = String::with_capacity(marker.len().saturating_add(text.len()));
             body.push_str(marker);
             body.push_str(text.as_ref());
-            crate::ui::text::truncate_owned_to_width(body, body_w.saturating_sub(1))
+            // A clipped row ends in `…`; the cursor row's marquee shows the rest.
+            crate::ui::text::ellipsize_owned_to_width(body, body_w.saturating_sub(1))
         };
         let style = if selected {
             crate::ui::selection_highlight(app)
@@ -448,9 +455,12 @@ fn render_rows(frame: &mut Frame, app: &App, local_rows: &LocalRowsSnapshot, are
                 width: delete_width,
                 ..row
             };
+            // Same as the Library list: red on the selection background is nearly invisible.
             let mut delete_style = app.theme.style(R::Error);
             if selected {
-                delete_style = delete_style.bg(app.theme.color(R::SelectionBg));
+                delete_style = ratatui::style::Style::default()
+                    .fg(app.theme.color(R::SelectionFg))
+                    .bg(app.theme.color(R::SelectionBg));
             }
             frame.render_widget(
                 Paragraph::new(Line::from("✗").style(delete_style)),

@@ -628,6 +628,7 @@ impl App {
             }
         };
         self.search.searching = true;
+        self.search.failed = false;
         // A fresh submit gets a new id; results/errors stamped with an older id are dropped.
         self.search.request_id = self.search.request_id.wrapping_add(1);
         let request_id = self.search.request_id;

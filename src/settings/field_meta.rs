@@ -187,62 +187,37 @@ impl Field {
             Field::StreamingSource => {
                 t!("Streaming source", "추천 소스", "おすすめソース").to_owned()
             }
-            Field::SearchYoutube => {
-                t!("Source: YouTube", "소스: YouTube", "ソース: YouTube").to_owned()
-            }
-            Field::SearchSoundCloud => t!(
-                "Source: SoundCloud",
-                "소스: SoundCloud",
-                "ソース: SoundCloud"
-            )
-            .to_owned(),
-            Field::SearchAudius => {
-                t!("Source: Audius", "소스: Audius", "ソース: Audius").to_owned()
-            }
+            Field::SearchYoutube => t!("YouTube", "YouTube", "YouTube").to_owned(),
+            Field::SearchSoundCloud => t!("SoundCloud", "SoundCloud", "SoundCloud").to_owned(),
+            Field::SearchAudius => t!("Audius", "Audius", "Audius").to_owned(),
             Field::AudiusAppName => {
                 t!("Audius app name", "Audius 앱 이름", "Audiusアプリ名").to_owned()
             }
-            Field::SearchJamendo => {
-                t!("Source: Jamendo", "소스: Jamendo", "ソース: Jamendo").to_owned()
-            }
+            Field::SearchJamendo => t!("Jamendo", "Jamendo", "Jamendo").to_owned(),
             Field::JamendoClientId => t!(
                 "Jamendo client_id",
                 "Jamendo client_id",
                 "Jamendo client_id"
             )
             .to_owned(),
-            Field::SearchInternetArchive => t!(
-                "Source: Internet Archive",
-                "소스: Internet Archive",
-                "ソース: Internet Archive"
-            )
-            .to_owned(),
-            Field::SearchRadioBrowser => t!(
-                "Source: Radio Browser",
-                "소스: Radio Browser",
-                "ソース: Radio Browser"
-            )
-            .to_owned(),
+            Field::SearchInternetArchive => {
+                t!("Internet Archive", "Internet Archive", "Internet Archive").to_owned()
+            }
+            Field::SearchRadioBrowser => {
+                t!("Radio Browser", "Radio Browser", "Radio Browser").to_owned()
+            }
             Field::CookiesFile => t!("Cookies file", "쿠키 파일", "Cookieファイル").to_owned(),
             Field::DownloadDir => t!("Download dir", "다운로드 폴더", "ダウンロード先").to_owned(),
             Field::LocalIncludeDownloadDir => t!(
-                "Local: include downloads",
-                "로컬: 다운로드 포함",
-                "ローカル: ダウンロード含む"
+                "Include downloads",
+                "다운로드 폴더 포함",
+                "ダウンロードを含む"
             )
             .to_owned(),
-            Field::LocalMusicRoot => t!(
-                "Local: music folder",
-                "로컬: 음악 폴더",
-                "ローカル: 音楽フォルダー"
-            )
-            .to_owned(),
-            Field::LocalMusicRootRecursive => t!(
-                "Local: scan subfolders",
-                "로컬: 하위 폴더 스캔",
-                "ローカル: サブフォルダー含む"
-            )
-            .to_owned(),
+            Field::LocalMusicRoot => t!("Music folder", "음악 폴더", "音楽フォルダー").to_owned(),
+            Field::LocalMusicRootRecursive => {
+                t!("Scan subfolders", "하위 폴더 스캔", "サブフォルダーを含む").to_owned()
+            }
             Field::Mouse => t!(
                 "Mouse (next launch)",
                 "마우스 (재시작 후 적용)",

@@ -440,6 +440,7 @@ impl App {
             return Vec::new();
         }
         self.search.searching = false;
+        self.search.failed = false;
         // The filter popup indexes into the rows it opened over; a fresh result
         // set makes those stale, so it closes rather than filtering the new list.
         self.search_filter.close();
@@ -482,6 +483,7 @@ impl App {
             return Vec::new();
         }
         self.search.searching = false;
+        self.search.failed = true;
         self.status.text = format!("{}: {error}", t!("Search error", "검색 오류", "検索エラー"));
         self.dirty = true;
         Vec::new()

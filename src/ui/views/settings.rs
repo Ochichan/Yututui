@@ -3,6 +3,8 @@
 //! that highlights the focused row is rebuilt fresh each frame from a `usize` index.
 
 mod dialogs;
+mod footer;
+mod keys;
 mod music_server;
 mod recording;
 mod spotify;
@@ -29,137 +31,16 @@ use crate::app::{App, MouseTarget, ScrollSurface};
 use crate::config::{
     FPS_DEFAULT, FPS_MAX, FPS_MIN, SEEK_SECONDS_MAX, SEEK_SECONDS_MIN, SPEED_MAX, SPEED_MIN,
 };
-use crate::keymap::{self, Action, KeyContext};
+use crate::keymap::Action;
 use crate::settings::{BAND_GAIN_MAX, BAND_GAIN_MIN};
 use crate::settings::{Field, FieldKind, SettingsState, SettingsTab};
 use crate::t;
-use crate::theme::ThemeConfig;
 use crate::theme::ThemeRole as R;
 use crate::ui::buttons;
 use crate::ui::text::pad_to_width;
 
-/// Footer hint for the Settings screen. Reflects the *committed* keymap, since that's what
-/// operates the screen until the edits are saved.
-fn footer_hint(app: &App, st: &SettingsState) -> String {
-    let k = |a| {
-        app.keymap
-            .label_for_display(KeyContext::Settings, a, app.retro_mode())
-    };
-    let save_quit = t!("save + quit", "저장하고 닫기", "保存して閉じる");
-    let switch_tab = t!("switch tab", "탭 전환", "タブ切替");
-    let reset = t!("reset", "초기화", "リセット");
-    if st.editing_text && matches!(st.current_field(), Some(Field::ThemeColor(_))) {
-        t!(
-            "type #RRGGBB or none  ·  Enter save  ·  Backspace delete",
-            "#RRGGBB 또는 none 입력  ·  Enter 저장  ·  Backspace 삭제",
-            "#RRGGBB または none を入力  ·  Enter 保存  ·  Backspace 削除"
-        )
-        .to_owned()
-    } else if st.editing_text {
-        // While typing a path/key, Enter or Esc both commit *and* persist it immediately,
-        // so the value can't be lost by leaving the screen later.
-        t!(
-            "type value  ·  Enter or Esc save  ·  Backspace delete",
-            "값 입력  ·  Enter 또는 Esc 저장  ·  Backspace 삭제",
-            "値を入力  ·  Enter または Esc 保存  ·  Backspace 削除"
-        )
-        .to_owned()
-    } else if matches!(st.current_field(), Some(Field::ExportPersonalData)) {
-        format!(
-            "{} {}",
-            k(Action::Confirm),
-            t!(
-                "export · unencrypted JSON · includes private listening history",
-                "내보내기 · 암호화되지 않은 JSON · 개인 감상 기록 포함",
-                "エクスポート · 暗号化されないJSON · 個人の再生履歴を含む"
-            )
-        )
-    } else if matches!(st.current_field(), Some(Field::LocalCrossfade))
-        && !crate::crossfade::overlap_support().is_available()
-    {
-        t!(
-            "saved, but this build cannot overlap two files  ·  transitions stay as today",
-            "저장되지만 이 빌드는 두 파일을 겹쳐 재생할 수 없어요  ·  전환은 지금과 같아요",
-            "保存されますがこのビルドは2つのファイルを重ねられません  ·  切替は今のままです"
-        )
-        .to_owned()
-    } else if st.tab == SettingsTab::Sync {
-        format!(
-            "{}/{} {}  ·  {} {}  ·  {} {}  ·  {} {}",
-            k(Action::MoveUp),
-            k(Action::MoveDown),
-            t!("select", "선택", "選択"),
-            k(Action::Confirm),
-            t!("open", "열기", "開く"),
-            k(Action::FocusNext),
-            switch_tab,
-            k(Action::SettingsCancel),
-            t!("close", "닫기", "閉じる"),
-        )
-    } else if st.tab == SettingsTab::Keys {
-        let mouse_row = st.row >= keymap::editable_entries().len();
-        let rebind = if mouse_row {
-            format!(
-                "{}/{} {} {} {}",
-                k(Action::ChangeDecrease),
-                k(Action::ChangeIncrease),
-                t!("or", "또는", "または"),
-                k(Action::Confirm),
-                t!("change", "변경", "変更"),
-            )
-        } else {
-            format!(
-                "{} {}",
-                k(Action::Confirm),
-                t!("rebind", "재설정", "再割り当て")
-            )
-        };
-        format!(
-            "{}/{} {}  ·  {}  ·  {} {}  ·  {} {}  ·  {} {}",
-            k(Action::MoveUp),
-            k(Action::MoveDown),
-            t!("select", "선택", "選択"),
-            rebind,
-            k(Action::DeleteChar),
-            reset,
-            k(Action::FocusNext),
-            switch_tab,
-            k(Action::SettingsCancel),
-            save_quit,
-        )
-    } else if matches!(st.current_field(), Some(Field::ThemeColor(_))) {
-        format!(
-            "{}/{} {}  ·  {} {}  ·  {} {}  ·  {} {}  ·  {} {}",
-            k(Action::MoveUp),
-            k(Action::MoveDown),
-            t!("color", "색상", "カラー"),
-            k(Action::Confirm),
-            t!("edit", "편집", "編集"),
-            k(Action::DeleteChar),
-            reset,
-            k(Action::FocusNext),
-            switch_tab,
-            k(Action::SettingsCancel),
-            save_quit,
-        )
-    } else {
-        format!(
-            "{}/{} {}  ·  {}/{} {}  ·  {} {}  ·  {} {}  ·  {} {}",
-            k(Action::MoveUp),
-            k(Action::MoveDown),
-            t!("field", "이동", "移動"),
-            k(Action::ChangeDecrease),
-            k(Action::ChangeIncrease),
-            t!("change", "변경", "変更"),
-            k(Action::Confirm),
-            t!("edit/toggle", "편집/전환", "編集/切替"),
-            k(Action::FocusNext),
-            switch_tab,
-            k(Action::SettingsCancel),
-            save_quit,
-        )
-    }
-}
+use footer::{FOOTER_MAX_ROWS, fit_footer, footer_hints, footer_width, help_hint};
+use keys::render_keys;
 
 pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     // No screen without state — but render defensively rather than panic.
@@ -187,15 +68,30 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         },
     );
 
+    // The footer takes a second row only when even its essential hints cannot share one line.
+    // Sized with the optional scroll hint assumed, which never changes how the essential hints
+    // wrap, so the hints drawn below always fit the rows reserved here.
+    let text_width = footer_width(app, inner.width);
+    let help = help_hint(app);
+    let footer_rows = if crate::ui::status_band_active(app) {
+        1
+    } else {
+        fit_footer(&footer_hints(app, st, true), &help, text_width)
+            .len()
+            .clamp(1, FOOTER_MAX_ROWS) as u16
+    };
     let rows = Layout::vertical([
         Constraint::Length(1),                                        // tab bar
         Constraint::Length(1),                                        // spacer
         Constraint::Min(0),                                           // field list
         Constraint::Length(crate::ui::control_box::docked_rows(app)), // docked player bar
-        Constraint::Length(1),                                        // help
+        Constraint::Length(footer_rows),                              // help
     ])
     .split(inner);
 
+    // Each list renderer below records its length and focus; the Keys tab records neither.
+    app.bridges.settings_list_len.set(None);
+    app.bridges.settings_focus.set(None);
     render_tabs(frame, app, st, rows[0]);
     if st.tab == SettingsTab::Sync {
         music_server::render_sync_area_selector(frame, app, st, rows[1]);
@@ -203,16 +99,23 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     if st.tab == SettingsTab::Keys {
         render_keys(frame, app, st, rows[2]);
     } else if st.tab == SettingsTab::Sync {
+        // The area selector takes the spacer row, so the pane leaves one blank row under it.
+        // Each pane is a list whose marker gutter lines its text up with the field tabs.
+        let pane = Rect {
+            y: rows[2].y.saturating_add(1),
+            height: rows[2].height.saturating_sub(1),
+            ..rows[2]
+        };
         match app.server.settings.area {
             crate::app::SyncArea::Status => {
-                music_server::render_status(frame, app, st, rows[2]);
+                music_server::render_status(frame, app, st, pane);
             }
             crate::app::SyncArea::PersonalState | crate::app::SyncArea::DevicesRecovery => {
                 let model = app.sync_settings_model();
-                render_sync(frame, app, st, &model, rows[2]);
+                render_sync(frame, app, st, &model, pane);
             }
             crate::app::SyncArea::MusicServer => {
-                music_server::render_music_server(frame, app, st, rows[2]);
+                music_server::render_music_server(frame, app, st, pane);
             }
         }
     } else {
@@ -220,7 +123,16 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     }
     crate::ui::control_box::render_docked(frame, app, rows[3]);
 
-    let help_text = footer_hint(app, st);
+    // The list was drawn above, so the overflow check reads this frame's numbers.
+    let overflowing = app
+        .bridges
+        .settings_list_len
+        .get()
+        .is_some_and(|len| len > app.bridges.settings_scroll.viewport());
+    let footer: Vec<Line> = fit_footer(&footer_hints(app, st, overflowing), &help, text_width)
+        .into_iter()
+        .map(Line::from)
+        .collect();
     // The footer row doubles as the status/toast surface. An active status message (Spotify
     // connect/import feedback, errors, the browser/clipboard-fallback hint) takes the row so it
     // is visible without leaving Settings; otherwise the keybinding hint shows. Every other view
@@ -231,7 +143,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         crate::ui::render_status_band(frame, app, rows[4]);
     } else {
         frame.render_widget(
-            Paragraph::new(Line::from(help_text).style(theme.style(R::TextMuted))),
+            Paragraph::new(footer).style(theme.style(R::TextMuted)),
             rows[4],
         );
     }
@@ -256,229 +168,6 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         );
         app.register_mouse_button(rect, MouseTarget::Global(Action::ToggleControlBox));
     }
-}
-
-#[derive(Clone, Copy)]
-enum EditableBinding {
-    Key {
-        logical: usize,
-        context: KeyContext,
-        action: Action,
-    },
-    Mouse {
-        logical: usize,
-        context: crate::mousemap::MouseContext,
-        gesture: crate::mousemap::MouseGesture,
-    },
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum BindingGroupKind {
-    Key(KeyContext),
-    Mouse(crate::mousemap::MouseContext),
-}
-
-struct BindingGroup {
-    kind: BindingGroupKind,
-    rows: Vec<EditableBinding>,
-}
-
-impl BindingGroup {
-    fn title(&self) -> String {
-        match self.kind {
-            BindingGroupKind::Key(context) => context.title().to_owned(),
-            BindingGroupKind::Mouse(context) => {
-                format!("{} · {}", t!("Mouse", "마우스", "マウス"), context.title())
-            }
-        }
-    }
-}
-
-/// The Keys tab: a scrollable list of every remappable binding, grouped by context. The
-/// chord shown is from the *draft* keymap so edits appear immediately; the row being rebound
-/// shows a capture prompt. Eight safe right-button gesture presets follow the keyboard rows.
-fn render_keys(frame: &mut Frame, app: &App, st: &SettingsState, area: Rect) {
-    let theme = &st.draft.theme;
-    let entries = keymap::editable_entries();
-
-    // Group consecutive keyboard bindings by context, then append one two-row mouse group per
-    // semantic surface. Whole groups stay together when the list is balanced into two columns.
-    let mut groups: Vec<BindingGroup> = Vec::new();
-    for (logical, &(context, action)) in entries.iter().enumerate() {
-        let row = EditableBinding::Key {
-            logical,
-            context,
-            action,
-        };
-        match groups.last_mut() {
-            Some(group) if group.kind == BindingGroupKind::Key(context) => group.rows.push(row),
-            _ => groups.push(BindingGroup {
-                kind: BindingGroupKind::Key(context),
-                rows: vec![row],
-            }),
-        }
-    }
-    let key_count = entries.len();
-    for (context_index, context) in crate::mousemap::MouseContext::ALL.into_iter().enumerate() {
-        let rows = crate::mousemap::MouseGesture::ALL
-            .into_iter()
-            .enumerate()
-            .map(|(gesture_index, gesture)| EditableBinding::Mouse {
-                logical: key_count
-                    + context_index * crate::mousemap::MouseGesture::ALL.len()
-                    + gesture_index,
-                context,
-                gesture,
-            })
-            .collect();
-        groups.push(BindingGroup {
-            kind: BindingGroupKind::Mouse(context),
-            rows,
-        });
-    }
-
-    // Break at the whole-group boundary that most closely balances rendered height. A blank
-    // line separates groups and is counted here exactly as it is drawn below.
-    let height = |group: &BindingGroup| group.rows.len() + 2;
-    let total: usize = groups.iter().map(height).sum();
-    let (mut split, mut acc, mut best) = (groups.len(), 0usize, usize::MAX);
-    for (group_index, group) in groups.iter().enumerate() {
-        acc += height(group);
-        let diff = acc.abs_diff(total - acc);
-        if diff < best {
-            best = diff;
-            split = group_index + 1;
-        }
-    }
-    let split = split.min(groups.len());
-    let label_width = groups
-        .iter()
-        .flat_map(|group| group.rows.iter())
-        .map(|row| match row {
-            EditableBinding::Key {
-                context, action, ..
-            } => UnicodeWidthStr::width(action.human_label_for(*context)),
-            EditableBinding::Mouse { gesture, .. } => UnicodeWidthStr::width(gesture.human_label()),
-        })
-        .max()
-        .unwrap_or(22)
-        .max(22)
-        + 2;
-
-    let columns =
-        Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)]).split(area);
-    for (column_index, slice) in [&groups[..split], &groups[split..]].into_iter().enumerate() {
-        let (items, display_to_binding, selected) =
-            build_keys_column(st, theme, slice, app.retro_mode(), label_width);
-        // A 2-cell gutter between the columns keeps the left labels off the right block.
-        let col = columns[column_index];
-        let col = if column_index == 0 {
-            Rect {
-                width: col.width.saturating_sub(2),
-                ..col
-            }
-        } else {
-            col
-        };
-        let len = items.len();
-        let list = List::new(items)
-            .style(theme.style(R::TextPrimary))
-            .highlight_style(
-                theme
-                    .style(R::SettingsValueFocused)
-                    .add_modifier(Modifier::BOLD),
-            )
-            .highlight_symbol("▶ ")
-            .highlight_spacing(HighlightSpacing::Always);
-        let offset = match selected {
-            Some(selected) => {
-                app.bridges.settings_keys_scroll[column_index].resolve(selected, col.height, len, 0)
-            }
-            None => app.bridges.settings_keys_scroll[column_index].view(col.height, len),
-        };
-        let mut state = ListState::default().with_offset(offset);
-        if let Some(selected) = selected {
-            state.select(Some(selected));
-        }
-        frame.render_stateful_widget(list, col, &mut state);
-        buttons::register_list_rows(app, col, state.offset(), display_to_binding.len(), |row| {
-            display_to_binding.get(row).copied().flatten()
-        });
-    }
-}
-
-/// Build one Keys-tab column: rendered rows, display-row to logical-binding map, and the
-/// highlighted display row when this column owns the cursor.
-fn build_keys_column(
-    st: &SettingsState,
-    theme: &ThemeConfig,
-    groups: &[BindingGroup],
-    retro: bool,
-    label_width: usize,
-) -> (Vec<ListItem<'static>>, Vec<Option<usize>>, Option<usize>) {
-    let mut items: Vec<ListItem> = Vec::new();
-    let mut display_to_binding: Vec<Option<usize>> = Vec::new();
-    let mut selected = None;
-    for (group_index, group) in groups.iter().enumerate() {
-        if group_index > 0 {
-            items.push(ListItem::new(Line::from("")));
-            display_to_binding.push(None);
-        }
-        items.push(ListItem::new(Line::from(Span::styled(
-            group.title(),
-            theme.style(R::SettingsGroup).add_modifier(Modifier::BOLD),
-        ))));
-        display_to_binding.push(None);
-        for &binding in &group.rows {
-            let logical = match binding {
-                EditableBinding::Key { logical, .. } | EditableBinding::Mouse { logical, .. } => {
-                    logical
-                }
-            };
-            let focused = logical == st.row;
-            if focused {
-                selected = Some(items.len());
-            }
-            let (label, value) = match binding {
-                EditableBinding::Key {
-                    context, action, ..
-                } => {
-                    let value = if st.capturing == Some((context, action)) {
-                        t!("<press a key…>", "<키 입력 대기…>", "<キー入力待ち…>").to_owned()
-                    } else {
-                        st.keymap.chord(context, action).map_or_else(
-                            || "—".to_owned(),
-                            |chord| keymap::format_chord_for_display(chord, retro),
-                        )
-                    };
-                    (action.human_label_for(context), value)
-                }
-                EditableBinding::Mouse {
-                    context, gesture, ..
-                } => (
-                    gesture.human_label(),
-                    st.mousemap
-                        .action(context, gesture)
-                        .human_label()
-                        .to_owned(),
-                ),
-            };
-            let value_role = if focused {
-                R::SettingsValueFocused
-            } else {
-                R::SettingsValue
-            };
-            items.push(ListItem::new(Line::from(vec![
-                Span::styled(
-                    format!("  {}", pad_to_width(label, label_width)),
-                    theme.style(R::SettingsLabel),
-                ),
-                Span::styled(value, theme.style(value_role)),
-            ])));
-            display_to_binding.push(Some(logical));
-        }
-    }
-    (items, display_to_binding, selected)
 }
 
 fn render_tabs(frame: &mut Frame, app: &App, st: &SettingsState, area: Rect) {
@@ -519,6 +208,23 @@ fn slider_str(bar: &str, num: &str) -> String {
     format!("‹ {bar}  {num} ›")
 }
 
+/// A toggle's state, read back from its display value so every toggle (including the Atlas
+/// rows) shares the one source of truth in `value_display`.
+fn toggle_on(st: &SettingsState, field: Field) -> bool {
+    st.draft.value_display(field) == crate::settings::toggle_str(true)
+}
+
+/// A toggle drawn as a 3-cell switch: the knob sits right and the track is heavy when on.
+/// The shape alone carries the state, because the focused row repaints every span in one
+/// color. Retro keeps the `[x]` checkbox, which reads better on a console font.
+fn switch_str(on: bool, retro: bool) -> String {
+    match (on, retro) {
+        (true, false) => "━━●".to_owned(),
+        (false, false) => "○──".to_owned(),
+        (on, true) => crate::settings::toggle_str(on),
+    }
+}
+
 /// Value text shared by rendering and click-target measurement.
 fn field_value_text(
     app: &App,
@@ -527,9 +233,12 @@ fn field_value_text(
     focused: bool,
     width: usize,
 ) -> String {
+    let retro = app.retro_mode();
+    let bar = |value: f64, min: f64, max: f64| bar(value, min, max, retro);
     match (field, field.kind()) {
         (Field::ExportPersonalData, _) => st.personal_data_export.value_display(),
         (Field::AudioOutput, _) => app.audio_output_display_label(&st.draft.audio_mpv_device),
+        (_, FieldKind::Toggle) => switch_str(toggle_on(st, field), retro),
         (f, FieldKind::Text) if focused && st.editing_text => {
             let value = st.draft.text_value(field).unwrap_or_default();
             let cursor = st.text_cursor.byte_index(value);
@@ -558,7 +267,7 @@ fn field_value_text(
             &st.draft.local_crossfade.label(),
         ),
         (Field::Band(i), _) => slider_str(
-            &bar(st.draft.eq_bands[i], BAND_GAIN_MIN, BAND_GAIN_MAX),
+            &centered_bar(st.draft.eq_bands[i], BAND_GAIN_MIN, BAND_GAIN_MAX, retro),
             &format!("{:+.0} dB", st.draft.eq_bands[i]),
         ),
         (Field::AnimFps, _) => {
@@ -581,13 +290,13 @@ fn render_fields(frame: &mut Frame, app: &App, st: &SettingsState, area: Rect) {
     // `fields[i]` walk below never runs past the end.
     let sections = st.sections();
     let focused_field = st.row.min(fields.len().saturating_sub(1));
+    let value_width = (area.width as usize)
+        .saturating_sub(UnicodeWidthStr::width(HL_SYMBOL) + other_label_width(st.tab));
 
     // Build fields plus unselectable section headers/spacers and retain their index mapping.
     let mut items: Vec<ListItem> = Vec::new();
     let mut display_to_field: Vec<Option<usize>> = Vec::new();
     let mut selected = 0usize;
-    let value_width = (area.width as usize)
-        .saturating_sub(UnicodeWidthStr::width(HL_SYMBOL) + other_label_width(st.tab));
 
     if sections.is_empty() {
         for (i, &field) in fields.iter().enumerate() {
@@ -612,15 +321,24 @@ fn render_fields(frame: &mut Frame, app: &App, st: &SettingsState, area: Rect) {
                 items.push(ListItem::new(Line::from("")));
                 display_to_field.push(None);
             }
-            items.push(ListItem::new(Line::from(Span::styled(
-                (*title).to_owned(),
-                crate::ui::anim::stagger_style(
-                    app,
-                    crate::app::Mode::Settings,
-                    items.len(),
-                    theme.style(R::SettingsGroup).add_modifier(Modifier::BOLD),
+            // The header runs a light rule to the right edge so each group reads as its own
+            // block. The list reserves the marker gutter on this row too.
+            let fade = |s: Style| {
+                crate::ui::anim::stagger_style(app, crate::app::Mode::Settings, items.len(), s)
+            };
+            let rule_width = (area.width as usize)
+                .saturating_sub(UnicodeWidthStr::width(HL_SYMBOL))
+                .saturating_sub(UnicodeWidthStr::width(*title) + 1);
+            items.push(ListItem::new(Line::from(vec![
+                Span::styled(
+                    (*title).to_owned(),
+                    fade(theme.style(R::SettingsGroup).add_modifier(Modifier::BOLD)),
                 ),
-            ))));
+                Span::styled(
+                    format!(" {}", "─".repeat(rule_width)),
+                    fade(theme.style(R::BorderMuted)),
+                ),
+            ])));
             display_to_field.push(None);
             for _ in 0..*count {
                 if i == focused_field {
@@ -641,7 +359,29 @@ fn render_fields(frame: &mut Frame, app: &App, st: &SettingsState, area: Rect) {
         }
     }
 
+    // The focused row expands in place: its whole value (when the row cuts it off), its cost
+    // meter, and its description follow it as unselectable rows. They scroll with the list, so
+    // the wheel, the scrollbar, and keyboard navigation reach every line on any screen size.
+    let detail = fields
+        .get(focused_field)
+        .map(|&field| detail_rows(app, st, field, area.width, value_width))
+        .unwrap_or_default();
+    let detail_len = detail.len();
+    let at = (selected + 1).min(items.len());
+    for (index, line) in detail.into_iter().enumerate() {
+        items.insert(at + index, ListItem::new(line));
+        display_to_field.insert(at + index, None);
+    }
+
     let len = items.len();
+    app.bridges.settings_list_len.set(Some(len));
+    let first = display_to_field
+        .iter()
+        .position(Option::is_some)
+        .unwrap_or(0);
+    app.bridges
+        .settings_focus
+        .set(Some((first, selected, selected + detail_len)));
     let list = List::new(items)
         .style(theme.style(R::TextPrimary))
         .highlight_style(
@@ -656,15 +396,22 @@ fn render_fields(frame: &mut Frame, app: &App, st: &SettingsState, area: Rect) {
     // Keep the scroll offset across frames so a click on a visible row focuses it *in place*.
     // (A fresh `ListState::default()` let ratatui re-derive the offset from 0 every frame and
     // pin the selection to an edge, so clicking the top/bottom row snapped the whole viewport.)
-    // `scrolloff = 0` means an already-visible cursor never moves the offset; keyboard nav past
-    // an edge still scrolls by one. The resolved offset always keeps `selected` on-screen, so
-    // the highlight is set unconditionally.
-    let offset = app
-        .bridges
-        .settings_scroll
-        .resolve(selected, area.height, len, 0);
+    // An already-visible cursor never moves the offset. Moving onto a row scrolls just far
+    // enough to show its detail rows too (`resolve` caps that margin at half the viewport, and
+    // the wheel reaches the rest). A wheel scroll may carry the focused row off-screen to read
+    // long detail rows, so the row is selected only while it is inside the window: ratatui
+    // would otherwise scroll it straight back into view.
+    let offset = resolve_keeping_cursor_on_resize(
+        &app.bridges.settings_scroll,
+        selected,
+        area.height,
+        len,
+        detail_len,
+    );
     let mut state = ListState::default().with_offset(offset);
-    state.select(Some(selected));
+    if (offset..offset + usize::from(area.height)).contains(&selected) {
+        state.select(Some(selected));
+    }
     frame.render_stateful_widget(list, area, &mut state);
 
     let offset = state.offset();
@@ -691,6 +438,33 @@ fn render_fields(frame: &mut Frame, app: &App, st: &SettingsState, area: Rect) {
         offset,
         area.height as usize,
     );
+}
+
+/// [`ScrollState::resolve`](crate::ui::scroll::ScrollState::resolve), plus one rule: when the
+/// viewport height changed since the last frame (a resize, zoom, or the docked bar toggling)
+/// and the cursor ended up outside the window, scroll it back in. Only a wheel or scrollbar
+/// move may leave the cursor off-screen, and the Settings lists rely on that to reach long
+/// detail text.
+pub(super) fn resolve_keeping_cursor_on_resize(
+    scroll: &crate::ui::scroll::ScrollState,
+    selected: usize,
+    height: u16,
+    len: usize,
+    scrolloff: usize,
+) -> usize {
+    let resized = scroll.viewport() != usize::from(height);
+    let offset = scroll.resolve(selected, height, len, scrolloff);
+    let height = usize::from(height);
+    if !resized || height == 0 || (offset..offset + height).contains(&selected) {
+        return offset;
+    }
+    let offset = if selected < offset {
+        selected
+    } else {
+        selected + 1 - height
+    };
+    scroll.set_offset(offset, len);
+    scroll.offset()
 }
 
 /// Publish a hit rect for each visible field row's interactive control, layered over the row's
@@ -828,10 +602,29 @@ fn field_row<'a>(
     // column lines up regardless of label length. The value text itself is produced by the
     // shared `field_value_text`, so the click-target math stays in lockstep with the glyphs.
     let label = pad_to_width(&field.label(), other_label_width(st.tab));
+    // An unset text field shows its default or "(none)" as a placeholder, muted so it does not
+    // read as a value the user typed. Buttons take an action color; the resets that wipe
+    // settings are red.
+    let placeholder = field.kind() == FieldKind::Text
+        && !(focused && st.editing_text)
+        && st
+            .draft
+            .text_value(field)
+            .is_none_or(|value| value.trim().is_empty());
     let value_role = if field == Field::ExportPersonalData && st.personal_data_export.is_busy() {
         R::TextMuted
     } else if focused {
         R::SettingsValueFocused
+    } else if placeholder {
+        R::TextMuted
+    } else if matches!(field, Field::ResetAll | Field::ResetKeybindings) {
+        R::Error
+    } else if field.kind() == FieldKind::Button
+        || (field.kind() == FieldKind::Toggle && toggle_on(st, field))
+    {
+        R::Accent
+    } else if field.kind() == FieldKind::Toggle {
+        R::TextMuted
     } else {
         R::SettingsValue
     };
@@ -841,7 +634,12 @@ fn field_row<'a>(
     // arrow hit-rects from `register_field_controls` stay in lockstep.
     if field == Field::AnimFps {
         let fps = st.draft.animations.effective_fps();
-        let track = bar(f64::from(fps), f64::from(FPS_MIN), f64::from(FPS_MAX));
+        let track = bar(
+            f64::from(fps),
+            f64::from(FPS_MIN),
+            f64::from(FPS_MAX),
+            app.retro_mode(),
+        );
         // Every track cell past the 30-fps thumb is the red zone.
         let width = track.chars().count().max(1);
         let mark = ((f64::from(FPS_DEFAULT - FPS_MIN) / f64::from(FPS_MAX - FPS_MIN))
@@ -875,6 +673,66 @@ fn field_row<'a>(
     ]))
 }
 
+/// The focused field's detail rows, indented under its label: the whole value when the row had
+/// to cut it off (a long path, a wide select label, the text being edited), the render-cost
+/// meter for an animation effect, then the whole description. Everything wraps to the list
+/// width, so no line runs past the edge.
+fn detail_rows(
+    app: &App,
+    st: &SettingsState,
+    field: Field,
+    width: u16,
+    value_width: usize,
+) -> Vec<Line<'static>> {
+    const INDENT: &str = "  ";
+    let theme = &st.draft.theme;
+    let retro = app.retro_mode();
+    let inner = usize::from(width)
+        .saturating_sub(UnicodeWidthStr::width(HL_SYMBOL) + INDENT.len())
+        .max(1);
+    let mut lines = Vec::new();
+    if !matches!(field, Field::ThemeColor(_)) {
+        // `usize::MAX` asks the editor window for the whole buffer; secrets stay masked
+        // because `field_value_text` masks them at every width.
+        let value = field_value_text(app, st, field, true, usize::MAX);
+        if UnicodeWidthStr::width(value.as_str()) > value_width {
+            let marker = if retro { "> " } else { "› " };
+            for (i, part) in crate::ui::text::wrap_to_width(&value, inner.saturating_sub(2))
+                .into_iter()
+                .enumerate()
+            {
+                lines.push(Line::from(vec![
+                    Span::styled(
+                        format!("{INDENT}{}", if i == 0 { marker } else { "  " }),
+                        theme.style(R::TextMuted),
+                    ),
+                    Span::styled(part, theme.style(R::SettingsValue)),
+                ]));
+            }
+        }
+    }
+    if let Some(cost) = crate::settings::anim_cost(field) {
+        let (full, empty) = if retro { ('#', '.') } else { ('■', '□') };
+        let meter: String = (1..=5)
+            .map(|i| if i <= cost { full } else { empty })
+            .collect();
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!("{INDENT}{} ", t!("cost", "부하", "負荷")),
+                theme.style(R::TextMuted),
+            ),
+            Span::styled(meter, theme.style(R::Warning)),
+        ]));
+    }
+    for part in crate::ui::text::wrap_to_width(field.description(), inner) {
+        lines.push(Line::from(Span::styled(
+            format!("{INDENT}{part}"),
+            theme.style(R::TextMuted),
+        )));
+    }
+    lines
+}
+
 /// A `w`×`h` rect centered in `area`, clamped so it never exceeds the available space.
 fn centered_fixed(area: Rect, w: u16, h: u16) -> Rect {
     let w = w.min(area.width);
@@ -887,18 +745,46 @@ fn centered_fixed(area: Rect, w: u16, h: u16) -> Rect {
     }
 }
 
-/// A compact 11-cell slider bar with a marker at `value`'s position in `[min, max]`.
-fn bar(value: f64, min: f64, max: f64) -> String {
-    const WIDTH: usize = 11;
+/// Cell count of every slider track.
+const BAR_WIDTH: usize = 11;
+
+/// The knob cell for `value` in `[min, max]` on a [`BAR_WIDTH`] track.
+fn bar_pos(value: f64, min: f64, max: f64) -> usize {
     let frac = if max > min {
         ((value - min) / (max - min)).clamp(0.0, 1.0)
     } else {
         0.0
     };
-    let pos = (frac * (WIDTH - 1) as f64).round() as usize;
-    let mut s = String::with_capacity(WIDTH);
-    for i in 0..WIDTH {
-        s.push(if i == pos { '●' } else { '─' });
-    }
-    s
+    (frac * (BAR_WIDTH - 1) as f64).round() as usize
+}
+
+/// Draw a track whose cells in `filled` are heavy and the rest light, with the knob at `pos`.
+/// Retro uses `=`/`-` because the console scrub folds both line weights into `-`.
+fn track(pos: usize, filled: std::ops::RangeInclusive<usize>, retro: bool) -> String {
+    let (heavy, light) = if retro { ('=', '-') } else { ('━', '─') };
+    (0..BAR_WIDTH)
+        .map(|i| {
+            if i == pos {
+                '●'
+            } else if filled.contains(&i) {
+                heavy
+            } else {
+                light
+            }
+        })
+        .collect()
+}
+
+/// A compact slider track filled from the left edge up to `value`'s knob.
+fn bar(value: f64, min: f64, max: f64, retro: bool) -> String {
+    let pos = bar_pos(value, min, max);
+    track(pos, 0..=pos, retro)
+}
+
+/// A slider track for a signed range (EQ gain): the fill runs from the centre to the knob, so a
+/// boost and a cut read as opposite directions at a glance.
+fn centered_bar(value: f64, min: f64, max: f64, retro: bool) -> String {
+    let pos = bar_pos(value, min, max);
+    let mid = bar_pos((min + max) / 2.0, min, max);
+    track(pos, pos.min(mid)..=pos.max(mid), retro)
 }

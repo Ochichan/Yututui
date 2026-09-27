@@ -2,6 +2,7 @@
 use super::*;
 
 mod commit;
+mod navigation;
 mod persist_text;
 mod recording;
 mod transfer;
@@ -283,7 +284,27 @@ impl App {
             .keymap
             .action(KeyContext::Settings, k.into())
             .or_else(|| Self::settings_safety_action(k));
-        if on_sync_tab && let Some(commands) = self.on_sync_settings_action(action, k) {
+        // Page and jump keys scroll the view itself (the field list's detail rows, the Sync
+        // panes' text); ↑/↓ keep walking the selection.
+        if !on_keys_tab
+            && let Some(
+                scroll @ (Action::PageUp | Action::PageDown | Action::JumpTop | Action::JumpBottom),
+            ) = action
+            && self.settings_scroll_view(scroll)
+        {
+            return Vec::new();
+        }
+        let acts_on_cursor = match action {
+            Some(Action::Confirm) => !on_keys_tab,
+            Some(Action::ChangeDecrease | Action::ChangeIncrease | Action::DeleteChar) => {
+                !on_keys_tab && !on_sync_tab
+            }
+            _ => false,
+        };
+        if acts_on_cursor && self.settings_reveal_hidden_cursor() {
+            return Vec::new();
+        }
+        if on_sync_tab && let Some(commands) = self.on_sync_settings_action(action) {
             return commands;
         }
         match action {
@@ -332,21 +353,6 @@ impl App {
                 Vec::new()
             }
             _ => Vec::new(),
-        }
-    }
-
-    /// Literal navigation keys the settings editor always accepts, so a user can never
-    /// remap themselves out of the screen that edits keybindings.
-    pub(in crate::app) fn settings_safety_action(k: KeyEvent) -> Option<Action> {
-        match k.code {
-            KeyCode::Up => Some(Action::MoveUp),
-            KeyCode::Down => Some(Action::MoveDown),
-            KeyCode::Left => Some(Action::ChangeDecrease),
-            KeyCode::Right => Some(Action::ChangeIncrease),
-            KeyCode::Enter => Some(Action::Confirm),
-            KeyCode::Esc => Some(Action::Back),
-            KeyCode::Backspace => Some(Action::DeleteChar),
-            _ => None,
         }
     }
 
@@ -511,29 +517,6 @@ impl App {
             self.select_sync_area(self.server.settings.area)
         } else {
             Vec::new()
-        }
-    }
-
-    pub(in crate::app) fn settings_move_row(&mut self, delta: i32) {
-        if let Some(st) = self.settings.as_mut() {
-            if st.tab == SettingsTab::Sync {
-                self.personal_state.sync_ui.move_row(delta);
-                self.dirty = true;
-                return;
-            }
-            // The Keys tab is a list of remappable bindings rather than `Field`s.
-            let n = match st.tab {
-                SettingsTab::Keys => {
-                    (crate::keymap::editable_entries().len()
-                        + crate::mousemap::MouseContext::ALL.len()
-                            * crate::mousemap::MouseGesture::ALL.len()) as i32
-                }
-                _ => st.fields().len() as i32,
-            };
-            st.row = (st.row as i32 + delta).clamp(0, n.max(1) - 1) as usize;
-            st.editing_text = false;
-            st.spotify_import_mode_dropdown = None;
-            self.dirty = true;
         }
     }
 
