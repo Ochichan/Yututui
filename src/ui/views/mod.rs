@@ -15,6 +15,8 @@ pub mod mini;
 pub mod now_playing;
 pub mod onboarding;
 pub mod player;
+mod player_decor;
+mod player_idle;
 mod player_layout;
 mod player_lyrics;
 mod queue_actions;

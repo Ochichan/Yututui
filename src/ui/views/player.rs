@@ -15,6 +15,8 @@ use crate::t;
 use crate::theme::ThemeRole as R;
 use crate::ui::buttons;
 
+use super::player_decor::{radio_art_animation_on, render_art_animation_separator};
+use super::player_idle::render_idle_card;
 use super::player_layout::calculate_player_filler_layout;
 use super::queue_actions;
 
@@ -321,144 +323,6 @@ fn render_filler(frame: &mut Frame, app: &App, player_area: Rect, area: Rect) {
     {
         render_idle_card(frame, app, area);
     }
-}
-
-/// The empty Player: a heading and one row per way in (search, library, DJ Gem), each naming
-/// its current key and clickable. Drawn only when it fits whole.
-fn render_idle_card(frame: &mut Frame, app: &App, area: Rect) {
-    use crate::keymap::{Action, KeyContext};
-    let retro = app.retro_mode();
-    let rows: Vec<(Action, String, &str)> = [
-        (
-            Action::OpenSearch,
-            t!("Search for music", "음악 검색", "音楽を検索"),
-        ),
-        (
-            Action::OpenLibrary,
-            t!("Open your library", "라이브러리 열기", "ライブラリを開く"),
-        ),
-        (
-            Action::OpenAi,
-            t!("Ask DJ Gem", "DJ Gem에게 요청", "DJ Gem に頼む"),
-        ),
-    ]
-    .into_iter()
-    .map(|(action, label)| {
-        let key = app
-            .keymap
-            .label_for_display(KeyContext::Player, action, retro);
-        (action, key, label)
-    })
-    .collect();
-    // The docked bar's title already says nothing is playing; this names what to do.
-    let heading = t!("♪  Start listening", "♪  음악 듣기 시작", "♪  聴きはじめる");
-    let key_width = rows
-        .iter()
-        .map(|(_, key, _)| UnicodeWidthStr::width(key.as_str()))
-        .max()
-        .unwrap_or(1);
-    let width = rows
-        .iter()
-        .map(|(_, _, label)| key_width + 2 + UnicodeWidthStr::width(*label))
-        .chain(std::iter::once(UnicodeWidthStr::width(heading)))
-        .max()
-        .unwrap_or(0) as u16;
-    // Heading, a blank row, then one row per action.
-    let height = rows.len() as u16 + 2;
-    if area.width < width + 2 || area.height < height {
-        return;
-    }
-    let x = area.x + (area.width - width) / 2;
-    let y = area.y + (area.height - height) / 2;
-    let row = |offset: u16| Rect {
-        x,
-        y: y + offset,
-        width,
-        height: 1,
-    };
-    frame.render_widget(
-        Paragraph::new(heading).style(app.theme.style(R::TextPrimary).add_modifier(Modifier::BOLD)),
-        row(0),
-    );
-    for (index, (action, key, label)) in rows.into_iter().enumerate() {
-        let rect = row(index as u16 + 2);
-        frame.render_widget(
-            Paragraph::new(Line::from(vec![
-                ratatui::text::Span::styled(
-                    crate::ui::text::pad_to_width(&key, key_width + 2),
-                    app.theme.style(R::Accent),
-                ),
-                ratatui::text::Span::styled(label.to_owned(), app.theme.style(R::TextMuted)),
-            ])),
-            rect,
-        );
-        app.register_mouse_button(rect, MouseTarget::Player(action));
-    }
-}
-
-fn render_art_animation_separator(frame: &mut Frame, app: &App, area: Rect) {
-    if area.width == 0 || area.height == 0 {
-        return;
-    }
-    // The trailing space is deliberate: the motif is tiled edge-to-edge, and it keeps
-    // each repetition from butting straight into the next one's leading note.
-    const MOTIF: &str = "♫♪.ılılıll|̲̅●̲̅|̲̅=̲̅|̲̅●̲̅|llılılı.♫♪ ";
-    // Clustered once — the motif is a compile-time constant and this runs every radio frame.
-    static MOTIF_CLUSTERS: std::sync::LazyLock<Vec<String>> =
-        std::sync::LazyLock::new(|| display_clusters(MOTIF));
-    let width = usize::from(area.width);
-    let offset = if radio_art_animation_on(app) {
-        (app.anim_frame() / 6) as usize
-    } else {
-        0
-    };
-    let line = repeated_motif_line(&MOTIF_CLUSTERS, width, offset);
-    frame.render_widget(
-        Paragraph::new(
-            Line::from(line)
-                .style(app.theme.style(R::Accent).add_modifier(Modifier::BOLD))
-                .alignment(Alignment::Center),
-        ),
-        area,
-    );
-}
-
-fn repeated_motif_line(clusters: &[String], width: usize, offset: usize) -> String {
-    if clusters.is_empty() {
-        return " ".repeat(width);
-    }
-    let mut line = String::new();
-    let mut i = offset % clusters.len();
-    while UnicodeWidthStr::width(line.as_str()) < width {
-        line.push_str(&clusters[i]);
-        i = (i + 1) % clusters.len();
-    }
-    crate::ui::text::pad_to_width(
-        &crate::ui::text::truncate_owned_to_width(line, width),
-        width,
-    )
-}
-
-fn display_clusters(s: &str) -> Vec<String> {
-    let mut clusters = Vec::new();
-    let mut current = String::new();
-    for ch in s.chars() {
-        if UnicodeWidthChar::width(ch).unwrap_or(0) > 0 && !current.is_empty() {
-            clusters.push(std::mem::take(&mut current));
-        }
-        current.push(ch);
-    }
-    if !current.is_empty() {
-        clusters.push(current);
-    }
-    clusters
-}
-
-fn radio_art_animation_on(app: &App) -> bool {
-    app.radio_dedicated_mode
-        && app.animations().master
-        && !app.playback.paused
-        && app.queue.current().is_some()
 }
 
 fn render_radio_filler(frame: &mut Frame, app: &App, area: Rect) {
