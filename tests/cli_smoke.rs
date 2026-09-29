@@ -1677,7 +1677,7 @@ mod remote_owner {
         assert!(settings.status.success(), "{}", stderr(&settings));
         assert_eq!(
             stdout(&settings).trim(),
-            "autoplay=on  •  source=internet_archive  •  mode=discovery  •  speed=1.5x  •  seek=12s  •  normalize=on  •  gapless=off  •  ai=on  •  radio-mode=off"
+            "autoplay=on  •  source=internet_archive  •  mode=discovery  •  speed=1.5x  •  seek=12s  •  normalize=on  •  gapless=off  •  crossfade=off  •  ai=on  •  radio-mode=off"
         );
         assert_credentials_hidden(&settings, &instance.endpoint);
 
