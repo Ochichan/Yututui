@@ -961,7 +961,9 @@ async fn dispatch_command(
         PlayerCmd::SetLongFormSeekOptimization(_) => {
             unreachable!("policy updates are actor-local commands")
         }
-        PlayerCmd::RefreshAudioDevices | PlayerCmd::SelectAudioDevice { .. } => {
+        PlayerCmd::RefreshAudioDevices
+        | PlayerCmd::SelectAudioDevice { .. }
+        | PlayerCmd::ReplayAudioDevice { .. } => {
             unreachable!("audio-output commands are routed above")
         }
         PlayerCmd::Stop => {
@@ -1038,8 +1040,8 @@ async fn dispatch_command(
                 Some(tracked.acknowledgement),
             )
         }
-        PlayerCmd::RetireExtra => {
-            unreachable!("RetireExtra is conductor-local")
+        PlayerCmd::SetOverlap(_) => {
+            unreachable!("SetOverlap is conductor-local")
         }
     };
     if let Some(operation) = terminal_operation {

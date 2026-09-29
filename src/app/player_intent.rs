@@ -113,7 +113,7 @@ pub enum PlayerCommit {
     Track(Box<TrackTransitionPlan>),
     VideoOpen(Box<VideoOpenPlan>),
     VideoFinish(Box<VideoFinishPlan>),
-    RetireExtra,
+    SetOverlap,
 }
 
 impl PlayerCommit {
@@ -146,7 +146,7 @@ impl PlayerCommit {
             | Self::Speed { .. }
             | Self::EqPreset { .. }
             | Self::Normalize { .. }
-            | Self::RetireExtra => true,
+            | Self::SetOverlap => true,
         }
     }
 }
@@ -351,7 +351,7 @@ impl App {
                 self.supersede_source_recovery();
                 return self.commit_video_finish(*plan);
             }
-            PlayerCommit::RetireExtra => {}
+            PlayerCommit::SetOverlap => {}
         }
         self.dirty = true;
         Vec::new()

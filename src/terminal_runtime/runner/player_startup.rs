@@ -98,6 +98,7 @@ pub(super) fn spawn_audio_player(
     let cookies_file = cfg.cookies_file.clone();
     let gapless = cfg.gapless;
     let audio = cfg.audio.clone();
+    let overlap_enabled = cfg.overlap_enabled;
     spawn_player_startup(async move {
         if shutdown.is_triggered() {
             return Err(
@@ -112,6 +113,7 @@ pub(super) fn spawn_audio_player(
                 cookies_file,
                 gapless,
                 audio,
+                overlap_enabled,
                 route_provider,
             ),
         )

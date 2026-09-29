@@ -1359,6 +1359,7 @@ impl DaemonEngine {
                 .cookies_file_for_external_tools(data_dir().as_deref()),
             self.config.effective_gapless(),
             self.config.audio.runtime(),
+            false,
             self.open_subsonic.route_provider(),
         )
         .await

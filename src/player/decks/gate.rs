@@ -92,7 +92,9 @@ impl EventGate {
             {
                 Some(ExtraProof::Failed { epoch })
             }
-            PlayerEvent::TransportClosed(_) => Some(ExtraProof::TransportClosed { epoch }),
+            PlayerEvent::TransportClosed(_) => {
+                Some(ExtraProof::TransportClosed { epoch, from_extra })
+            }
             PlayerEvent::TimePos(_) | PlayerEvent::Duration(Some(_))
                 if event.file_generation() == Some(generation) =>
             {
@@ -103,7 +105,9 @@ impl EventGate {
     }
 
     pub(super) fn emit(&self, from_extra: bool, event: PlayerEvent, sink: &EventSink) {
-        if let Some(proof) = self.observe_pending(from_extra, &event)
+        if let Some(proof) = self
+            .observe_pending(from_extra, &event)
+            .or_else(|| deck_closed_proof(from_extra, &event))
             && let Some(tx) = &self.proof
         {
             let _ = tx.try_send(proof);
@@ -129,12 +133,7 @@ impl EventGate {
         if from_extra != extra_leads {
             return;
         }
-        if from_extra {
-            let generation = self.admitted.load(Ordering::Acquire);
-            sink(rewrite_to_admitted_generation(event, generation));
-        } else {
-            sink(event);
-        }
+        sink(event);
     }
 
     pub(super) fn admit_pending_incoming(&self, from_extra: bool, event: &PlayerEvent) -> bool {
@@ -158,12 +157,7 @@ impl EventGate {
     }
 }
 
-pub(super) fn rewrite_to_admitted_generation(event: PlayerEvent, generation: u64) -> PlayerEvent {
-    match event {
-        PlayerEvent::FileScoped { event, .. } => PlayerEvent::FileScoped {
-            file_generation: generation,
-            event,
-        },
-        event => event,
-    }
+fn deck_closed_proof(from_extra: bool, event: &PlayerEvent) -> Option<ExtraProof> {
+    matches!(event.unscoped(), PlayerEvent::TransportClosed(_))
+        .then_some(ExtraProof::DeckClosed { from_extra })
 }

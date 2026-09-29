@@ -8,13 +8,15 @@ use std::time::Instant;
 use tokio::sync::mpsc::Receiver;
 use tokio::sync::watch;
 
-use super::conductor::{Conductor, ExtraDeck, PendingOverlap};
+use super::conductor::{Conductor, DeckSettings, ExtraDeck, PendingOverlap};
 use super::gate::EventGate;
 use super::proof::{ExtraProof, OVERLAP_PROOF_TIMEOUT};
 use crate::crossfade::{FadeLength, OverlapBlocker, TrackHandoff};
 use crate::player::{Chapter, long_form_seek::CacheReason};
 use crate::player::{EventSink, PlayerCmd, PlayerEvent};
 use std::sync::Mutex;
+
+mod black_box;
 
 fn collecting_sink() -> (EventSink, Arc<Mutex<Vec<PlayerEvent>>>) {
     let collected = Arc::new(Mutex::new(Vec::new()));
@@ -73,26 +75,30 @@ fn event_gate_drops_non_lead_time_pos_and_eof() {
 }
 
 #[test]
-fn event_gate_rewrites_extra_lead_file_scoped_to_admitted_generation() {
+fn late_extra_lead_eof_stays_stale_for_the_owner_generation_filter() {
     let admitted = Arc::new(AtomicU64::new(9));
     let gate = EventGate::new(Arc::clone(&admitted));
     gate.extra_is_lead.store(true, Ordering::Release);
-    let (sink, collected) = collecting_sink();
+    let collected = Arc::new(Mutex::new(Vec::new()));
+    let owner_events = Arc::clone(&collected);
+    let owner_generation = Arc::clone(&admitted);
+    let sink: EventSink = Arc::new(move |event| {
+        if event
+            .file_generation()
+            .is_none_or(|generation| generation == owner_generation.load(Ordering::Acquire))
+        {
+            owner_events
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(event);
+        }
+    });
 
-    gate.emit(
-        true,
-        PlayerEvent::file_scoped(1, PlayerEvent::TimePos(3.5)),
-        &sink,
+    gate.emit(true, PlayerEvent::file_scoped(1, PlayerEvent::Eof), &sink);
+    assert!(
+        take(&collected).is_empty(),
+        "a previous extra-lead EOF must keep its generation so the owner rejects it after a skip"
     );
-    let events = take(&collected);
-    assert_eq!(events.len(), 1);
-    assert!(matches!(
-        &events[0],
-        PlayerEvent::FileScoped {
-            file_generation: 9,
-            event
-        } if matches!(event.as_ref(), PlayerEvent::TimePos(pos) if *pos == 3.5)
-    ));
 }
 
 #[test]
@@ -167,6 +173,7 @@ fn harness() -> Harness {
     let (_fg_tx, fg_rx) = watch::channel(0);
     let conductor = Conductor {
         primary_tx,
+        primary_available: true,
         extra: Some(ExtraDeck {
             tx: extra_tx,
             _mpv: None,
@@ -175,11 +182,15 @@ fn harness() -> Harness {
         extra_has_file: false,
         fade: None,
         volume: 100,
+        settings: DeckSettings::with_volume(100),
         next_deck_generation: 1,
         warming: None,
         gate: Arc::clone(&gate),
         emit: sink,
         audio: crate::config::MpvAudioRuntimeConfig::default(),
+        overlap_enabled: true,
+        cookies_file: None,
+        standby_cache_args: Vec::new(),
         intentional_close: Arc::new(AtomicBool::new(false)),
         file_generation_rx: fg_rx,
         pending_overlap: None,
@@ -191,6 +202,43 @@ fn harness() -> Harness {
         extra_rx,
         gate,
     }
+}
+
+#[tokio::test]
+async fn disabled_overlap_does_not_warm_a_standby_on_cut() {
+    let mut h = harness();
+    h.conductor.extra = None;
+    h.conductor.standby_spawn = Some(|| Err(OverlapBlocker::Mpv));
+
+    assert!(
+        h.conductor
+            .handle_command(PlayerCmd::SetOverlap(false))
+            .await
+    );
+    assert!(h.conductor.handle_command(cut_load("/music/c.flac")).await);
+
+    assert!(
+        h.conductor.warming.is_none(),
+        "a Cut with overlap disabled must not leave an idle standby process warming"
+    );
+}
+
+#[tokio::test]
+async fn enabling_overlap_warms_a_standby() {
+    let mut h = harness();
+    h.conductor.extra = None;
+    h.conductor.standby_spawn = Some(|| Err(OverlapBlocker::Mpv));
+
+    assert!(
+        h.conductor
+            .handle_command(PlayerCmd::SetOverlap(true))
+            .await
+    );
+
+    assert!(
+        h.conductor.warming.is_some(),
+        "enabling overlap must prepare the standby before the next overlap window"
+    );
 }
 
 #[tokio::test]
@@ -305,7 +353,10 @@ async fn transport_closed_failed_overlap_drops_dead_standby() {
         .expect("overlap is pending")
         .epoch;
     h.conductor
-        .apply_extra_proof(ExtraProof::TransportClosed { epoch })
+        .apply_extra_proof(ExtraProof::TransportClosed {
+            epoch,
+            from_extra: true,
+        })
         .await;
     assert!(
         h.conductor.extra.is_none(),
@@ -507,7 +558,7 @@ fn observe_pending_does_not_fail_replacement_from_stale_error() {
     );
     assert!(matches!(
         proof_rx.try_recv(),
-        Ok(ExtraProof::TransportClosed { epoch }) if epoch == second
+        Ok(ExtraProof::TransportClosed { epoch, .. }) if epoch == second
     ));
 }
 
@@ -720,7 +771,10 @@ fn only_the_pending_incoming_deck_can_report_overlap_failure() {
         PlayerEvent::TransportClosed("outgoing closed".to_owned()),
         &sink,
     );
-    assert!(proof_rx.try_recv().is_err());
+    assert!(matches!(
+        proof_rx.try_recv(),
+        Ok(ExtraProof::DeckClosed { from_extra: false })
+    ));
 
     gate.emit(
         true,
@@ -782,11 +836,15 @@ fn event_gate_drops_outgoing_time_pos_and_admits_incoming_primary_during_pending
 }
 
 #[tokio::test]
-async fn retire_extra_keeps_playing_extra_lead_until_next_cut() {
+async fn disabling_overlap_keeps_playing_extra_lead_until_next_cut() {
     let mut h = harness();
     h.conductor.set_extra_is_lead(true);
     h.conductor.extra_has_file = true;
-    assert!(h.conductor.handle_command(PlayerCmd::RetireExtra).await);
+    assert!(
+        h.conductor
+            .handle_command(PlayerCmd::SetOverlap(false))
+            .await
+    );
     assert!(
         h.conductor.extra_is_lead,
         "Off after a completed overlap must keep extra as lead"
@@ -836,7 +894,11 @@ async fn retire_extra_then_cut_plays_on_primary() {
         deadline: Instant::now() + OVERLAP_PROOF_TIMEOUT,
         epoch: 1,
     });
-    assert!(h.conductor.handle_command(PlayerCmd::RetireExtra).await);
+    assert!(
+        h.conductor
+            .handle_command(PlayerCmd::SetOverlap(false))
+            .await
+    );
     assert!(h.conductor.extra_is_lead);
     assert!(h.gate.extra_is_lead.load(Ordering::Acquire));
     assert!(!h.conductor.extra_has_file);
@@ -847,6 +909,12 @@ async fn retire_extra_then_cut_plays_on_primary() {
     assert!(
         extra.iter().all(|cmd| !matches!(cmd, PlayerCmd::Stop)),
         "Off must not Stop the extra lead while it still owns the current file"
+    );
+    assert!(
+        extra
+            .iter()
+            .any(|cmd| load_url(cmd) == Some("/music/b.flac") && load_is_cut(cmd)),
+        "Off must Cut the already-committed pending destination onto the extra lead"
     );
     let primary = take_cmds(&mut h.primary_rx);
     assert!(
@@ -866,7 +934,7 @@ async fn retire_extra_then_cut_plays_on_primary() {
         primary
             .iter()
             .any(|cmd| load_url(cmd) == Some("/music/c.flac") && load_is_cut(cmd)),
-        "Off → RetireExtra must return subsequent Cut to primary"
+        "Off must return the subsequent Cut to primary"
     );
 }
 
@@ -888,11 +956,12 @@ async fn replacing_a_pending_overlap_stops_it_before_loading_the_new_destination
     );
 
     let extra = take_cmds(&mut h.extra_rx);
-    assert_eq!(extra.len(), 3);
+    assert_eq!(extra.len(), 4);
     assert!(matches!(extra[0], PlayerCmd::Stop));
-    assert!(matches!(extra[1], PlayerCmd::SetVolume(0)));
+    assert!(matches!(extra[1], PlayerCmd::SetVolume(100)));
+    assert!(matches!(extra[2], PlayerCmd::SetVolume(0)));
     assert!(
-        load_url(&extra[2]) == Some("/music/c.flac") && load_is_cut(&extra[2]),
+        load_url(&extra[3]) == Some("/music/c.flac") && load_is_cut(&extra[3]),
         "the replacement must load only after the abandoned incoming file is stopped"
     );
     assert_eq!(h.gate.pending_generation.load(Ordering::Acquire), 5);

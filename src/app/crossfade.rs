@@ -28,11 +28,11 @@ impl App {
         );
         self.dirty = true;
         let mut cmds = Vec::new();
-        if !previous.is_off() && next.is_off() {
+        if previous.is_off() != next.is_off() {
             cmds.extend(self.player_intent(
-                "retire_extra",
-                PlayerCmd::RetireExtra,
-                PlayerCommit::RetireExtra,
+                "set_overlap",
+                PlayerCmd::SetOverlap(!next.is_off()),
+                PlayerCommit::SetOverlap,
             ));
         }
         cmds.push(Cmd::Persist(PersistCmd::Config(Box::new(
