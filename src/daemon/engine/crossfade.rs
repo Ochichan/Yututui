@@ -152,18 +152,29 @@ impl DaemonEngine {
         &mut self,
         tenths: u8,
     ) -> (RemoteResponse, Vec<EngineEffect>) {
+        let Some(next) = crate::crossfade::LocalCrossfade::from_remote_tenths(tenths) else {
+            return (RemoteResponse::err("crossfade_range"), Vec::new());
+        };
         let previous = self.crossfade.local_crossfade;
-        let next = crate::crossfade::LocalCrossfade::from_tenths(tenths);
+        // Commit even when the live player refuses SetOverlap, as the App does: every spawn is
+        // seeded from this setting, so a replacement player picks it up.
         if previous.is_off() != next.is_off()
             && let Err(error) = self
                 .send_player_command_if_active("set_overlap", PlayerCmd::SetOverlap(!next.is_off()))
         {
-            return (self.reject_player_command(error), Vec::new());
+            tracing::warn!(%error, "daemon could not deliver SetOverlap; setting kept for next spawn");
         }
         self.crossfade.local_crossfade = next;
         self.config.local_crossfade_secs = Some(next.as_secs_f64());
         self.save_config("daemon local crossfade setting");
         (RemoteResponse::status(self.status()), Vec::new())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn player_file_generation_for_test(&self) -> Option<u64> {
+        self.player
+            .as_ref()
+            .map(|player| player.handle.current_file_generation())
     }
 
     #[cfg(test)]

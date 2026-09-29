@@ -207,6 +207,10 @@ async fn time_pos_overlap_fires_once_and_late_outgoing_eof_is_stale() {
     .await;
     let epochs = PositionEpochs::capture(&owners.app, &owners.engine);
     let app_outgoing_generation = owners.app_player.current_file_generation();
+    let engine_outgoing_generation = owners
+        .engine
+        .player_file_generation_for_test()
+        .expect("the daemon player is loaded");
 
     let first_app = owners.app.update(PlayerMsg::TimePos(238.6));
     let app_load = load_from_app_commands(&first_app);
@@ -229,6 +233,14 @@ async fn time_pos_overlap_fires_once_and_late_outgoing_eof_is_stale() {
         _ => panic!("expected daemon Load"),
     };
     assert_overlap(&engine_load);
+    // The load clears the duration; restore it so only `overlap_fired` can stop a second advance.
+    assert!(
+        owners
+            .engine
+            .handle_player_event(crate::player::PlayerEvent::Duration(Some(240.0)))
+            .await
+            .is_empty()
+    );
     assert!(
         owners
             .engine
@@ -237,6 +249,13 @@ async fn time_pos_overlap_fires_once_and_late_outgoing_eof_is_stale() {
             .is_empty()
     );
     assert!(owners.engine_player.try_recv().is_err());
+    assert!(
+        owners
+            .engine
+            .handle_player_event(crate::player::PlayerEvent::Duration(None))
+            .await
+            .is_empty()
+    );
 
     admit_app(&mut owners.app, &owners.app_player, first_app);
     epochs.assert_delta(
@@ -272,7 +291,7 @@ async fn time_pos_overlap_fires_once_and_late_outgoing_eof_is_stale() {
         owners
             .engine
             .handle_player_event(crate::player::PlayerEvent::file_scoped(
-                0,
+                engine_outgoing_generation,
                 crate::player::PlayerEvent::Eof,
             ))
             .await
@@ -540,4 +559,24 @@ async fn remote_crossfade_toggle_updates_both_players_and_later_handoffs() {
         1,
     );
     assert_parity("remote crossfade disable", &owners.app, &owners.engine);
+}
+
+#[tokio::test]
+async fn out_of_range_remote_crossfade_is_rejected_by_both_owners() {
+    let files = LocalPair::create("remote-range");
+    let mut owners = owners(files.songs(), crate::crossfade::LocalCrossfade::Off, 0.0).await;
+    let command = RemoteCommand::SetSetting {
+        change: RemoteSettingChange::LocalCrossfade { tenths: 31 },
+    };
+
+    let (app_response, app_commands) =
+        app_remote(&mut owners.app, &owners.app_player, command.clone());
+    let (engine_response, shutdown, effects) = owners.engine.handle_remote(command).await;
+
+    assert!(!shutdown && effects.is_empty() && app_commands.is_empty());
+    assert_eq!(app_response.reason.as_deref(), Some("crossfade_range"));
+    assert_eq!(engine_response.reason.as_deref(), Some("crossfade_range"));
+    assert!(owners.engine_player.try_recv().is_err());
+    assert!(owners.app.audio.local_crossfade.is_off());
+    assert_parity("rejected crossfade range", &owners.app, &owners.engine);
 }

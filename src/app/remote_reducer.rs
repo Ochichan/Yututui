@@ -424,8 +424,11 @@ impl App {
                 )
             }
             RemoteSettingChange::LocalCrossfade { tenths } => {
-                let cmds =
-                    self.set_local_crossfade(crate::crossfade::LocalCrossfade::from_tenths(tenths));
+                let Some(next) = crate::crossfade::LocalCrossfade::from_remote_tenths(tenths)
+                else {
+                    return (RemoteResponse::err("crossfade_range"), Vec::new());
+                };
+                let cmds = self.set_local_crossfade(next);
                 (RemoteResponse::status(self.status_snapshot()), cmds)
             }
             RemoteSettingChange::AiEnabled { value } => {

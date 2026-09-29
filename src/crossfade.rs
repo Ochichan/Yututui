@@ -52,6 +52,16 @@ impl LocalCrossfade {
         }
     }
 
+    /// Wire values are rejected rather than saturated, so both owners answer a raw out-of-range
+    /// request with the same error instead of silently storing the maximum.
+    pub const fn from_remote_tenths(tenths: u8) -> Option<Self> {
+        if tenths > MAX_TENTHS {
+            None
+        } else {
+            Some(Self::from_tenths(tenths))
+        }
+    }
+
     pub const fn is_off(self) -> bool {
         matches!(self, Self::Off)
     }
