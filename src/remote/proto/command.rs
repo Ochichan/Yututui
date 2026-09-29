@@ -10,6 +10,13 @@ use crate::streaming::StreamingMode;
 
 use super::ToggleState;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BanTarget {
+    Track,
+    Artist,
+}
+
 /// Semantic cap on remote search strings. Frame caps bound bytes on the wire; this caps the
 /// amount of search/provider work a syntactically valid command can request.
 pub const REMOTE_MAX_QUERY_BYTES: usize = crate::util::query::MAX_SEARCH_QUERY_BYTES;
@@ -134,6 +141,10 @@ pub enum RemoteCommand {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         minutes: Option<u32>,
     },
+    /// Reject the current radio track or artist for the rest of this owner session.
+    Ban {
+        target: BanTarget,
+    },
 }
 
 impl RemoteCommand {
@@ -181,7 +192,8 @@ impl RemoteCommand {
             | RemoteCommand::SyncRevokeDevice { .. }
             | RemoteCommand::QueueMove { .. }
             | RemoteCommand::QueueClearUpcoming { .. }
-            | RemoteCommand::Sleep { .. } => RequestRetryClass::RetainedOutcome,
+            | RemoteCommand::Sleep { .. }
+            | RemoteCommand::Ban { .. } => RequestRetryClass::RetainedOutcome,
         }
     }
 
@@ -348,6 +360,14 @@ mod tests {
             RequestRetryClass::RetainedOutcome
         );
         assert!(RemoteCommand::SyncNow.requires_confirmation());
+        let ban = RemoteCommand::Ban {
+            target: BanTarget::Track,
+        };
+        assert_eq!(
+            ban.request_retry_class(),
+            RequestRetryClass::RetainedOutcome
+        );
+        assert!(ban.requires_confirmation());
         let revoke = RemoteCommand::SyncRevokeDevice {
             device_id: "device-a".to_owned(),
         };
@@ -356,6 +376,19 @@ mod tests {
             RequestRetryClass::RetainedOutcome
         );
         assert!(revoke.requires_confirmation());
+    }
+
+    #[test]
+    fn ban_command_uses_snake_case_wire_values() {
+        let command = RemoteCommand::Ban {
+            target: BanTarget::Artist,
+        };
+        let json = serde_json::to_string(&command).expect("serialize ban command");
+        assert_eq!(json, r#"{"cmd":"ban","target":"artist"}"#);
+        assert_eq!(
+            serde_json::from_str::<RemoteCommand>(&json).expect("deserialize ban command"),
+            command
+        );
     }
 
     #[test]

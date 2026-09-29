@@ -40,6 +40,9 @@ fn playing_update() -> PollUpdate {
         artwork: None,
         personal_sync: None,
         sleep_remaining_secs: None,
+        banned_tracks: 0,
+        banned_artists: 0,
+        seed_terms: 0,
     })
 }
 
@@ -193,6 +196,9 @@ fn idle_daemon_payload_enables_resume_and_stop() {
         artwork: None,
         personal_sync: None,
         sleep_remaining_secs: None,
+        banned_tracks: 0,
+        banned_artists: 0,
+        seed_terms: 0,
     });
     let payload = english_payload(&update);
     assert_eq!(payload.title, "Nothing playing");

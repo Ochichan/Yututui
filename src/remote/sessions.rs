@@ -104,7 +104,8 @@ impl SessionTuning {
             | RemoteCommand::QueueRemove { .. }
             | RemoteCommand::QueuePlayIfRevision { .. }
             | RemoteCommand::QueueRemoveIfRevision { .. }
-            | RemoteCommand::ResumeSession => self.playback_reply_timeout,
+            | RemoteCommand::ResumeSession
+            | RemoteCommand::Ban { .. } => self.playback_reply_timeout,
             _ => self.reply_timeout,
         }
     }

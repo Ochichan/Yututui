@@ -4,7 +4,7 @@
 //! `main`. The verb (with short aliases) maps to an [`Invocation`]; `-q`/`--json` are
 //! client-side display flags.
 
-use super::proto::{RemoteCommand, ToggleState, Topic};
+use super::proto::{BanTarget, RemoteCommand, ToggleState, Topic};
 
 /// Work requested by a parsed `ytt -r` command line.
 #[derive(Debug, Clone, PartialEq)]
@@ -59,6 +59,7 @@ Commands:
   streaming [on|off|toggle]
                           Toggle (or set) autoplay streaming
   sleep [minutes|off]     Arm the sleep timer (no argument = the preset) or turn it off
+  ban <track|artist>      Ban the current autoplay-streaming track or artist for this session
   resume-session          Load and play the saved session
   status, st              Print the current track / state
   info                    Print non-secret owner metadata
@@ -189,6 +190,18 @@ pub fn parse(args: &[String]) -> Result<Parsed, ParseError> {
             };
             // `None` on the wire = "arm the preset"; `Some(0)` = "off". The owner clamps.
             Invocation::Command(RemoteCommand::Sleep { minutes })
+        }
+        "ban" => {
+            let target = match rest.as_slice() {
+                ["track"] => BanTarget::Track,
+                ["artist"] => BanTarget::Artist,
+                _ => {
+                    return Err(ParseError::Invalid(format!(
+                        "{verb}: expected exactly one target (track or artist)"
+                    )));
+                }
+            };
+            Invocation::Command(RemoteCommand::Ban { target })
         }
         "resume-session" | "load-session" => Invocation::Command(RemoteCommand::ResumeSession),
         "status" | "st" => Invocation::Command(RemoteCommand::Status),
@@ -370,6 +383,29 @@ mod tests {
             .map(|s| s.to_string())
             .collect();
         assert!(matches!(parse(&owned), Err(ParseError::Invalid(_))));
+    }
+
+    #[test]
+    fn ban_targets() {
+        assert_eq!(
+            cmd(&["ban", "track"]),
+            RemoteCommand::Ban {
+                target: BanTarget::Track
+            }
+        );
+        assert_eq!(
+            cmd(&["ban", "artist"]),
+            RemoteCommand::Ban {
+                target: BanTarget::Artist
+            }
+        );
+        for args in [&["ban"][..], &["ban", "album"], &["ban", "track", "artist"]] {
+            let owned = args
+                .iter()
+                .map(|value| (*value).to_owned())
+                .collect::<Vec<_>>();
+            assert!(matches!(parse(&owned), Err(ParseError::Invalid(_))));
+        }
     }
 
     #[test]

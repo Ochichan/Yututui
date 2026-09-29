@@ -90,7 +90,7 @@ impl App {
         self.dirty = true;
         if let Some(pending) = self.streaming.pending_rerank.take()
             && self.streaming_active()
-            && self.queue.contains_video_id(&seed_video_id)
+            && self.streaming_seed_is_current(&seed_video_id)
         {
             if let Some(conf) = conf {
                 tracing::debug!(
@@ -222,6 +222,9 @@ impl App {
         self.streaming.pending = true;
         self.streaming.pending_pool_request_id = Some(request_id);
         self.streaming.pending_queue_revision = Some(self.queue.rev());
+        self.streaming.pending_detached_seed = seed
+            .filter(|song| !self.queue.contains_video_id(&song.video_id))
+            .map(|song| song.video_id.clone());
         self.status.text = t!(
             "Autoplay: finding related tracks",
             "자동재생: 관련 곡을 찾는 중",
@@ -703,11 +706,17 @@ impl App {
         self.streaming.pending = false;
         self.streaming.pending_pool_request_id = None;
         self.streaming.pending_queue_revision = None;
+        self.streaming.pending_detached_seed = None;
         let canceled_rerank = self.streaming.pending_rerank.take().is_some();
         self.streaming.pending_why_gem = None;
         if canceled_rerank {
             self.ai.thinking = false;
         }
+    }
+
+    pub(in crate::app) fn streaming_seed_is_current(&self, seed_video_id: &str) -> bool {
+        self.queue.contains_video_id(seed_video_id)
+            || self.streaming.pending_detached_seed.as_deref() == Some(seed_video_id)
     }
 
     /// Cancel an autoplay chain whose exact queue snapshot no longer exists. Returns whether a

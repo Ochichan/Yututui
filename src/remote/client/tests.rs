@@ -271,6 +271,9 @@ async fn send_to_instance_round_trips_status_response() {
         artwork: None,
         personal_sync: None,
         sleep_remaining_secs: None,
+        banned_tracks: 0,
+        banned_artists: 0,
+        seed_terms: 0,
     };
     let response = serde_json::to_string(&RemoteResponse::status(snapshot.clone())).unwrap();
     let server = tokio::spawn(serve_one_response(listener, response, PROTOCOL_VERSION));
@@ -759,6 +762,9 @@ fn snapshot(queue: Vec<crate::remote::proto::QueueItemSnapshot>) -> StatusSnapsh
         artwork: None,
         personal_sync: None,
         sleep_remaining_secs: None,
+        banned_tracks: 0,
+        banned_artists: 0,
+        seed_terms: 0,
     }
 }
 

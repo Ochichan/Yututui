@@ -19,6 +19,7 @@ mod personal_sync;
 mod rating_recommendation;
 mod sleep_timer;
 mod taste;
+mod taste_remote;
 
 use std::sync::Arc;
 

@@ -504,6 +504,9 @@ impl DesktopApp {
             // which do not carry the one-shot owner's optional personal-sync snapshot.
             personal_sync: None,
             sleep_remaining_secs: None,
+            banned_tracks: 0,
+            banned_artists: 0,
+            seed_terms: 0,
         })
     }
 }

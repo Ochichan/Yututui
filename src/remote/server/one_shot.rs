@@ -229,3 +229,47 @@ pub(super) async fn build_response(
 ) -> RemoteResponse {
     build_tracked_response(req, token, emit, hub).await.response
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::remote::proto::StatusSnapshot;
+
+    fn status_with_taste_counts() -> RemoteResponse {
+        let mut status: StatusSnapshot = serde_json::from_value(serde_json::json!({
+            "title": null,
+            "artist": null,
+            "paused": true,
+            "volume": 50,
+            "position": 0,
+            "total": 0,
+            "streaming": false
+        }))
+        .expect("minimal status snapshot");
+        status.banned_tracks = 2;
+        status.banned_artists = 1;
+        status.seed_terms = 3;
+        RemoteResponse::status(status)
+    }
+
+    #[test]
+    fn nonzero_taste_counts_are_additive_for_current_and_v7_status() {
+        let current = serde_json::to_string(&response_for_one_shot_version(
+            PROTOCOL_VERSION,
+            status_with_taste_counts(),
+        ))
+        .expect("current status JSON");
+        assert!(current.contains("\"banned_tracks\":2"));
+        assert!(current.contains("\"banned_artists\":1"));
+        assert!(current.contains("\"seed_terms\":3"));
+
+        let v7 = serde_json::to_string(&response_for_one_shot_version(
+            PROTOCOL_VERSION_V7,
+            status_with_taste_counts(),
+        ))
+        .expect("v7 status JSON");
+        assert!(v7.contains("\"banned_tracks\":2"));
+        assert!(v7.contains("\"banned_artists\":1"));
+        assert!(v7.contains("\"seed_terms\":3"));
+    }
+}

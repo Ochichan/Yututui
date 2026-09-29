@@ -269,6 +269,9 @@ fn golden_v7_status_response_is_byte_stable() {
         artwork: None,
         personal_sync: None,
         sleep_remaining_secs: None,
+        banned_tracks: 0,
+        banned_artists: 0,
+        seed_terms: 0,
     };
     let line = serde_json::to_string(&RemoteResponse::status(snap)).unwrap();
     assert_eq!(
@@ -306,6 +309,9 @@ fn golden_v8_status_artwork_is_additive() {
         artwork: None,
         personal_sync: None,
         sleep_remaining_secs: None,
+        banned_tracks: 0,
+        banned_artists: 0,
+        seed_terms: 0,
     };
     // Absent artwork never appears on the wire (v7 byte stability).
     let artless_line = serde_json::to_string(&artless).unwrap();
@@ -315,6 +321,20 @@ fn golden_v8_status_artwork_is_additive() {
     assert!(!artless_line.contains("track_id"));
     assert!(!artless_line.contains("position_epoch"));
     assert!(!artless_line.contains("personal_sync"));
+    assert!(!artless_line.contains("banned_tracks"));
+    assert!(!artless_line.contains("banned_artists"));
+    assert!(!artless_line.contains("seed_terms"));
+
+    let with_counts = StatusSnapshot {
+        banned_tracks: 2,
+        banned_artists: 1,
+        seed_terms: 3,
+        ..artless.clone()
+    };
+    let counts_line = serde_json::to_string(&with_counts).unwrap();
+    assert!(counts_line.contains("\"banned_tracks\":2"));
+    assert!(counts_line.contains("\"banned_artists\":1"));
+    assert!(counts_line.contains("\"seed_terms\":3"));
 
     // Present artwork serializes as a nested ref with `mime` omitted when unknown,
     // and round-trips.

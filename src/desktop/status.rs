@@ -180,6 +180,9 @@ mod tests {
             artwork: None,
             personal_sync: None,
             sleep_remaining_secs: None,
+            banned_tracks: 0,
+            banned_artists: 0,
+            seed_terms: 0,
         });
         assert_eq!(next_delay(config, &update), Duration::from_millis(10));
     }

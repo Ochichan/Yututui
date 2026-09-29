@@ -660,7 +660,7 @@ impl App {
                 }
                 self.streaming.pending = false;
                 self.streaming.pending_pool_request_id = None;
-                if self.streaming_active() && self.queue.contains_video_id(&seed_video_id) {
+                if self.streaming_active() && self.streaming_seed_is_current(&seed_video_id) {
                     // With a key + reranker enabled, hand the model a diverse local shortlist to
                     // reorder (ids only); otherwise rank the pool purely locally. Either way the
                     // pool went through scoring + MMR + cooldown — never taken verbatim.
@@ -696,7 +696,7 @@ impl App {
                     .take()
                     .expect("matching preflight provenance");
                 self.streaming.pending = false;
-                if self.streaming_active() && self.queue.contains_video_id(&seed_video_id) {
+                if self.streaming_active() && self.streaming_seed_is_current(&seed_video_id) {
                     let origin = super::why_gem::streaming_origin_model(why_gem.mode);
                     let models =
                         super::why_gem::models_for_songs(&songs, &why_gem.detailed, &origin);
@@ -721,8 +721,9 @@ impl App {
                 if !matches_pending {
                     return Vec::new();
                 }
+                let seed_is_current = self.streaming_seed_is_current(&seed_video_id);
                 self.cancel_pending_streaming_recommendation();
-                if self.streaming_active() && self.queue.contains_video_id(&seed_video_id) {
+                if self.streaming_active() && seed_is_current {
                     return self.note_streaming_failure(format!(
                         "{}: {error}",
                         t!("Autoplay failed", "자동재생 실패", "自動再生に失敗")
@@ -750,8 +751,9 @@ impl App {
                 {
                     return Vec::new();
                 }
+                let seed_is_current = self.streaming_seed_is_current(&seed_video_id);
                 self.cancel_pending_streaming_recommendation();
-                if self.streaming_active() && self.queue.contains_video_id(&seed_video_id) {
+                if self.streaming_active() && seed_is_current {
                     return self.note_streaming_failure(format!(
                         "{}: {error}",
                         t!("Autoplay failed", "자동재생 실패", "自動再生に失敗")

@@ -28,7 +28,7 @@ mod session;
 
 pub(crate) use command::RequestRetryClass;
 pub use command::{
-    DEFAULT_EXPORT_SCHEMA, REMOTE_MAX_EXPORT_DIRECTORY_BYTES, REMOTE_MAX_QUERY_BYTES,
+    BanTarget, DEFAULT_EXPORT_SCHEMA, REMOTE_MAX_EXPORT_DIRECTORY_BYTES, REMOTE_MAX_QUERY_BYTES,
     REMOTE_MAX_TOPICS, REMOTE_MAX_TRACK_IDS, RemoteCommand, RemoteSettingChange,
 };
 pub use model::{ArtworkRef, LyricLineModel, TrackModel, WhyGemModel};
@@ -248,9 +248,21 @@ pub struct StatusSnapshot {
     /// armed. Additive (post-v8); skip-serialized so older shapes stay byte-identical.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sleep_remaining_secs: Option<u64>,
+    /// Additive session-only autoplay steering counts. Zero values are omitted, and older owners
+    /// that do not send these fields read as zero.
+    #[serde(default, skip_serializing_if = "is_zero_usize")]
+    pub banned_tracks: usize,
+    #[serde(default, skip_serializing_if = "is_zero_usize")]
+    pub banned_artists: usize,
+    #[serde(default, skip_serializing_if = "is_zero_usize")]
+    pub seed_terms: usize,
 }
 
 fn is_zero_u64(value: &u64) -> bool {
+    *value == 0
+}
+
+fn is_zero_usize(value: &usize) -> bool {
     *value == 0
 }
 
@@ -634,6 +646,9 @@ mod tests {
         assert_eq!(snap.elapsed_ms, None);
         assert_eq!(snap.duration_ms, None);
         assert_eq!(snap.artwork, None);
+        assert_eq!(snap.banned_tracks, 0);
+        assert_eq!(snap.banned_artists, 0);
+        assert_eq!(snap.seed_terms, 0);
     }
 
     #[test]
@@ -692,6 +707,9 @@ mod tests {
             artwork: None,
             personal_sync: None,
             sleep_remaining_secs: None,
+            banned_tracks: 0,
+            banned_artists: 0,
+            seed_terms: 0,
         };
         let line = snap.human_line();
         assert!(line.contains("nothing playing"));
@@ -699,8 +717,8 @@ mod tests {
     }
 
     #[test]
-    fn status_json_exposes_owner_mode() {
-        let snap = StatusSnapshot {
+    fn status_json_exposes_owner_mode_and_additive_taste_counts() {
+        let mut snap = StatusSnapshot {
             title: None,
             artist: None,
             paused: false,
@@ -722,9 +740,23 @@ mod tests {
             artwork: None,
             personal_sync: None,
             sleep_remaining_secs: None,
+            banned_tracks: 0,
+            banned_artists: 0,
+            seed_terms: 0,
         };
-        let line = serde_json::to_string(&RemoteResponse::status(snap)).unwrap();
+        let line = serde_json::to_string(&RemoteResponse::status(snap.clone())).unwrap();
         assert!(line.contains("\"owner_mode\":\"daemon\""), "got {line}");
+        assert!(!line.contains("banned_tracks"), "got {line}");
+        assert!(!line.contains("banned_artists"), "got {line}");
+        assert!(!line.contains("seed_terms"), "got {line}");
+
+        snap.banned_tracks = 2;
+        snap.banned_artists = 1;
+        snap.seed_terms = 3;
+        let line = serde_json::to_string(&RemoteResponse::status(snap)).unwrap();
+        assert!(line.contains("\"banned_tracks\":2"), "got {line}");
+        assert!(line.contains("\"banned_artists\":1"), "got {line}");
+        assert!(line.contains("\"seed_terms\":3"), "got {line}");
     }
 
     #[test]

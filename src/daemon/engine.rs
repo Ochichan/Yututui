@@ -37,6 +37,7 @@ mod personal_export;
 pub(super) mod personal_sync;
 mod remote_dispatch;
 mod streaming;
+mod taste_remote;
 mod transport;
 use self::streaming::PendingStreamingRequest;
 #[cfg(test)]
@@ -673,6 +674,9 @@ impl DaemonEngine {
             sleep_remaining_secs: self
                 .sleep_timer
                 .and_then(|timer| timer.remaining_secs(Instant::now())),
+            banned_tracks: self.taste.banned_track_count(),
+            banned_artists: self.taste.banned_artist_count(),
+            seed_terms: self.taste.seed_term_count(),
         }
     }
 

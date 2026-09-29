@@ -8,7 +8,7 @@
 
 use super::*;
 use crate::remote::proto::{
-    ArtworkRef, InstanceMode, QueueItemSnapshot, RemoteCommand, RemoteResponse,
+    ArtworkRef, BanTarget, InstanceMode, QueueItemSnapshot, RemoteCommand, RemoteResponse,
     RemoteSettingChange, SettingsSnapshot, StatusSnapshot, ToggleState,
 };
 
@@ -132,6 +132,7 @@ impl App {
                 };
                 (response, cmds)
             }
+            RemoteCommand::Ban { target } => self.remote_ban(target),
             RemoteCommand::SeekTo { ms } => {
                 if self.queue.current().is_none() {
                     return (RemoteResponse::err("queue_empty"), Vec::new());
@@ -234,6 +235,26 @@ impl App {
         // low-queue streaming top-up only after the player accepts the batch.
         let cmds = self.queue_popup_play(position);
         (RemoteResponse::status(self.status_snapshot()), cmds)
+    }
+
+    fn remote_ban(&mut self, target: BanTarget) -> (RemoteResponse, Vec<Cmd>) {
+        if !self.streaming_active() {
+            return (RemoteResponse::err("not_streaming"), Vec::new());
+        }
+        let Some(song) = self.queue.current() else {
+            return (RemoteResponse::err("no_current_track"), Vec::new());
+        };
+        if target == BanTarget::Track && crate::streaming::TasteEdit::ban_track(song).is_err() {
+            return (RemoteResponse::err("no_track_id"), Vec::new());
+        }
+        if target == BanTarget::Artist && crate::streaming::TasteEdit::ban_artist(song).is_err() {
+            return (RemoteResponse::err("no_artist"), Vec::new());
+        }
+        let commands = match target {
+            BanTarget::Track => self.ban_current_track(),
+            BanTarget::Artist => self.ban_current_artist(),
+        };
+        (RemoteResponse::ok("ban applied".to_owned()), commands)
     }
 
     fn remote_queue_remove(&mut self, position: usize) -> (RemoteResponse, Vec<Cmd>) {
@@ -531,6 +552,9 @@ impl App {
                 .sleep
                 .timer
                 .and_then(|timer| timer.remaining_secs(std::time::Instant::now())),
+            banned_tracks: self.streaming.taste.banned_track_count(),
+            banned_artists: self.streaming.taste.banned_artist_count(),
+            seed_terms: self.streaming.taste.seed_term_count(),
             // Same current-track gate as the OS media snapshot (media_reducer): stale
             // art from the previous track never rides a status reply.
             artwork: cur.and_then(|song| {
