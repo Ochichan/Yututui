@@ -12,8 +12,12 @@ impl App {
     }
 
     fn nudge_local_crossfade(&mut self, steps: i8) -> Vec<Cmd> {
+        let next = self.audio.local_crossfade.nudge(steps);
+        self.set_local_crossfade(next)
+    }
+
+    pub(in crate::app) fn set_local_crossfade(&mut self, next: LocalCrossfade) -> Vec<Cmd> {
         let previous = self.audio.local_crossfade;
-        let next = previous.nudge(steps);
         self.audio.local_crossfade = next;
         self.config.local_crossfade_secs = Some(next.as_secs_f64());
         self.status.kind = StatusKind::Info;

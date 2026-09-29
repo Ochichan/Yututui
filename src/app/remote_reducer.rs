@@ -424,24 +424,8 @@ impl App {
                 )
             }
             RemoteSettingChange::LocalCrossfade { tenths } => {
-                let previous = self.audio.local_crossfade;
-                let next = crate::crossfade::LocalCrossfade::from_tenths(tenths);
-                self.audio.local_crossfade = next;
-                self.config.local_crossfade_secs = Some(next.as_secs_f64());
-                self.status.kind = StatusKind::Info;
-                self.status.text = format!("Local crossfade: {}", next.label());
-                self.dirty = true;
-                let mut cmds = Vec::new();
-                if previous.is_off() != next.is_off() {
-                    cmds.extend(self.player_intent(
-                        "set_overlap",
-                        PlayerCmd::SetOverlap(!next.is_off()),
-                        PlayerCommit::SetOverlap,
-                    ));
-                }
-                cmds.push(Cmd::Persist(PersistCmd::Config(Box::new(
-                    self.config.clone(),
-                ))));
+                let cmds =
+                    self.set_local_crossfade(crate::crossfade::LocalCrossfade::from_tenths(tenths));
                 (RemoteResponse::status(self.status_snapshot()), cmds)
             }
             RemoteSettingChange::AiEnabled { value } => {
