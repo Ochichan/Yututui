@@ -297,6 +297,45 @@ async fn completed_overlap_then_cut_loads_primary_and_stops_extra() {
 }
 
 #[tokio::test]
+async fn completed_overlap_then_cut_restores_primary_settings_before_loading() {
+    let mut harness = BlackBoxHarness::new();
+    harness.complete_overlap("/music/b.flac", 4).await;
+    assert!(
+        harness
+            .handle_command(PlayerCmd::SetProperty {
+                name: "speed".to_owned(),
+                value: serde_json::json!(1.5),
+            })
+            .await
+    );
+    let _ = harness.extra_commands();
+    let _ = harness.primary_commands();
+
+    assert!(harness.handle_command(cut_load("/music/c.flac", 5)).await);
+
+    let primary = harness.primary_commands();
+    let load = primary
+        .iter()
+        .position(|command| matches!(command, PlayerCmd::Load(_)))
+        .expect("the Cut must load the primary deck");
+    let volume = primary
+        .iter()
+        .position(|command| matches!(command, PlayerCmd::SetVolume(100)))
+        .expect("the primary must get its full volume back after retiring from a fade");
+    let speed = primary
+        .iter()
+        .position(|command| {
+            matches!(
+                command,
+                PlayerCmd::SetProperty { name, value }
+                    if name == "speed" && value == &serde_json::json!(1.5)
+            )
+        })
+        .expect("a setting changed while the extra led must reach the primary");
+    assert!(volume < load && speed < load);
+}
+
+#[tokio::test]
 async fn completed_overlap_then_resume_loads_primary_and_stops_extra() {
     let mut harness = BlackBoxHarness::new();
     harness.complete_overlap("/music/b.flac", 4).await;

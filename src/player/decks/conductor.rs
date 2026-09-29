@@ -484,6 +484,12 @@ impl Conductor {
         if !self.primary_available {
             return false;
         }
+        // The fade left the retiring primary at zero volume, and setting changes made while the
+        // extra led never reached it; mpv keeps both across `loadfile`.
+        if self.extra_is_lead && !self.settings.replay(&self.primary_tx).await {
+            self.primary_available = false;
+            return false;
+        }
         self.set_extra_is_lead(false);
         self.extra_has_file = false;
         if let Some(extra_tx) = self.extra.as_ref().map(|deck| deck.tx.clone())
@@ -749,6 +755,9 @@ impl Conductor {
     }
 
     fn emit_lead_closed(&self, from_extra: bool) {
+        if self.intentional_close.load(Ordering::Acquire) {
+            return;
+        }
         let deck = if from_extra { "standby" } else { "primary" };
         (self.emit)(PlayerEvent::TransportClosed(format!(
             "{deck} deck transport closed"
