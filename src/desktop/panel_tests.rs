@@ -993,7 +993,8 @@ fn compact_skins_keep_recovery_and_errors_inside_their_own_space() {
     ));
     // Tamagotchi: one recovery action per row, and the error as a line on the LCD.
     assert!(PANEL_HTML.contains("padding: 10px 8px 30px;"));
-    assert!(PANEL_HTML.contains(
+    // Windows checkouts embed the assets with CRLF; multi-line needles compare on LF.
+    assert!(PANEL_HTML.replace("\r\n", "\n").contains(
         "background: var(--tama-ink);\n      color: var(--tama-lcd);\n      font-family"
     ));
     // Cushion: the state chip never shrinks; the brand gives way instead.
@@ -1034,7 +1035,7 @@ fn an_open_error_scrolls_from_the_keyboard_without_leaking_keys() {
         assert!(PANEL_HTML.contains(key), "missing {key}");
     }
     assert!(PANEL_HTML.contains("alert.scrollTop = Math.min(max, Math.max(0, next));"));
-    assert!(PANEL_HTML.contains(
+    assert!(PANEL_HTML.replace("\r\n", "\n").contains(
         "if (els.error.classList.contains(\"expanded\") && scrollAlert(event.key)) {\n        event.preventDefault();\n        event.stopPropagation();"
     ));
     // Every opening starts at the top of the message.
