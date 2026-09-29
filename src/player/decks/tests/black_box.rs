@@ -782,3 +782,45 @@ async fn overlap_back_onto_the_primary_unpauses_it_before_loading() {
         .expect("an owner that sends no pause of its own still needs the incoming deck playing");
     assert!(unpause < load);
 }
+
+#[tokio::test]
+async fn lead_device_selection_result_reaches_the_owner_while_an_overlap_is_pending() {
+    let mut harness = BlackBoxHarness::new();
+    assert!(
+        harness
+            .handle_command(overlap_load("/music/b.flac", 4))
+            .await
+    );
+    harness.clear_owner_events();
+
+    harness.emit(
+        false,
+        PlayerEvent::AudioDeviceSelectionResult {
+            correlation_id: 7,
+            device: Some("coreaudio/usb".to_owned()),
+            result: Ok(()),
+        },
+    );
+    harness.emit(
+        true,
+        PlayerEvent::AudioDeviceSelectionResult {
+            correlation_id: 8,
+            device: None,
+            result: Ok(()),
+        },
+    );
+
+    let delivered: Vec<u64> = harness
+        .take_owner_events()
+        .iter()
+        .filter_map(|event| match event.unscoped() {
+            PlayerEvent::AudioDeviceSelectionResult { correlation_id, .. } => Some(*correlation_id),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        delivered,
+        vec![7],
+        "only the lead deck answers owner device requests during the pending window"
+    );
+}

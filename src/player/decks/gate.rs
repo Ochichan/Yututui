@@ -124,7 +124,12 @@ impl EventGate {
             return;
         }
         if self.pending_generation.load(Ordering::Acquire) != 0 {
-            if self.admit_pending_incoming(from_extra, &event) {
+            // Output-device replies are unscoped and answer commands sent to the lead; the owner
+            // waits on their correlation id, so the pending window must not swallow them.
+            if self.admit_pending_incoming(from_extra, &event)
+                || (from_extra == self.extra_is_lead.load(Ordering::Acquire)
+                    && is_audio_output_event(unscoped))
+            {
                 sink(event);
             }
             return;
@@ -155,6 +160,17 @@ impl EventGate {
                 | PlayerEvent::FileFormat(_)
         )
     }
+}
+
+fn is_audio_output_event(event: &PlayerEvent) -> bool {
+    matches!(
+        event,
+        PlayerEvent::AudioDeviceList(_)
+            | PlayerEvent::AudioDeviceRefreshFailed(_)
+            | PlayerEvent::AudioDeviceChanged(_)
+            | PlayerEvent::CurrentAudioOutput(_)
+            | PlayerEvent::AudioDeviceSelectionResult { .. }
+    )
 }
 
 fn deck_closed_proof(from_extra: bool, event: &PlayerEvent) -> Option<ExtraProof> {
