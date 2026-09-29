@@ -332,7 +332,17 @@ async fn completed_overlap_then_cut_restores_primary_settings_before_loading() {
             )
         })
         .expect("a setting changed while the extra led must reach the primary");
-    assert!(volume < load && speed < load);
+    let unpause = primary
+        .iter()
+        .position(|command| {
+            matches!(
+                command,
+                PlayerCmd::SetProperty { name, value }
+                    if name == "pause" && value == &serde_json::Value::Bool(false)
+            )
+        })
+        .expect("a primary left paused by --keep-open must be unpaused before the load");
+    assert!(volume < load && speed < load && unpause < load);
 }
 
 #[tokio::test]
@@ -713,4 +723,62 @@ async fn lead_volume_forward_failure_emits_transport_closed_before_conductor_exi
         ),
         "a failed lead volume forward must give the owner a terminal reason"
     );
+}
+
+#[tokio::test]
+async fn second_overlap_back_onto_primary_still_delivers_its_eof() {
+    let mut harness = BlackBoxHarness::new();
+    harness.complete_overlap("/music/b.flac", 4).await;
+    harness.gate.admitted.store(5, Ordering::Release);
+
+    assert!(
+        harness
+            .handle_command(overlap_load("/music/c.flac", 5))
+            .await
+    );
+    harness.emit(
+        false,
+        PlayerEvent::file_scoped(5, PlayerEvent::TimePos(0.1)),
+    );
+    harness.apply_extra_proofs().await;
+    harness.clear_owner_events();
+
+    harness.emit(false, PlayerEvent::file_scoped(5, PlayerEvent::Eof));
+
+    assert!(
+        harness
+            .take_owner_events()
+            .iter()
+            .any(|event| matches!(event.unscoped(), PlayerEvent::Eof)),
+        "the primary deck leads again after the second overlap, so its end of file must reach the owner"
+    );
+}
+
+#[tokio::test]
+async fn overlap_back_onto_the_primary_unpauses_it_before_loading() {
+    let mut harness = BlackBoxHarness::new();
+    harness.complete_overlap("/music/b.flac", 4).await;
+
+    assert!(
+        harness
+            .handle_command(overlap_load("/music/c.flac", 5))
+            .await
+    );
+
+    let primary = harness.primary_commands();
+    let load = primary
+        .iter()
+        .position(|command| matches!(command, PlayerCmd::Load(_)))
+        .expect("the incoming primary deck must receive the overlap load");
+    let unpause = primary
+        .iter()
+        .position(|command| {
+            matches!(
+                command,
+                PlayerCmd::SetProperty { name, value }
+                    if name == "pause" && value == &serde_json::Value::Bool(false)
+            )
+        })
+        .expect("an owner that sends no pause of its own still needs the incoming deck playing");
+    assert!(unpause < load);
 }

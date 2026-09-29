@@ -147,15 +147,17 @@ impl DeckSettings {
         if !forward(tx, PlayerCmd::SetVolume(self.volume)).await {
             return false;
         }
-        if let Some(pause) = &self.pause
-            && !forward(
-                tx,
-                PlayerCmd::SetProperty {
-                    name: "pause".to_owned(),
-                    value: pause.clone(),
-                },
-            )
-            .await
+        // Always sent: a deck that played to its end under `--keep-open` is left paused, and mpv
+        // keeps that across `loadfile`. Replay only precedes a load, so unknown means playing.
+        let pause = self.pause.clone().unwrap_or(Value::Bool(false));
+        if !forward(
+            tx,
+            PlayerCmd::SetProperty {
+                name: "pause".to_owned(),
+                value: pause,
+            },
+        )
+        .await
         {
             return false;
         }

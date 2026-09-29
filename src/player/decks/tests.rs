@@ -956,12 +956,17 @@ async fn replacing_a_pending_overlap_stops_it_before_loading_the_new_destination
     );
 
     let extra = take_cmds(&mut h.extra_rx);
-    assert_eq!(extra.len(), 4);
+    assert_eq!(extra.len(), 5);
     assert!(matches!(extra[0], PlayerCmd::Stop));
     assert!(matches!(extra[1], PlayerCmd::SetVolume(100)));
-    assert!(matches!(extra[2], PlayerCmd::SetVolume(0)));
+    assert!(matches!(
+        &extra[2],
+        PlayerCmd::SetProperty { name, value }
+            if name == "pause" && value == &serde_json::Value::Bool(false)
+    ));
+    assert!(matches!(extra[3], PlayerCmd::SetVolume(0)));
     assert!(
-        load_url(&extra[3]) == Some("/music/c.flac") && load_is_cut(&extra[3]),
+        load_url(&extra[4]) == Some("/music/c.flac") && load_is_cut(&extra[4]),
         "the replacement must load only after the abandoned incoming file is stopped"
     );
     assert_eq!(h.gate.pending_generation.load(Ordering::Acquire), 5);
