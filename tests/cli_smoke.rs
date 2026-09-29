@@ -1572,6 +1572,7 @@ mod remote_owner {
                 seek_seconds: 12,
                 normalize: true,
                 gapless: false,
+                local_crossfade_secs: None,
                 ai_enabled: true,
                 radio_mode: false,
                 long_form_seek: None,

@@ -287,6 +287,13 @@ pub struct SettingsSnapshot {
     pub seek_seconds: u16,
     pub normalize: bool,
     pub gapless: bool,
+    /// Local-file crossfade in seconds. Absent means off, preserving legacy status bytes.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "local_crossfade_secs"
+    )]
+    pub local_crossfade_secs: Option<crate::crossfade::CrossfadeSecs>,
     pub ai_enabled: bool,
     pub radio_mode: bool,
     /// Privacy-safe runtime diagnostics from a daemon owner. Standalone and older owners omit it.
@@ -315,9 +322,42 @@ impl SettingsSnapshot {
             seek_seconds: config.effective_seek_seconds().round() as u16,
             normalize: config.effective_normalize(),
             gapless: config.effective_gapless(),
+            local_crossfade_secs: match config.effective_local_crossfade() {
+                crate::crossfade::LocalCrossfade::Off => None,
+                crate::crossfade::LocalCrossfade::On(secs) => Some(secs),
+            },
             ai_enabled: config.effective_ai_enabled(),
             radio_mode,
             long_form_seek: None,
+        }
+    }
+}
+
+mod local_crossfade_secs {
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    use crate::crossfade::{CrossfadeSecs, LocalCrossfade};
+
+    pub fn serialize<S>(value: &Option<CrossfadeSecs>, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match value {
+            Some(secs) => serializer.serialize_f64(secs.as_secs_f64()),
+            None => serializer.serialize_none(),
+        }
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Option<CrossfadeSecs>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let Some(secs) = Option::<f64>::deserialize(deserializer)? else {
+            return Ok(None);
+        };
+        match LocalCrossfade::from_secs(secs) {
+            LocalCrossfade::Off => Ok(None),
+            LocalCrossfade::On(secs) => Ok(Some(secs)),
         }
     }
 }

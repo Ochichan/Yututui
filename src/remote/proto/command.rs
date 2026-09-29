@@ -322,6 +322,10 @@ pub enum RemoteSettingChange {
     Gapless {
         value: bool,
     },
+    /// Local-file crossfade in tenths; zero disables it.
+    LocalCrossfade {
+        tenths: u8,
+    },
     AiEnabled {
         value: bool,
     },

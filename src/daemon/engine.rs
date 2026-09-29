@@ -28,6 +28,7 @@ use crate::tools::PlaybackFailureClass;
 use crate::util::sanitize;
 use yututui_core::sleep_timer::{SLEEP_MAX_MINUTES, SleepStep, SleepTimer};
 
+mod crossfade;
 mod delivery;
 mod media_session;
 mod open_subsonic_bridge;
@@ -130,6 +131,7 @@ pub struct DaemonEngine {
     player_emit: Arc<dyn Fn(PlayerEvent) + Send + Sync>,
     queue: Queue,
     playback: DaemonPlayback,
+    crossfade: crossfade::DaemonCrossfade,
     config: Config,
     library: Library,
     playlists: crate::playlists::Playlists,
@@ -321,6 +323,7 @@ impl DaemonEngine {
                 duration: None,
                 speed: config.effective_speed(),
             },
+            crossfade: crossfade::DaemonCrossfade::new(config.effective_local_crossfade()),
             // Music-mode invariant: never start with both autoplay and repeat on (drop
             // streaming, keep the deliberate repeat) — matches the App's `apply_config`.
             streaming: crate::playback_policy::streaming_enabled_with_repeat(
@@ -481,7 +484,7 @@ impl DaemonEngine {
                 if t > 0.0 {
                     self.consecutive_play_errors = 0;
                 }
-                Vec::new()
+                self.advance_crossfade_if_due(t).await
             }
             PlayerEvent::Duration(d) => {
                 // Mirror of the TUI reducer (app/mod.rs `PlayerMsg::Duration`): `None`
@@ -565,7 +568,10 @@ impl DaemonEngine {
                 };
                 self.attempt_transport_recovery(generation).await
             }
-            PlayerEvent::OverlapUnavailable(_) => Vec::new(),
+            PlayerEvent::OverlapUnavailable(blocker) => {
+                self.crossfade.overlap_unavailable(blocker);
+                Vec::new()
+            }
             PlayerEvent::FileScoped { .. } => {
                 unreachable!("daemon player event was unscoped before reduction")
             }
@@ -1197,6 +1203,7 @@ impl DaemonEngine {
                 self.save_config("daemon gapless setting");
                 (RemoteResponse::status(self.status()), Vec::new())
             }
+            RemoteSettingChange::LocalCrossfade { tenths } => self.set_local_crossfade(tenths),
             RemoteSettingChange::AiEnabled { value } => {
                 self.config.ai_enabled = Some(value);
                 self.save_config("daemon DJ Gem setting");
@@ -1210,8 +1217,9 @@ impl DaemonEngine {
 
     async fn advance_after_end(&mut self) -> Vec<EngineEffect> {
         let mut effects = Vec::new();
+        let outgoing = self.current_crossfade_load();
         if self.queue.next(true).is_some() {
-            if let Err(e) = self.load_current().await {
+            if let Err(e) = self.load_current_after_end(outgoing).await {
                 self.last_error = Some(e.to_string());
                 self.stop_playback();
             }
@@ -1345,6 +1353,7 @@ impl DaemonEngine {
         if self.player.is_some() {
             return Ok(());
         }
+        self.crossfade.on_player_spawn();
 
         #[cfg(test)]
         if let Some(player) = self.test_player_starts.pop_front() {
@@ -1359,7 +1368,7 @@ impl DaemonEngine {
                 .cookies_file_for_external_tools(data_dir().as_deref()),
             self.config.effective_gapless(),
             self.config.audio.runtime(),
-            false,
+            !self.crossfade.local_crossfade.is_off(),
             self.open_subsonic.route_provider(),
         )
         .await

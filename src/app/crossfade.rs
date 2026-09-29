@@ -84,15 +84,21 @@ impl App {
             return Vec::new();
         };
         let incoming = load.as_playback_load();
-        let crate::crossfade::TrackHandoff::Overlap { .. } = crate::crossfade::handoff(
-            self.playback.loaded.as_ref(),
-            self.playback.duration,
-            &incoming,
-            self.audio.local_crossfade,
-            self.audio.overlap_support,
-        ) else {
+        if crate::crossfade::overlap_due(crate::crossfade::OverlapDueInput {
+            paused: self.playback.paused,
+            video_overlay: self.video.proc.is_some(),
+            setting: self.audio.local_crossfade,
+            support: self.audio.overlap_support,
+            duration: self.playback.duration,
+            position,
+            already_fired: self.playback.overlap_fired,
+            outgoing: self.playback.loaded.as_ref(),
+            next: Some(&incoming),
+        })
+        .is_none()
+        {
             return Vec::new();
-        };
+        }
         self.playback.overlap_fired = true;
         self.advance_with_outgoing(true, true)
     }

@@ -75,6 +75,7 @@ pub(in crate::daemon) fn engine_with_queue(ids: &[&str]) -> DaemonEngine {
             duration: None,
             speed: 1.0,
         },
+        crossfade: crossfade::DaemonCrossfade::new(crate::crossfade::LocalCrossfade::Off),
         config: Config::default(),
         personal_state_revision_guard: crate::sync::OwnerRevisionGuard::new(
             personal_state.revision,

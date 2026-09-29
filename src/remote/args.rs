@@ -4,7 +4,7 @@
 //! `main`. The verb (with short aliases) maps to an [`Invocation`]; `-q`/`--json` are
 //! client-side display flags.
 
-use super::proto::{BanTarget, RemoteCommand, ToggleState, Topic};
+use super::proto::{BanTarget, RemoteCommand, RemoteSettingChange, ToggleState, Topic};
 
 /// Work requested by a parsed `ytt -r` command line.
 #[derive(Debug, Clone, PartialEq)]
@@ -56,6 +56,7 @@ Commands:
   back                    Seek backward
   fwd, forward            Seek forward
   seek-to <seconds>       Seek to an absolute position in the current track
+  crossfade <seconds|off> Set local-file crossfade (off, or 0 to 3.0 seconds in 0.1s steps)
   streaming [on|off|toggle]
                           Toggle (or set) autoplay streaming
   sleep [minutes|off]     Arm the sleep timer (no argument = the preset) or turn it off
@@ -155,6 +156,21 @@ pub fn parse(args: &[String]) -> Result<Parsed, ParseError> {
                 }
             }
         }
+        "crossfade" => {
+            let tenths = match rest.as_slice() {
+                ["off"] => Some(0),
+                [value] => parse_crossfade_tenths(value),
+                _ => None,
+            };
+            let Some(tenths) = tenths else {
+                return Err(ParseError::Invalid(format!(
+                    "{verb}: expected seconds from 0.0 to 3.0 in 0.1s steps or \"off\""
+                )));
+            };
+            Invocation::Command(RemoteCommand::SetSetting {
+                change: RemoteSettingChange::LocalCrossfade { tenths },
+            })
+        }
         "streaming" | "radio" => {
             let state = match rest.first().copied() {
                 None => ToggleState::Toggle,
@@ -245,6 +261,17 @@ pub fn parse(args: &[String]) -> Result<Parsed, ParseError> {
         quiet,
         json,
     })
+}
+
+fn parse_crossfade_tenths(value: &str) -> Option<u8> {
+    let seconds = value.parse::<f64>().ok()?;
+    let max = crate::crossfade::CrossfadeSecs::MAX.as_secs_f64();
+    if !seconds.is_finite() || !(0.0..=max).contains(&seconds) {
+        return None;
+    }
+    let tenths = seconds * 10.0;
+    let rounded = tenths.round();
+    ((tenths - rounded).abs() <= 1e-9).then_some(rounded as u8)
 }
 
 fn require_no_args(verb: &str, rest: &[&str]) -> Result<(), ParseError> {
@@ -383,6 +410,49 @@ mod tests {
             .map(|s| s.to_string())
             .collect();
         assert!(matches!(parse(&owned), Err(ParseError::Invalid(_))));
+    }
+
+    #[test]
+    fn crossfade_parses_tenths_and_rejects_invalid_values() {
+        assert_eq!(
+            cmd(&["crossfade", "2"]),
+            RemoteCommand::SetSetting {
+                change: RemoteSettingChange::LocalCrossfade { tenths: 20 },
+            }
+        );
+        assert_eq!(
+            cmd(&["crossfade", "2.5"]),
+            RemoteCommand::SetSetting {
+                change: RemoteSettingChange::LocalCrossfade { tenths: 25 },
+            }
+        );
+        assert_eq!(
+            cmd(&["crossfade", "off"]),
+            RemoteCommand::SetSetting {
+                change: RemoteSettingChange::LocalCrossfade { tenths: 0 },
+            }
+        );
+        assert_eq!(
+            cmd(&["crossfade", "0"]),
+            RemoteCommand::SetSetting {
+                change: RemoteSettingChange::LocalCrossfade { tenths: 0 },
+            }
+        );
+
+        for args in [
+            &["crossfade"][..],
+            &["crossfade", "-0.1"][..],
+            &["crossfade", "2.05"][..],
+            &["crossfade", "3.1"][..],
+            &["crossfade", "loud"][..],
+            &["crossfade", "off", "extra"][..],
+        ] {
+            let owned: Vec<String> = args.iter().map(|value| (*value).to_owned()).collect();
+            assert!(
+                matches!(parse(&owned), Err(ParseError::Invalid(_))),
+                "{args:?}"
+            );
+        }
     }
 
     #[test]

@@ -161,6 +161,42 @@ pub fn remaining_in_overlap_window(duration: Option<f64>, position: f64, fade_se
     remaining > 0.0 && remaining <= fade_secs
 }
 
+/// Immutable inputs used to decide whether progress should start a local overlap.
+pub(crate) struct OverlapDueInput<'a> {
+    pub paused: bool,
+    pub video_overlay: bool,
+    pub setting: LocalCrossfade,
+    pub support: OverlapSupport,
+    pub duration: Option<f64>,
+    pub position: f64,
+    pub already_fired: bool,
+    pub outgoing: Option<&'a PlaybackLoad>,
+    pub next: Option<&'a PlaybackLoad>,
+}
+
+/// Return the effective fade when a progress report should advance into a local overlap.
+pub(crate) fn overlap_due(input: OverlapDueInput<'_>) -> Option<FadeLength> {
+    if input.paused
+        || input.video_overlay
+        || input.setting.is_off()
+        || input.already_fired
+        || !remaining_in_overlap_window(input.duration, input.position, input.setting.as_secs_f64())
+    {
+        return None;
+    }
+    let next = input.next?;
+    match handoff(
+        input.outgoing,
+        input.duration,
+        next,
+        input.setting,
+        input.support,
+    ) {
+        TrackHandoff::Overlap { fade } => Some(fade),
+        TrackHandoff::Cut => None,
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AdvanceCause {
     Manual,
@@ -513,6 +549,108 @@ mod tests {
         assert!(!remaining_in_overlap_window(Some(240.0), 240.0, 1.5));
         assert!(!remaining_in_overlap_window(None, 238.6, 1.5));
         assert!(!remaining_in_overlap_window(Some(240.0), 238.6, 0.0));
+    }
+
+    #[test]
+    fn overlap_due_requires_the_progress_and_handoff_gates() {
+        let pair = LocalPair::create("due");
+        let outgoing = on_demand(&pair.first);
+        let incoming = on_demand(&pair.second);
+        let setting = LocalCrossfade::from_tenths(15);
+        let due = overlap_due(OverlapDueInput {
+            paused: false,
+            video_overlay: false,
+            setting,
+            support: OverlapSupport::Available,
+            duration: Some(240.0),
+            position: 238.6,
+            already_fired: false,
+            outgoing: Some(&outgoing),
+            next: Some(&incoming),
+        })
+        .expect("two local files inside the window overlap");
+        assert!((due.as_secs_f64() - 1.5).abs() < 1e-9);
+
+        for (paused, video_overlay, setting, support, position, already_fired, next) in [
+            (
+                true,
+                false,
+                setting,
+                OverlapSupport::Available,
+                238.6,
+                false,
+                Some(&incoming),
+            ),
+            (
+                false,
+                true,
+                setting,
+                OverlapSupport::Available,
+                238.6,
+                false,
+                Some(&incoming),
+            ),
+            (
+                false,
+                false,
+                LocalCrossfade::Off,
+                OverlapSupport::Available,
+                238.6,
+                false,
+                Some(&incoming),
+            ),
+            (
+                false,
+                false,
+                setting,
+                OverlapSupport::Untried,
+                238.6,
+                false,
+                Some(&incoming),
+            ),
+            (
+                false,
+                false,
+                setting,
+                OverlapSupport::Available,
+                100.0,
+                false,
+                Some(&incoming),
+            ),
+            (
+                false,
+                false,
+                setting,
+                OverlapSupport::Available,
+                238.6,
+                true,
+                Some(&incoming),
+            ),
+            (
+                false,
+                false,
+                setting,
+                OverlapSupport::Available,
+                238.6,
+                false,
+                None,
+            ),
+        ] {
+            assert_eq!(
+                overlap_due(OverlapDueInput {
+                    paused,
+                    video_overlay,
+                    setting,
+                    support,
+                    duration: Some(240.0),
+                    position,
+                    already_fired,
+                    outgoing: Some(&outgoing),
+                    next,
+                }),
+                None
+            );
+        }
     }
 
     #[test]

@@ -14,6 +14,7 @@
 //!   by construction today: `App::new(volume)` vs config-seeded engine, `paused: false`
 //!   vs `true` with nothing loaded). The script then must keep them equal.
 
+mod crossfade;
 mod harness;
 mod personal_sync;
 mod rating_recommendation;
