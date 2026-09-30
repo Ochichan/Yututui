@@ -11,9 +11,7 @@
 [![Downloads](https://img.shields.io/github/downloads/Ochichan/Yututui/total?color=f6c177)](https://github.com/Ochichan/Yututui/releases)
 [![License: MIT](https://img.shields.io/badge/license-MIT-8aadf4.svg)](LICENSE)
 
-YouTube Music in your terminal — fast, keyboard-driven, no browser tab eating your RAM, no ads. All behind a three-letter command: `ytt`. Rust + ratatui. MIT.
-
-Stable enough for daily use, still moving fast.
+YuTuTui! is a terminal music player for YouTube Music and other catalogs. Search, play, and manage your queue with the keyboard or mouse. Run it with `ytt`. It uses Rust and ratatui and is licensed under MIT.
 
 [Atlas globe](#atlas-mode) · [DJ Gem & Momoring](#dj-gem) · [Step-by-step manual](MANUAL.md)
 
@@ -21,9 +19,9 @@ Stable enough for daily use, still moving fast.
 
 [View a static player screenshot](docs/media/player.png)
 
-### [▶ Live demo & the full feature tour → ochichan.github.io/Yututui](https://ochichan.github.io/Yututui/)
+### [Live demo and feature tour](https://ochichan.github.io/Yututui/)
 
-**📖 New to terminals?** The [friendly manual](MANUAL.md) walks through every mode — music, radio and Atlas, DJ Gem, the Local Deck, and the full Spotify move-in — step by step, no jargon. ([한국어](MANUAL.ko.md) · [日本語](MANUAL.ja.md))
+The [manual](MANUAL.md) covers music playback, radio and Atlas, DJ Gem, local files, and Spotify imports. ([한국어](MANUAL.ko.md) · [日本語](MANUAL.ja.md))
 
 ---
 
@@ -31,15 +29,15 @@ Stable enough for daily use, still moving fast.
 
 The package-manager commands (brew, scoop, nix, yay) install `ytt` **and** its helpers
 (mpv, yt-dlp, ffmpeg) in one go. The direct installer and the source build install `ytt`
-only — they check for the helpers and tell you what's missing.
+only. They check for the helpers and tell you what's missing.
 
 | OS | One command |
 | --- | --- |
 | **macOS** | `brew install Ochichan/tap/yututui` |
 | **Windows** | `scoop bucket add extras; scoop bucket add yututui https://github.com/Ochichan/scoop-bucket; scoop install yututui` |
-| **Linux** — any, with [Nix](https://nixos.org/download) | `nix run github:Ochichan/Yututui` |
-| **Linux** — Arch | `yay -S yututui-bin` |
-| **Linux** — any other | Download and run the installer below |
+| **Linux**, any distribution with [Nix](https://nixos.org/download) | `nix run github:Ochichan/Yututui` |
+| **Linux**, Arch | `yay -S yututui-bin` |
+| **Linux**, other distributions | Download and run the installer below |
 | **From source** | `./install.sh --build` (needs [Rust](https://rustup.rs)) |
 
 ```sh
@@ -76,7 +74,7 @@ and starts `ytt` for you; its right-click menu also has **Open Player**. Double-
 lost. macOS offers the same **Open Player** action from its menu-bar companion. Linux keeps the
 lightweight native path: run `ytt` from your terminal or make a desktop launcher for that command.
 
-Then run `ytt`. If anything's off, `ytt doctor` tells you exactly what to fix — more in [Troubleshooting](#troubleshooting).
+Run `ytt` to start the player. Use `ytt doctor` to check missing tools and configuration problems. See [Troubleshooting](#troubleshooting).
 
 <details>
 <summary><b>Tray companion (macOS / Windows)</b></summary>
@@ -109,7 +107,7 @@ stay out of the taskbar/Dock and app switcher.
 
 YuTuTui! uses **mpv** for playback, **yt-dlp** for search/stream resolution, and **ffmpeg** for
 download post-processing. Packaged installs include them. If a direct or source install is
-missing one, the app shows a friendly setup card with a copyable OS command, setup guide, and
+missing one, the app shows a setup card with a copyable OS command, setup guide, and
 **Check again** button instead of exposing a process error. `ytt doctor` remains the detailed
 diagnostic command. POSIX systems require **mpv 0.33 or newer** for the inherited lifetime lease.
 
@@ -136,9 +134,7 @@ On a new profile, a ten-second hint points to **Search**. Press the displayed se
 2. Move with **`↑`/`↓`**, press **`Enter`** to play.
 3. Press **`?`** anytime for the full, always-current key list.
 
-That's it. Music.
-
-**New to terminals?** Switch on **Beginner Mode** (Settings → General) and the next launch adds an interactive, nine-step walkthrough — it starts by letting you pick the UI language (English / 한국어 / 日本語) — plus the [friendly manual](MANUAL.md) covers every mode at your own pace.
+For guided setup, enable **Beginner Mode** in Settings → General. The next launch opens a nine-step walkthrough, starting with a choice of English, 한국어, or 日本語. The [manual](MANUAL.md) explains each mode.
 
 <details>
 <summary>Preview the Beginner Mode walkthrough</summary>
@@ -147,27 +143,77 @@ That's it. Music.
 
 </details>
 
+## Resource use
+
+Measured on 2026-09-30 with official ytt 1.7.7 binaries. Album art and all animations were off. Each state used a separate profile and a 100×30 terminal, with 30 seconds of warmup followed by about 60 seconds of sampling at 1 Hz, repeated three times.
+
+The first table covers the main `ytt` TUI process. The second includes its guardian and mpv. CPU values are time-weighted means; one fully occupied logical core is 100%. RSS is resident memory, and 1 MiB is 1,048,576 bytes.
+
+| OS | State | CPU % | RSS MiB | DIRTY / private WS MiB |
+| --- | --- | --- | --- | --- |
+| macOS | Idle | 0.078 | 23.36 | 6.56 |
+| macOS | Playback + Streaming ON | 0.222 | 50.77 | 22.27 |
+| Debian | Idle | 0.267 | 30.67 | 10.12 |
+| Debian | Playback + Streaming ON | 0.422 | 33.80 | 12.50 |
+| Windows | Idle | 0.427 | 20.84 | 4.04 |
+| Windows | Playback + Streaming ON | 0.800 | 28.32 | 5.51 |
+
+<details>
+<summary>Including the playback processes</summary>
+
+| OS | State | CPU % | RSS MiB | DIRTY / private WS MiB |
+| --- | --- | --- | --- | --- |
+| macOS | Idle | 0.100 | 141.06 | 47.39 |
+| macOS | Playback + Streaming ON | 1.730 | 312.55 | 192.57 |
+| Debian | Idle | 0.372 | 93.74 | 26.96 |
+| Debian | Playback + Streaming ON | 2.350 | 133.56 | 54.90 |
+| Windows | Idle | 0.514 | 57.36 | 16.86 |
+| Windows | Playback + Streaming ON | 3.834 | 91.07 | 37.80 |
+
+</details>
+
+Idle had no queued track, playback, or input. Playback used "心臓を捧げよ！" by Linked Horizon, video ID `8QPyFlJNmus`, with Streaming ON. mpv fetched and decoded the real YouTube Music stream using null audio output. Audio-device output costs are excluded.
+
+The OS memory column uses different native metrics: macOS `vmmap` DIRTY, Linux `Private_Dirty + Shared_Dirty`, and Windows private working set. Windows private working set is not dirty memory. macOS values average six start/end snapshots per state; Linux and Windows values average 180 samples. Summed RSS can count shared pages more than once.
+
+<details>
+<summary>Test machines and tools</summary>
+
+| OS | CPU / logical cores / RAM | mpv | yt-dlp |
+| --- | --- | --- | --- |
+| macOS 27.2 | Apple M5 Pro / 18 / 64 GiB | 0.41.0 | 2026.08.19 |
+| Debian 13.7 | Ryzen 5 7530U / 12 / 13.58 GiB | 0.40.0 | 2026.09.27.232945 |
+| Windows 11 | Intel i5-1340P / 16 / 15.69 GiB | 0.41.0-dev | 2026.08.19 |
+
+</details>
+
+These are measurements of three different machines, not an OS efficiency ranking. Hardware, dependency versions, background load, and measurement times differed. Album art display was off, but artwork metadata/cache fetching still occurred. Windows used system yt-dlp after a managed-update warning about missing GnuPG; shutdown also logged a persistence warning. Accepted runs passed rendering, playback-progress, and process-cleanup checks.
+
 ## Tour
 
 Explore the main modes below, or try the **[interactive feature tour](https://ochichan.github.io/Yututui/)**.
 
-### The player — real album art & time-synced lyrics
+### Album art and synced lyrics
 
-Actual cover images drawn right in the terminal (Kitty/Sixel/iTerm2, auto-detected — pick Standard, High or Original quality in Settings); **`Shift+L`** scrolls the lyrics underneath. Click any visible lyric line to seek there, or use **`z`** / **`Shift+Z`** to show the lyrics 0.1 seconds earlier / later. When lyrics load, **`[ − 0.0s + ]`** appears for three seconds; after it folds to **`[±]`**, click the handle to reopen it for three seconds and use **`−/+`** for fine adjustment. The player controls dock to the bottom of every screen (collapse them with **`Shift+B`**; the classic top layout is one setting away), the art stays centered in whatever space is left, and shrinking the window below ~32×14 turns the whole app into a tiny miniplayer that springs back when the window grows.
+The player draws cover images using Kitty, Sixel, or iTerm2 image protocols, detected automatically. Choose Standard, High, or Original quality in Settings.
+
+Press **`Shift+L`** to show synced lyrics below the art. Click a visible lyric line to seek to that point. **`z`** and **`Shift+Z`** shift lyrics 0.1 seconds earlier or later. The **`[ − 0.0s + ]`** controls appear for three seconds when lyrics load, then fold into **`[±]`**. Click that handle to reopen the adjustment controls for three seconds.
+
+Playback controls dock to the bottom of each screen; **`Shift+B`** collapses them. Settings also offers the classic top layout. Album art stays centered in the remaining space. Below about 32×14, the app switches to a miniplayer and restores the full layout when the window grows.
 
 ### Seven catalogs, one search box
 
-**`Tab`** in Search flips between YouTube Music, SoundCloud, Audius, Jamendo, Internet Archive, Radio Browser and your OpenSubsonic music server — or all at once, every result tagged `[SRC]`.
+Press **`Tab`** in Search to select YouTube Music, SoundCloud, Audius, Jamendo, Internet Archive, Radio Browser, or your OpenSubsonic server. You can also search all catalogs at once. Each result has a `[SRC]` tag.
 
 ![Search results with the catalog picker open](docs/media/sources.png)
 
-### Radio mode — see what is playing
+### Radio mode
 
 **`Alt+Shift+R`** turns the app into an internet-radio tuner with separate favorites and listening history. Press **`i`** to see the song information supplied by the station; no Gemini key is needed. When a song is identified, **`f`** inside the card saves it to your music favorites. Stations that do not send song metadata cannot show a track name here.
 
 <a id="atlas-mode"></a>
 
-### Atlas mode — tune the world
+### Atlas mode
 
 In Radio mode, press **`a`** to explore stations on an interactive globe. Drag to rotate, scroll to zoom, click a signal to listen, or pick a country and browse its stations. The side panel brings together world stations, favorites and recent listening.
 
@@ -175,7 +221,7 @@ In Radio mode, press **`a`** to explore stations on an interactive globe. Drag t
 
 *8-second preview from the screen recording.* [Watch the full 27-second demo (silent)](docs/media/atlas.mp4) · [Atlas controls and settings](MANUAL.md#atlas-mode)
 
-Drawn with Braille or ASCII characters, Atlas needs no terminal image protocol. Use **`/`** to search, **`Tab`** to switch between globe and panel, and **`q`** to close. A larger terminal gives the globe and station list room to breathe.
+Drawn with Braille or ASCII characters, Atlas needs no terminal image protocol. Use **`/`** to search, **`Tab`** to switch between globe and panel, and **`q`** to close. A larger terminal shows more of the globe and station list.
 
 ### DJ Gem streaming
 
@@ -187,7 +233,7 @@ Drawn with Braille or ASCII characters, Atlas needs no terminal image protocol. 
 
 **`g`**, then ask in plain words: *"play some lo-fi", "make me a rainy-day playlist"*. Set a Gemini API key in **Settings → DJ Gem** and turn **DJ Gem chat** on. Music search, playback, radio and Atlas work without a Gemini key.
 
-Meet **Momoring**, DJ Gem's new animated Braille mascot. She keeps you company on the empty chat screen while music plays, with colors that follow your theme.
+Momoring is an animated Braille mascot on the empty DJ Gem chat screen. She animates during music playback and uses your theme colors.
 
 <p align="center">
   <img src="docs/media/dj-gem-momoring.gif" width="306" alt="Close-up of Momoring animating beside her cauldron on the DJ Gem start screen">
@@ -195,27 +241,27 @@ Meet **Momoring**, DJ Gem's new animated Braille mascot. She keeps you company o
 
 *3-second mascot close-up.* [Setup, chat and animation controls](MANUAL.md#dj-gem).
 
-### The music video, floating over your terminal
+### Music videos
 
 **`v`** opens it in a small mpv window; *Auto-continue videos* hands each video off to the next track's, and the mpv window answers `Space`, `.`, `,`, `q`, `f`, `m`.
 
 ### Library, queue & downloads
 
-Build playlists in the Library (or let DJ Gem build them), pop the queue with **`c`**, and **`d`** saves a tagged m4a with cover art — **`Shift+D`** grabs the whole list.
+Build playlists in the Library (or let DJ Gem build them), pop the queue with **`c`**, and **`d`** saves a tagged m4a with cover art. **`Shift+D`** grabs the whole list.
 
-### Local Deck — an offline player for everything on disk
+### Local Deck
 
-**`Alt+Shift+L`** in the Library opens an immersive player for your downloads and local files — albums, artists, genres and smart lists. Choose **Find** or press **`Ctrl+F`** to search tracks, albums, artists, genres, folders and locally playable playlist entries without an online fallback; **`/`** still filters only the section you're viewing. Refine the scope or sort, open a collection, or play/enqueue one result or the whole result mix.
+**`Alt+Shift+L`** in the Library opens a player for your downloads and local files, organized by album, artist, genre, and smart lists. Choose **Find** or press **`Ctrl+F`** to search tracks, albums, artists, genres, folders and locally playable playlist entries without an online fallback; **`/`** still filters only the section you're viewing. Refine the scope or sort, open a collection, or play/enqueue one result or the whole result mix.
 
 Local playback and Find use only files already on your computer. Other opt-in integrations may still use the network, and the manual online-candidate search in **Import Sessions** explicitly asks before leaving the Local Deck. The Local Deck also remembers its own theme separately from normal and Radio modes: a fresh or older installation starts it with **Local Launch**, then restores whichever Local theme you save there. The [manual](MANUAL.md) has the full tour.
 
 ### Control from anywhere
 
-Media keys, macOS Control Center, Windows SMTC + tray mini player, Linux MPRIS, `ytt -r` from any shell — or a fully headless daemon.
+Control playback with media keys, macOS Control Center, Windows SMTC and the tray mini player, Linux MPRIS, or `ytt -r`. Use the headless daemon for playback without a terminal.
 
-### Make it yours
+### Appearance and audio
 
-14 theme presets plus Custom, with all 34 color roles hex-editable, 40 animations — from shooting stars and a spinning ASCII donut up to full-canvas showpieces (fireworks, Game of Life, pipes, plasma) — a 10-band EQ with presets, your pick of audio-output device, plus loudness normalization. The UI itself speaks English, 한국어 and 日本語 — Settings → General → **Language** cycles through all three.
+Choose from 14 theme presets or edit all 34 color roles in Custom. The app has 40 animations, including shooting stars, an ASCII donut, fireworks, Game of Life, pipes, and plasma. Audio settings include a 10-band EQ with presets, output-device selection, and loudness normalization. Change the UI language in Settings → General → **Language**: English, 한국어, or 日本語.
 
 ![Aquarium animation around the player, with a Beginner Mode tip open](docs/media/animations.gif)
 
@@ -228,15 +274,15 @@ Media keys, macOS Control Center, Windows SMTC + tray mini player, Linux MPRIS, 
 
 ### Retro mode
 
-One toggle makes everything CP437-safe for a bare Linux console or a crusty SSH session — album art included, as honest ASCII art. Retro also pins the UI language to English — CP437 has no CJK glyphs.
+Retro mode uses CP437-compatible characters for Linux consoles and older SSH terminals. It renders album art as ASCII and sets the UI language to English because CP437 has no CJK glyphs.
 
-### Spotify moves in with one command
+### Spotify imports
 
-`ytt transfer import <url>` — checkpointed, resumable, with a match report for anything ambiguous. Setup in the [reference](#reference) below, or let the [manual](MANUAL.md) hold your hand through the whole thing.
+Use `ytt transfer import <url>` to import a Spotify playlist. Imports save checkpoints, support resume, and report ambiguous matches. See the [reference](#reference) for setup or the [manual](MANUAL.md) for a walkthrough.
 
-### The app remembers the keys
+### Keybindings and mouse controls
 
-**`?`** opens a live cheat sheet that reflects *your* bindings — app actions are rebindable, the whole UI is mouse-aware, and safety/modal keys stay fixed and dependable.
+Press **`?`** to see your current keybindings. Rebind app actions in Settings → Hotkeys. Mouse controls are supported throughout the UI; safety and modal keys remain fixed.
 
 <details>
 <summary>View the track context menu</summary>
@@ -249,7 +295,7 @@ One toggle makes everything CP437-safe for a bare Linux console or a crusty SSH 
 
 These are the default Player keys outside text fields; [Atlas has its own controls](MANUAL.md#atlas-mode).
 
-Press **`?`** in-app for the complete live cheat sheet — it reflects *your* bindings, and app actions can be changed in Settings → Hotkeys (safety and modal keys remain fixed). The core:
+Press **`?`** for all current bindings. Change app actions in Settings → Hotkeys; safety and modal keys remain fixed.
 
 | Key | Does |
 | --- | --- |
@@ -266,7 +312,7 @@ Press **`?`** in-app for the complete live cheat sheet — it reflects *your* bi
 | `z` / `Shift+Z` | Show lyrics 0.1s earlier / later (`[±]` reopens `−/+` for 3s) |
 | `v` | Music-video overlay |
 | `!` / `@` | Jump to the previous / next chapter (mpv-style) |
-| `Shift+S` | Sleep timer — set minutes (or `off`), fade-out, then pause |
+| `Shift+S` | Sleep timer. Set minutes (or `off`), fade-out, then pause |
 | `Shift+B` | Collapse / expand the docked control box |
 | `←` / `→` · `Ctrl+←` / `Ctrl+→` | Move by one character · one word in a text field |
 | `Backspace` / `Ctrl+Backspace` | Delete a character / previous word in a text field |
@@ -279,33 +325,33 @@ Press **`?`** in-app for the complete live cheat sheet — it reflects *your* bi
 | `o` | Settings |
 | `Ctrl+Q` | Quit |
 
-> **Korean keyboard?** Shortcuts understand 두벌식 jamo (`ㅂ` works like `q`) — no need to switch input. Prefer the mouse? Everything is clickable, and the wheel rides the volume. Drag across rows to select a range — in Search results just like the Library — and `Ctrl`+click (`⌘`+click on macOS) toggles single rows in and out of the selection. Right-click a row for a context menu, and remap any gesture under `mouse_bindings` in `config.json`. The footer **mouse** button opens the full mouse cheat sheet.
+> Shortcuts accept Korean 두벌식 jamo, so `ㅂ` works like `q` without switching input. Use the mouse wheel to adjust volume, drag rows to select a range in Search or the Library, and `Ctrl`+click to toggle individual rows. On macOS, use `⌘`+click. Right-click a row for its context menu. Remap gestures under `mouse_bindings` in `config.json`; the footer **mouse** button lists mouse controls.
 
 ## Troubleshooting
 
-First aid, always: **`ytt doctor`** checks mpv, yt-dlp and ffmpeg and tells you exactly what to fix. `ytt doctor --verbose` digs deeper; `ytt doctor terminal --json` reports what your terminal can do.
+`ytt doctor` checks mpv, yt-dlp, and ffmpeg. Use `ytt doctor --verbose` for detailed diagnostics or `ytt doctor terminal --json` to check terminal capabilities.
 
 ### Playback
 
 | Symptom | Fix |
 | --- | --- |
-| Nothing plays, or it errors on play | mpv or yt-dlp missing — run `ytt doctor`. |
+| Nothing plays, or it errors on play | mpv or yt-dlp missing. Run `ytt doctor`. |
 | Sound goes to the wrong device | Settings → Playback → **Audio output** picks from the detected local outputs; **Audio backend** exposes the mpv options. |
-| Worked yesterday, not today | YouTube changed something — `ytt tools update`, then `ytt tools status --why`; if a managed update is bad, `ytt tools use system`. |
+| Worked yesterday, not today | YouTube changed something. `ytt tools update`, then `ytt tools status --why`; if a managed update is bad, `ytt tools use system`. |
 | Several tracks fail with 403/429 or "YouTube rejected the stream" | YouTube may be applying a bot check or rate limit. Run `ytt doctor --verbose`, check the [cookies reference](#reference) and your JS runtime; `ytt tools status --why` shows the active yt-dlp. Follow the official [PO Token Guide](https://github.com/yt-dlp/yt-dlp/wiki/PO-Token-Guide) when a token is needed. |
-| A specific song won't play | It may need sign-in — see the cookies section in the [reference](#reference). |
-| The app runs a different yt-dlp than your shell | That's by design (managed copy vs `PATH`) — see *yt-dlp selection* in the [reference](#reference). |
+| A specific song won't play | It may need sign-in. See the cookies section in the [reference](#reference). |
+| The app runs a different yt-dlp than your shell | That's by design (managed copy vs `PATH`). See *yt-dlp selection* in the [reference](#reference). |
 
 ### Install & startup
 
 | Symptom | Fix |
 | --- | --- |
 | `ytt: command not found` | Open a fresh terminal; still stuck, add the `PATH` line the installer printed. |
-| Direct installer / source build is missing helpers | The one-line installers only install `ytt` itself — `ytt doctor` lists what to install and how. |
+| Direct installer / source build is missing helpers | The one-line installers only install `ytt` itself. `ytt doctor` lists what to install and how. |
 
 ### Display & terminals
 
-Terminal support varies by emulator — YuTuTui! probes capabilities and falls back where possible. Check your environment with `ytt doctor terminal --json` and compare with the [terminal compatibility matrix](docs/terminal-compatibility.md).
+Terminal support varies by emulator. YuTuTui! probes capabilities and falls back where possible. Check your environment with `ytt doctor terminal --json` and compare with the [terminal compatibility matrix](docs/terminal-compatibility.md).
 
 | Symptom | Fix |
 | --- | --- |
@@ -313,25 +359,25 @@ Terminal support varies by emulator — YuTuTui! probes capabilities and falls b
 | Album art or zoom behaves differently by terminal | Run `ytt doctor terminal --json` and compare with the [terminal matrix](docs/terminal-compatibility.md). |
 | A terminal-liveness error closes the TUI | Run `ytt doctor terminal --json` and keep the error's failure class/stage. EOF/HUP and a confirmed multiplexer detach are immediate; ambiguous cursor replies and owner-layer queries need two independent observations. Liveness output-gate contention defers the probe, while owner frame/control output has its own seven-second deadline. Use `ytt daemon` only when playback should outlive the terminal. |
 | `Ctrl+Backspace` acts like `Ctrl+H`, or Player navigation is suppressed | See [keyboard input modes](docs/terminal-compatibility.md#keyboard-input-modes). Direct modern terminals negotiate an exact protocol when supported; legacy/multiplexed sessions reserve ambiguous `^H` for safe word deletion while that binding remains at its default. |
-| Album art looks blocky in VS Code / Apple Terminal | Those terminals have no image protocol — halfblocks are the intended fallback there. |
+| Album art looks blocky in VS Code / Apple Terminal | Those terminals have no image protocol. Halfblocks are the intended fallback there. |
 | Bare Linux console or an old SSH session looks broken | Switch on retro mode (Settings → Graphics): everything redraws CP437-safe, album art becomes ASCII art. |
-| `v` (music video) does nothing over SSH / a bare TTY | The video overlay is an mpv GUI window — it needs a desktop session. |
+| `v` (music video) does nothing over SSH / a bare TTY | The video overlay is an mpv GUI window. It needs a desktop session. |
 
 ### Spotify import
 
 | Symptom | Fix |
 | --- | --- |
 | Spotify 403 / "not allowlisted" | Add your own account under *User Management* in your Spotify app dashboard, and check the Client ID for typos. |
-| Browser shows INVALID_CLIENT / redirect mismatch | The redirect URI must match **exactly**: `http://127.0.0.1:9271/callback` — IP not `localhost`, correct port, no trailing slash. |
+| Browser shows INVALID_CLIENT / redirect mismatch | The redirect URI must match **exactly**: `http://127.0.0.1:9271/callback`. IP not `localhost`, correct port, no trailing slash. |
 | "could not listen on 127.0.0.1:9271" | That port is busy. Set `spotify.redirect_port` in `config.json` and update the dashboard redirect URI to match. |
-| Clicked Connect but no browser opened | On headless/SSH the auth URL is copied to your clipboard and saved to `spotify_auth_url.txt` — paste it into any browser to approve. |
+| Clicked Connect but no browser opened | On headless/SSH the auth URL is copied to your clipboard and saved to `spotify_auth_url.txt`. Paste it into any browser to approve. |
 | Spotify import "needs a YouTube Music cookie" | Importing into a YTM playlist/likes needs sign-in; importing into a local Library playlist works without one. See the cookies section in the [reference](#reference). |
 
 ### Accounts, scrobbling & OS integration
 
 | Symptom | Fix |
 | --- | --- |
-| Scrobbles not appearing | Check Settings → Accounts; the daemon reads accounts at start — restart it after connecting. |
+| Scrobbles not appearing | Check Settings → Accounts; the daemon reads accounts at start. Restart it after connecting. |
 | No Control Center / SMTC / MPRIS entry | Settings → Playback → **OS media controls**; it publishes once something has played. |
 | Flyout shows "Unknown app" / two entries | Run `ytt register-media-identity` once (two entries = mpv's own media session; auto-disabled on mpv ≥ 0.39). |
 | No desktop update notification | Update notices still appear in About/status; desktop notifications are best-effort and depend on terminal, tmux, and OS notification support. |
@@ -390,10 +436,10 @@ The daemon keeps streaming, scrobbling and OS media controls working. Launching 
 <details>
 <summary><b>Scrobbling setup (Last.fm / ListenBrainz)</b></summary>
 
-`ytt` scrobbles what you actually listen to — the standard half-track/4-minute rule, like→love sync, and an offline queue that hits disk *before* any network attempt, so crashes lose nothing. Works in the TUI and the daemon alike.
+`ytt` uses the standard half-track/4-minute scrobbling rule and syncs likes to Last.fm loves. It saves pending scrobbles to disk before attempting delivery, so they can be retried after a crash. Scrobbling works in both the TUI and daemon.
 
-- **Last.fm** — Settings → **Accounts** → approve in the browser, or `ytt auth lastfm`. Self-built binaries can set `scrobble.lastfm.api_key` / `api_secret` in `config.json` ([create an API account](https://www.last.fm/api/account/create)).
-- **ListenBrainz** — paste your [user token](https://listenbrainz.org/settings/) into Settings → Accounts, or `ytt auth listenbrainz <token>`. Self-hosted: set `scrobble.listenbrainz.api_url`.
+- **Last.fm**. Settings → **Accounts** → approve in the browser, or `ytt auth lastfm`. Self-built binaries can set `scrobble.lastfm.api_key` / `api_secret` in `config.json` ([create an API account](https://www.last.fm/api/account/create)).
+- **ListenBrainz**. Paste your [user token](https://listenbrainz.org/settings/) into Settings → Accounts, or `ytt auth listenbrainz <token>`. Self-hosted: set `scrobble.listenbrainz.api_url`.
 - Undelivered listens wait in `scrobble-queue.jsonl` next to your config and flush automatically.
 
 </details>
@@ -417,7 +463,7 @@ ytt transfer resume <job-id>                     # continue after a rate-limit/a
 
 Or stay in the TUI: Settings → **Accounts** → *Import from Spotify…* while the music keeps playing. Its fourth mode, **Music video playlist**, writes a separate playlist into Library → Playlists.
 
-**One-time setup (~5 min).** Spotify apps in Development Mode only serve accounts you explicitly allowlist, so everyone brings their own personal app. Under [Spotify's 2026 Dev-Mode rules](https://developer.spotify.com/documentation/web-api/tutorials/february-2026-migration-guide), the app owner needs Premium, a new app gets one Client ID, and it can serve up to five allowlisted users. There is no client *secret* — PKCE doesn't use one.
+**One-time setup (~5 min).** Spotify apps in Development Mode only serve accounts you explicitly allowlist, so everyone brings their own personal app. Under [Spotify's 2026 Dev-Mode rules](https://developer.spotify.com/documentation/web-api/tutorials/february-2026-migration-guide), the app owner needs Premium, a new app gets one Client ID, and it can serve up to five allowlisted users. There is no client *secret*. PKCE doesn't use one.
 
 1. Sign in at [developer.spotify.com/dashboard](https://developer.spotify.com/dashboard) and click **Create app**.
 2. Give it any **App name** and **App description** (e.g. `yututui`).
@@ -425,10 +471,10 @@ Or stay in the TUI: Settings → **Accounts** → *Import from Spotify…* while
 4. Under **Which API/SDKs are you planning to use?**, tick **Web API**.
 5. Accept the terms and **Save**.
 6. Open the app → **Settings** and copy the **Client ID** (you do *not* need the Client secret).
-7. Open **User Management** (in the app's settings) and add your own account — your name plus the email on your Spotify account. New Dev-Mode apps serve up to five such allowlisted users.
-8. In ytt: **Settings → Accounts → Spotify**, paste the Client ID, and choose **Connect** (or run `ytt auth spotify --client-id <ID>`). Your browser opens Spotify's approval page — approve it and you're done. On headless/SSH where no browser opens, the URL is copied to your clipboard and saved to `spotify_auth_url.txt`, so you can open it on any device.
+7. Open **User Management** (in the app's settings) and add your own account using your name and Spotify account email. New Dev-Mode apps serve up to five such allowlisted users.
+8. In ytt: **Settings → Accounts → Spotify**, paste the Client ID, and choose **Connect** (or run `ytt auth spotify --client-id <ID>`). Your browser opens Spotify's approval page. Approve it and you're done. On headless/SSH where no browser opens, the URL is copied to your clipboard and saved to `spotify_auth_url.txt`, so you can open it on any device.
 
-Matching is metadata-based (NFKC-normalized, CJK-safe) and resolves Spotify imports cache-first, album-aware, and YTM-catalog-first before falling back to public YouTube videos. The CLI default is `--policy balanced`; use `--policy strict` for conservative review-heavy matching, `--policy aggressive` for fewer review rows, and `--allow-user-videos` only if generic public uploads are acceptable. Anything still ambiguous lands in the job report instead of being silently guessed — re-run with `--take-best` / `--min-score`, or preview big playlists with `--dry-run` and then `ytt transfer resume <job-id>`.
+Matching is metadata-based (NFKC-normalized, CJK-safe) and resolves Spotify imports cache-first, album-aware, and YTM-catalog-first before falling back to public YouTube videos. The CLI default is `--policy balanced`; use `--policy strict` for conservative review-heavy matching, `--policy aggressive` for fewer review rows, and `--allow-user-videos` only if generic public uploads are acceptable. Anything still ambiguous lands in the job report instead of being silently guessed. Re-run with `--take-best` / `--min-score`, or preview big playlists with `--dry-run` and then `ytt transfer resume <job-id>`.
 
 `--media music-video` works with a Spotify playlist or `liked` and creates a separate `<source> (Music Videos)` playlist unless you supply a destination name. It prefers YouTube Music's OMV / OfficialSourceMusic classifications and strongly corroborated official channels. That is a best-effort official-family check, not a 100% guarantee: the public APIs do not expose a definitive “official music video” flag. Hard-rejected user uploads cannot be forced through review, and unresolved candidates stay in the report.
 
@@ -447,8 +493,8 @@ For a destructive, one-shot exact mirror, use an explicit playlist ID with `--to
 
 **Config & data.**
 
-- Config: `~/Library/Application Support/yututui/config.json` (macOS) · `~/.config/yututui/config.json` (Linux) · `%APPDATA%\yututui\config.json` (Windows) — with `playlists.json`, `scrobble-queue.jsonl` and `transfers/` alongside.
-- Downloads: `~/Music/yututui` — change via the **Download dir** setting or `YTM_DOWNLOAD_DIR`.
+- Config: `~/Library/Application Support/yututui/config.json` (macOS) · `~/.config/yututui/config.json` (Linux) · `%APPDATA%\yututui\config.json` (Windows). The same directory holds `playlists.json`, `scrobble-queue.jsonl`, and `transfers/`.
+- Downloads: `~/Music/yututui`. Change via the **Download dir** setting or `YTM_DOWNLOAD_DIR`.
 - `GEMINI_API_KEY` and `YTM_DOWNLOAD_DIR` override saved settings at launch.
 
 **Portable personal-data export.** Choose **Settings (`o`) → General → Export personal data**, or run:
@@ -471,7 +517,7 @@ The JSON is **not encrypted** and still contains private listening history, so s
 <details>
 <summary><b>yt-dlp selection</b></summary>
 
-**yt-dlp keeps itself fresh.** YouTube changes weekly, so `ytt` maintains its own current yt-dlp (SHA-256-verified from github.com) and uses whichever of {managed, system} is newer. It may therefore run a different yt-dlp than the one your shell prints with `yt-dlp --version`. To see the actual choice and candidates:
+`ytt` maintains a managed yt-dlp copy, verifies its downloads with SHA-256, and selects the newer of the managed and system versions. It may therefore run a different yt-dlp than the one your shell prints with `yt-dlp --version`. To see the actual choice and candidates:
 
 ```sh
 ytt tools status --why
@@ -497,8 +543,8 @@ The app's own yt-dlp calls ignore your yt-dlp config file by default, so options
 <summary><b>Encrypted sync across devices</b></summary>
 
 Keep favorites, history, playlists and taste signals in step across machines through a WebDAV
-folder (Nextcloud, ownCloud, most NAS boxes). Everything is encrypted locally before upload —
-the server stores ciphertext and learns nothing but sizes and timestamps. Off until you enable it.
+folder (Nextcloud, ownCloud, most NAS boxes). The app encrypts data locally before upload.
+The server stores ciphertext and can see file sizes and timestamps. Sync is off by default.
 
 ```sh
 ytt sync setup                        # create the vault; writes a required recovery kit
@@ -523,7 +569,7 @@ endpoints, paths and secrets.
 Self-signed or private-PKI endpoints can pin a custom CA (PEM) per connection; the PEM never
 leaves the device and is never logged. Custom-CA trust is covered by an automated test that is
 green on Linux, Windows, and hosted macOS 15. One local macOS machine recorded a Secure
-Transport rejection (`errSSLClosedAbort -9806`, 2026-07-26) that CI has never reproduced — if
+Transport rejection (`errSSLClosedAbort -9806`, 2026-07-26) that CI has never reproduced. If
 custom-CA trust fails for you, please report it with your macOS version.
 
 **Keep the recovery kit off this machine.** Nobody can regenerate it for you. Note that no
@@ -555,7 +601,7 @@ ytt server history disable                         # also removes its saved pass
 ```
 
 Passwords and API keys are prompted with echo disabled and are never accepted as arguments.
-Password auth uses a fresh per-request salted token — the cleartext password is never sent.
+Password auth uses a fresh per-request salted token. The cleartext password is never sent.
 Experimental detailed history needs its own password and never disables standard server access.
 
 Inside the app: **Settings (`o`) → Music server**.
@@ -571,7 +617,7 @@ ytt data import <FILE>                      # preview the merge (the default)
 ytt data import <FILE> --apply              # atomically apply it
 ```
 
-The export is not encrypted and contains your listening history — treat it as a personal file.
+The export is not encrypted and contains your listening history. Treat it as a personal file.
 A foreign dataset merges without deleting anything; a bundle from this same dataset merges by
 causal order, so re-importing your own older export cannot roll back newer listening.
 
@@ -581,13 +627,13 @@ causal order, so re-importing your own older export cannot roll back newer liste
 
 Found a vulnerability? Please use
 [GitHub private vulnerability reporting](https://github.com/Ochichan/Yututui/security/advisories/new)
-instead of a public issue — supported versions and artifact verification live in
+instead of a public issue. Supported versions and artifact verification live in
 [SECURITY.md](SECURITY.md).
 
 ## Thanks & license
 
-🙏 Huge thanks to **[@ZZNN75](https://github.com/ZZNN75)** for the real QA hours — the rough edges you *won't* hit are smooth because they hit them first. 🫡
+Thanks to [@ZZNN75](https://github.com/ZZNN75) for testing and reporting bugs.
 
-MIT. Fork it, ship it, do whatever you want.
+Licensed under [MIT](LICENSE).
 
 The Atlas globe's coastlines come from [Natural Earth](https://www.naturalearthdata.com/) (public domain), via the polygon set curated by [omarchy-radio-atlas](https://github.com/AksharP5/omarchy-radio-atlas) (MIT), whose globe interaction model Atlas follows. Station listings come from the community-run [Radio Browser](https://www.radio-browser.info/).

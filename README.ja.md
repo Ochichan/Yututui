@@ -11,9 +11,7 @@
 [![Downloads](https://img.shields.io/github/downloads/Ochichan/Yututui/total?color=f6c177)](https://github.com/Ochichan/Yututui/releases)
 [![License: MIT](https://img.shields.io/badge/license-MIT-8aadf4.svg)](LICENSE)
 
-ターミナルの中で楽しむ YouTube Music — 速くて、キーボードで操れて、RAM をじわじわ食うブラウザのタブも広告もありません。すべて3文字のコマンド一つで: `ytt`。Rust + ratatui。MIT。
-
-毎日使えるくらいには安定していますが、まだ速く動いている最中です。
+YuTuTui! は YouTube Music と複数のカタログに対応したターミナル音楽プレイヤーです。キーボードやマウスで曲の検索、再生、キューの管理ができます。`ytt` で起動します。Rust と ratatui で実装し、MIT ライセンスで公開しています。
 
 [Atlas の地球儀](#atlas-mode) · [DJ Gem とモモリン](#dj-gem) · [やさしいマニュアル](MANUAL.ja.md)
 
@@ -21,9 +19,9 @@
 
 [プレイヤーの静止画を見る](docs/media/player.png)
 
-### [▶ ライブデモ・機能ツアー → ochichan.github.io/Yututui](https://ochichan.github.io/Yututui/)
+### [ライブデモと機能ツアー](https://ochichan.github.io/Yututui/)
 
-**📖 ターミナルは初めて？** [やさしいマニュアル](MANUAL.ja.md)が、音楽・ラジオと Atlas・DJ Gem・ローカルデッキ・Spotify のお引っ越しまで、すべてのモードを専門用語なしで一歩ずつ案内します。
+[マニュアル](MANUAL.ja.md)では、音楽再生、ラジオと Atlas、DJ Gem、ローカルファイル、Spotify インポートの使い方を説明しています。
 
 ---
 
@@ -37,9 +35,9 @@
 | --- | --- |
 | **macOS** | `brew install Ochichan/tap/yututui` |
 | **Windows** | `scoop bucket add extras; scoop bucket add yututui https://github.com/Ochichan/scoop-bucket; scoop install yututui` |
-| **Linux** — 任意のディストロ、[Nix](https://nixos.org/download) | `nix run github:Ochichan/Yututui` |
-| **Linux** — Arch | `yay -S yututui-bin` |
-| **Linux** — その他 | 下のインストーラを実行 |
+| **Linux**、任意のディストロ、[Nix](https://nixos.org/download) | `nix run github:Ochichan/Yututui` |
+| **Linux**、Arch | `yay -S yututui-bin` |
+| **Linux**、その他 | 下のインストーラを実行 |
 | **ソースからビルド** | `./install.sh --build`（[Rust](https://rustup.rs) が必要） |
 
 ```sh
@@ -77,7 +75,7 @@ Windows Terminal を開いて `ytt` を起動し、Tray アイコンの右クリ
 **Open Player** 操作があります。Linux ではターミナルから `ytt` を実行するか、その
 コマンド用のデスクトップランチャーを作る軽量な方式です。
 
-そのあと `ytt` を実行。何かおかしければ `ytt doctor` が直すべき箇所を正確に教えてくれます — 詳しくは[トラブルシューティング](#トラブルシューティング)へ。
+`ytt` でプレイヤーを起動します。必要なツールや設定に問題がある場合は `ytt doctor` で確認してください。詳細は[トラブルシューティング](#トラブルシューティング)を参照してください。
 
 <details>
 <summary><b>Tray 補助アプリ (macOS / Windows)</b></summary>
@@ -134,9 +132,7 @@ ytt
 2. **`↑`/`↓`** で移動して **`Enter`** で再生。
 3. いつでも **`?`** を押せば、常に最新の全キー一覧が出ます。
 
-以上。音楽が流れます。
-
-**ターミナルは初めて？** 設定 → 全般で **ビギナーモード** をオンにすると、次回の起動に対話型の9ステップ案内が加わります — 最初のステップで UI 言語（English / 한국어 / 日本語）を選べます — [やさしいマニュアル](MANUAL.ja.md)でも、すべてのモードを自分のペースで学べます。
+設定 → 全般で **ビギナーモード** を有効にすると、次回の起動で9ステップの案内が始まります。最初に English、한국어、日本語から UI 言語を選びます。各モードの操作は[マニュアル](MANUAL.ja.md)にあります。
 
 <details>
 <summary>ビギナーモードの案内を見る</summary>
@@ -145,27 +141,77 @@ ytt
 
 </details>
 
+## リソース使用量
+
+2026-09-30に公式 ytt 1.7.7 バイナリで測定しました。アルバムアートとすべてのアニメーションを無効にし、専用プロファイルと100×30のターミナルを使いました。状態ごとに30秒の安定化後、約60秒間を1 Hzで測定する手順を3回繰り返しました。
+
+最初の表は `ytt` TUI 本体、次の表は補助 guardian プロセスと mpv を含む値です。CPU は実際の観測時間で重み付けした平均で、論理コア1個を完全に使用すると100%です。RSS は常駐メモリで、1 MiB は1,048,576バイトです。
+
+| OS | 状態 | CPU % | RSS MiB | DIRTY / private WS MiB |
+| --- | --- | --- | --- | --- |
+| macOS | Idle | 0.078 | 23.36 | 6.56 |
+| macOS | 再生 + Streaming ON | 0.222 | 50.77 | 22.27 |
+| Debian | Idle | 0.267 | 30.67 | 10.12 |
+| Debian | 再生 + Streaming ON | 0.422 | 33.80 | 12.50 |
+| Windows | Idle | 0.427 | 20.84 | 4.04 |
+| Windows | 再生 + Streaming ON | 0.800 | 28.32 | 5.51 |
+
+<details>
+<summary>再生プロセス全体を含む値</summary>
+
+| OS | 状態 | CPU % | RSS MiB | DIRTY / private WS MiB |
+| --- | --- | --- | --- | --- |
+| macOS | Idle | 0.100 | 141.06 | 47.39 |
+| macOS | 再生 + Streaming ON | 1.730 | 312.55 | 192.57 |
+| Debian | Idle | 0.372 | 93.74 | 26.96 |
+| Debian | 再生 + Streaming ON | 2.350 | 133.56 | 54.90 |
+| Windows | Idle | 0.514 | 57.36 | 16.86 |
+| Windows | 再生 + Streaming ON | 3.834 | 91.07 | 37.80 |
+
+</details>
+
+Idle はキューに曲がなく、再生も入力もない状態です。再生状態では Linked Horizon の "心臓を捧げよ！"、動画 ID `8QPyFlJNmus` を実際に再生し、Streaming を有効にしました。mpv は YouTube Music のストリームを取得してデコードし、null audio に出力しました。オーディオデバイスへの出力コストは含みません。
+
+OS別メモリは macOS の `vmmap` DIRTY、Linux の `Private_Dirty + Shared_Dirty`、Windows の private working set です。Windows の private working set は dirty メモリとは異なります。macOS は状態ごとに開始・終了時の6スナップショット、Linux と Windows は180サンプルの平均です。RSS の合計では共有ページを重複して数える場合があります。
+
+<details>
+<summary>測定機器とツール</summary>
+
+| OS | CPU / 論理コア / RAM | mpv | yt-dlp |
+| --- | --- | --- | --- |
+| macOS 27.2 | Apple M5 Pro / 18 / 64 GiB | 0.41.0 | 2026.08.19 |
+| Debian 13.7 | Ryzen 5 7530U / 12 / 13.58 GiB | 0.40.0 | 2026.09.27.232945 |
+| Windows 11 | Intel i5-1340P / 16 / 15.69 GiB | 0.41.0-dev | 2026.08.19 |
+
+</details>
+
+異なる機器の測定値なので、OS自体の効率の順位を示すものではありません。ハードウェア、依存ツールのバージョン、バックグラウンド負荷、測定時刻が異なります。アルバムアートを非表示にしても、アートのメタデータやキャッシュの取得は行われました。Windows では GnuPG 不在による管理版の更新警告があり、システム版 yt-dlp を使用しました。終了時には persistence の警告も記録されました。採用した測定は画面出力、再生の進行、プロセス終了の検証を通過しています。
+
 ## ツアー
 
 以下で主なモードを見たり、**[インタラクティブな機能ツアー](https://ochichan.github.io/Yututui/)** を試したりできます。
 
-### プレイヤー — 本物のアルバムアート & 同期歌詞
+### アルバムアートと同期歌詞
 
-実際のカバー画像がターミナルにそのまま描かれます（Kitty/Sixel/iTerm2 自動検出、画質は設定で Standard/High/Original から選択）。**`Shift+L`** でその下を時間同期の歌詞が流れます。表示中の歌詞行をクリックすればその時点へシークでき、**`z`** / **`Shift+Z`** で歌詞を 0.1 秒ずつ早く / 遅くできます。歌詞が読み込まれると **`[ − 0.0s + ]`** が 3 秒間表示され、**`[±]`** に折りたたまれた後はハンドルをクリックして再び 3 秒間開き、**`−/+`** で微調整できます。プレイヤーのコントロールはすべての画面の下部にドッキングされ（**`Shift+B`** で折りたたみ、クラシックな上部レイアウトも設定ひとつで復帰）、アルバムアートは残りの空間の中央に配置されます。ウィンドウを約 32×14 未満まで縮めるとアプリ全体が小さなミニプレイヤーになり、広げれば元に戻ります。
+プレイヤーは Kitty、Sixel、iTerm2 の画像プロトコルを自動検出してアルバムアートを描きます。設定で Standard、High、Original の画質を選べます。
+
+**`Shift+L`** でアートの下に同期歌詞を表示します。見えている歌詞の行をクリックすると、その時点へ移動します。**`z`** と **`Shift+Z`** で歌詞を0.1秒ずつ早めたり遅らせたりできます。歌詞を読み込むと **`[ − 0.0s + ]`** の調整ボタンが3秒間表示され、**`[±]`** に折りたたまれます。ハンドルをクリックすると、調整ボタンが再び3秒間開きます。
+
+再生コントロールは各画面の下部に表示され、**`Shift+B`** で折りたためます。設定では従来の上部配置も選べます。アルバムアートは残りの空間の中央に表示されます。ウィンドウが約32×14より小さくなるとミニプレイヤーに切り替わり、広げると全体のレイアウトに戻ります。
 
 ### カタログは七つ、検索窓は一つ
 
-検索で **`Tab`** を押すと YouTube Music、SoundCloud、Audius、Jamendo、Internet Archive、Radio Browser、そして OpenSubsonic 音楽サーバーを行き来できます — 全部まとめても可、結果には `[SRC]` タグ付き。
+検索で **`Tab`** を押すと YouTube Music、SoundCloud、Audius、Jamendo、Internet Archive、Radio Browser、そして OpenSubsonic 音楽サーバーを行き来できます。全部まとめても可、結果には `[SRC]` タグ付き。
 
 ![カタログ選択メニューを開いた検索結果](docs/media/sources.png)
 
-### ラジオモード — いま流れている曲を確認
+### ラジオモード
 
 **`Alt+Shift+R`** でアプリがインターネットラジオのチューナーになります。局のお気に入りと視聴履歴は音楽と別管理です。**`i`** は局が配信する曲情報を表示する機能で、Gemini キーは不要です。曲が識別されれば、カード内の **`f`** で音楽のお気に入りに保存できます。局が曲情報を送っていない場合、曲名は表示できません。
 
 <a id="atlas-mode"></a>
 
-### Atlas モード — 地球儀で世界を聴く
+### Atlas モード
 
 ラジオモードで **`a`** を押すと、地球儀の上で局を探せます。ドラッグで回転、ホイールでズーム、局のマーカーをクリックして再生。国を選んで局の一覧を開くこともできます。横のパネルでは世界の局・お気に入り・最近の視聴を切り替えられます。
 
@@ -185,7 +231,7 @@ ytt
 
 **`g`** を押して言葉で頼むだけ: *「lo-fi をかけて」「雨の日プレイリストを作って」*。**設定 → DJ Gem** に Gemini API キーを入力し、**DJ Gemチャット** をオンにします。音楽の検索・再生、ラジオ、Atlas は Gemini キーなしで使えます。
 
-新しい点字マスコット **モモリン（Momoring）** も登場。会話を始める前の画面で、音楽を聴きながら動きます。色は選んだテーマに合わせて変わります。
+モモリンは DJ Gem の空のチャット画面に表示される点字マスコットです。音楽の再生中に動き、選んだテーマの色を使います。
 
 <p align="center">
   <img src="docs/media/dj-gem-momoring.gif" width="306" alt="DJ Gem の開始画面で釜の隣にいるモモリンが動く様子の拡大映像">
@@ -193,27 +239,27 @@ ytt
 
 *マスコットの3秒間の拡大録画。* [設定・チャット・アニメーションの使い方](MANUAL.ja.md#dj-gem)。
 
-### ターミナルの上に浮かぶミュージックビデオ
+### ミュージックビデオ
 
 **`v`** で小さな mpv ウィンドウに MV が浮かびます。*動画の自動連続再生*をオンにすると次の曲の MV へ自動で続き、mpv ウィンドウでは `Space`, `.`, `,`, `q`, `f`, `m` が効きます。
 
 ### ライブラリ、キュー & ダウンロード
 
-ライブラリでそのままプレイリストを作り（DJ Gem に頼んでも OK）、**`c`** でキューを開き、**`d`** はカバーアートとタグ入りの m4a に保存 — **`Shift+D`** はリスト丸ごと。
+ライブラリでそのままプレイリストを作り（DJ Gem に頼んでも OK）、**`c`** でキューを開き、**`d`** はカバーアートとタグ入りの m4a に保存。**`Shift+D`** はリスト丸ごと。
 
-### ローカルデッキ — ディスク上のすべての音楽のオフラインプレイヤー
+### ローカルデッキ
 
-ライブラリで **`Alt+Shift+L`** を押すと、ダウンロードとローカルファイルのための没入型プレイヤーが開きます — アルバム、アーティスト、ジャンル、スマートリストまで。**Find（検索）**を選ぶか **`Ctrl+F`** を押すと、曲・アルバム・アーティスト・ジャンル・フォルダ・ローカルで再生できるプレイリスト項目を、オンライン検索へ切り替えることなく探せます。**`/`** はこれまでどおり、今見ているセクションだけを絞り込みます。範囲や並び順を Refine で整え、コレクションを開いたり、一件または結果全体を再生・キュー追加したりできます。
+ライブラリで **`Alt+Shift+L`** を押すと、ダウンロードとローカルファイルを、アルバム、アーティスト、ジャンル、スマートリスト別に探せるプレイヤーが開きます。**Find（検索）**を選ぶか **`Ctrl+F`** を押すと、曲・アルバム・アーティスト・ジャンル・フォルダ・ローカルで再生できるプレイリスト項目を、オンライン検索へ切り替えることなく探せます。**`/`** はこれまでどおり、今見ているセクションだけを絞り込みます。範囲や並び順を Refine で整え、コレクションを開いたり、一件または結果全体を再生・キュー追加したりできます。
 
 ローカル再生と Find が使うのは、すでにパソコンにあるファイルだけです。別途有効にした連携機能はネットワークを使う場合があり、**インポートセッション**の手動オンライン候補検索は、ローカルデッキを出る前に明示的に確認します。ローカルデッキのテーマも通常・ラジオモードとは別に記憶されます。新規インストールでも以前の設定でも、最初は **Local Launch** で始まり、その後はローカルデッキで保存したテーマに戻ります。詳しいツアーは[マニュアル](MANUAL.ja.md)へ。
 
 ### どこからでも操作
 
-メディアキー、macOS コントロールセンター、Windows SMTC + トレイのミニプレイヤー、Linux MPRIS、どのシェルからでも `ytt -r` — さらにターミナル不要の headless デーモンも。
+メディアキー、macOS コントロールセンター、Windows SMTC + トレイのミニプレイヤー、Linux MPRIS、どのシェルからでも `ytt -r`。さらにターミナル不要の headless デーモンも。
 
-### 自分好みに
+### 表示とオーディオ設定
 
-テーマプリセット14種と Custom（34の色ロールすべて hex 編集可能）、アニメーション40種 — 流れ星や回る ASCII ドーナツからフルキャンバスのショーピース（花火、ライフゲーム、パイプ、プラズマ）まで — プリセット付き10バンド EQ、オーディオ出力デバイスの選択、ラウドネスノーマライズまで。UI そのものも English / 한국어 / 日本語 の3言語に対応しています — 設定 → 全般 → **言語** で順に切り替わります。
+14種類のテーマプリセットを選ぶか、Custom で34の色ロールの hex 値を編集できます。アニメーションは流れ星、ASCII ドーナツ、花火、ライフゲーム、パイプ、プラズマなど40種類です。オーディオ設定にはプリセット付き10バンド EQ、出力デバイスの選択、ラウドネスノーマライズがあります。設定 → 全般 → **言語** で English、한국어、日本語を選べます。
 
 ![ビギナーモードのヒントを表示したプレイヤーを囲む水槽アニメーション](docs/media/animations.gif)
 
@@ -226,15 +272,15 @@ ytt
 
 ### レトロモード
 
-トグル一つですべてが CP437 安全になります — 素の Linux コンソールや年季の入った SSH セッション向け。アルバムアートも正真正銘の ASCII アートに。レトロモードでは UI 言語も英語に固定されます — CP437 には CJK のグリフがないためです。
+レトロモードは Linux コンソールや古い SSH ターミナル向けに CP437 の文字を使います。アルバムアートは ASCII で描き、CP437 に CJK グリフがないため UI 言語を英語に固定します。
 
-### Spotify はコマンド一行でお引っ越し
+### Spotify インポート
 
-`ytt transfer import <url>` — チェックポイント、再開、あいまいな曲はマッチレポートへ。設定方法は下の[リファレンス](#リファレンス)に — 最初から最後まで手を引いてほしいなら[マニュアル](MANUAL.ja.md)へ。
+`ytt transfer import <url>` で Spotify プレイリストを取り込みます。進行状況を保存して中断後に再開でき、あいまいな一致はレポートに残ります。設定は[リファレンス](#リファレンス)、手順は[マニュアル](MANUAL.ja.md)を参照してください。
 
-### ショートカットはアプリが覚えています
+### キーバインドとマウス操作
 
-**`?`** を押すと、*あなたが変えた*キーがそのまま反映されたライブチートシートが出ます — アプリ操作は再設定でき、UI 全体がマウス対応。安全・モーダルキーは固定です。
+**`?`** を押すと、*あなたが変えた*キーがそのまま反映されたライブチートシートが出ます。アプリ操作は再設定でき、UI 全体がマウス対応。安全・モーダルキーは固定です。
 
 <details>
 <summary>曲の右クリックメニューを見る</summary>
@@ -247,7 +293,7 @@ ytt
 
 テキスト入力中を除くプレイヤーの既定キーです。[Atlas の専用操作表](MANUAL.ja.md#atlas-mode)も参照してください。
 
-アプリで **`?`** を押すと完全なライブチートシートが出ます — *あなたが変えた*キーがそのまま反映され、アプリ操作は設定 → ホットキーで変更できます（安全・モーダルキーは固定）。基本だけ:
+アプリで **`?`** を押すと完全なライブチートシートが出ます。*あなたが変えた*キーがそのまま反映され、アプリ操作は設定 → ホットキーで変更できます（安全・モーダルキーは固定）。基本だけ:
 
 | キー | 動作 |
 | --- | --- |
@@ -264,7 +310,7 @@ ytt
 | `z` / `Shift+Z` | 歌詞を 0.1 秒早く / 遅く（`[±]` で `−/+` を 3 秒間再表示） |
 | `v` | MV オーバーレイ |
 | `!` / `@` | 前 / 次のチャプターへジャンプ（mpv 準拠） |
-| `Shift+S` | スリープタイマー — 分数を入力（または `off`）、フェードアウト後に一時停止 |
+| `Shift+S` | スリープタイマー。分数を入力（または `off`）、フェードアウト後に一時停止 |
 | `Shift+B` | ドッキングされたコントロールボックスの折りたたみ / 展開 |
 | `←` / `→` · `Ctrl+←` / `Ctrl+→` | テキスト欄で一文字ずつ · 単語単位でカーソル移動 |
 | `Backspace` / `Ctrl+Backspace` | テキスト欄で一文字 / 前の単語を削除 |
@@ -277,33 +323,33 @@ ytt
 | `o` | 設定 |
 | `Ctrl+Q` | 終了 |
 
-> **ハングル配列でも大丈夫。** ショートカットは 2ボル式の字母を理解します（`ㅂ` は `q` として効く）— IME を切り替える必要はありません。マウス派なら画面のすべてがクリックでき、ホイールは音量に効きます。行をドラッグすると範囲選択（検索結果でもライブラリと同じ）、`Ctrl`+クリック（macOS は `⌘`+クリック）で離れた行を個別に選択/解除できます。行を右クリックするとコンテキストメニューが開き、ジェスチャーは `config.json` の `mouse_bindings` で再設定できます。全リストはフッターの **mouse** ボタンのマウスチートシートで。
+> **ハングル配列でも大丈夫。** ショートカットは 2ボル式の字母を理解します（`ㅂ` は `q` として効く）IME を切り替える必要はありません。マウス派なら画面のすべてがクリックでき、ホイールは音量に効きます。行をドラッグすると範囲選択（検索結果でもライブラリと同じ）、`Ctrl`+クリック（macOS は `⌘`+クリック）で離れた行を個別に選択/解除できます。行を右クリックするとコンテキストメニューが開き、ジェスチャーは `config.json` の `mouse_bindings` で再設定できます。全リストはフッターの **mouse** ボタンのマウスチートシートで。
 
 ## トラブルシューティング
 
-まずはいつでも: **`ytt doctor`** が mpv、yt-dlp、ffmpeg を点検し、直すべき箇所を正確に教えてくれます。さらに深くは `ytt doctor --verbose`、ターミナルの能力確認は `ytt doctor terminal --json`。
+`ytt doctor` で mpv、yt-dlp、ffmpeg を確認できます。詳細な診断には `ytt doctor --verbose`、ターミナルの機能確認には `ytt doctor terminal --json` を使ってください。
 
 ### 再生
 
 | 症状 | 対処 |
 | --- | --- |
-| 何も再生されない、再生でエラー | mpv か yt-dlp がありません — `ytt doctor` を実行。 |
+| 何も再生されない、再生でエラー | mpv か yt-dlp がありません。`ytt doctor` を実行。 |
 | 音が違うデバイスから出る | 設定 → 再生 → **オーディオ出力** で検出されたローカル出力から選択; **オーディオバックエンド** は mpv オプションを公開します。 |
-| 昨日は動いたのに今日は動かない | YouTube が何か変えました — `ytt tools update` の後、`ytt tools status --why`; 管理版更新が原因なら `ytt tools use system`。 |
+| 昨日は動いたのに今日は動かない | YouTube が何か変えました。`ytt tools update` の後、`ytt tools status --why`; 管理版更新が原因なら `ytt tools use system`。 |
 | 複数の曲が 403/429 や "YouTube rejected the stream" で失敗 | YouTube のボット確認やリクエスト制限の可能性があります。`ytt doctor --verbose` を実行し、[リファレンス](#リファレンス)の Cookie の項と JS ランタイムを確認してください。使用中の yt-dlp は `ytt tools status --why` で確認できます。トークンが必要なら公式の [PO Token Guide](https://github.com/yt-dlp/yt-dlp/wiki/PO-Token-Guide) を参照してください。 |
-| 特定の曲だけ再生できない | サインインが必要かも — [リファレンス](#リファレンス)の Cookie の項を参照。 |
-| アプリがシェルと違う yt-dlp を実行する | 仕様です（管理版コピー vs `PATH`）— [リファレンス](#リファレンス)の *yt-dlp の選択* を参照。 |
+| 特定の曲だけ再生できない | サインインが必要かも。[リファレンス](#リファレンス)の Cookie の項を参照。 |
+| アプリがシェルと違う yt-dlp を実行する | 仕様です（管理版コピー vs `PATH`）[リファレンス](#リファレンス)の *yt-dlp の選択* を参照。 |
 
 ### インストール & 起動
 
 | 症状 | 対処 |
 | --- | --- |
 | `ytt: command not found` | 新しいターミナルを開く。まだなら、インストーラが出力した `PATH` 行を追加。 |
-| 直接インストーラ / ソースビルド後に補助ツールがない | 一行インストーラは `ytt` 本体だけを入れます — `ytt doctor` が何をどう入れるか教えてくれます。 |
+| 直接インストーラ / ソースビルド後に補助ツールがない | 一行インストーラは `ytt` 本体だけを入れます。`ytt doctor` が何をどう入れるか教えてくれます。 |
 
 ### 表示 & ターミナル
 
-ターミナル対応はエミュレータごとに違います — YuTuTui! は機能を検出し、可能な範囲で fallback します。環境確認は `ytt doctor terminal --json`、詳細は [terminal compatibility matrix](docs/terminal-compatibility.md)。
+ターミナル対応はエミュレータごとに違います。YuTuTui! は機能を検出し、可能な範囲で fallback します。環境確認は `ytt doctor terminal --json`、詳細は [terminal compatibility matrix](docs/terminal-compatibility.md)。
 
 | 症状 | 対処 |
 | --- | --- |
@@ -311,18 +357,18 @@ ytt
 | ターミナルによってアルバムアート/拡大の挙動が違う | `ytt doctor terminal --json` を実行し、[terminal matrix](docs/terminal-compatibility.md) と照合してください。 |
 | terminal liveness エラーで TUI が終了する | `ytt doctor terminal --json` とエラーの failure class/stage を保存してください。EOF/HUP と確認済み multiplexer detach は即時終了します。曖昧な cursor 応答と owner-layer 照会は独立して二回確認します。liveness output-gate の競合中は probe を延期し、owner frame/control 出力には別の七秒の制限時間を適用します。ターミナルを閉じても再生を続けたい場合だけ `ytt daemon` を使います。 |
 | `Ctrl+Backspace` が `Ctrl+H` のように動く、またはプレイヤー内の移動が効かない | [キーボード入力モード](docs/terminal-compatibility.md#keyboard-input-modes) を参照。直接接続の最新ターミナルは対応していれば正確なプロトコルを交渉し、レガシー/マルチプレクサのセッションはそのバインディングが既定の間、曖昧な `^H` を安全な単語削除用に予約します。 |
-| VS Code / Apple Terminal でアルバムアートがカクカク | それらのターミナルには画像プロトコルがありません — halfblock が意図された fallback です。 |
+| VS Code / Apple Terminal でアルバムアートがカクカク | それらのターミナルには画像プロトコルがありません。halfblock が意図された fallback です。 |
 | 素の Linux コンソールや古い SSH で表示が崩れる | レトロモードをオンに（設定 → グラフィック）: すべてが CP437 安全に描き直され、アルバムアートは ASCII アートになります。 |
-| SSH / 素の TTY で `v`（MV）が反応しない | 動画オーバーレイは mpv の GUI ウィンドウです — デスクトップセッションが必要です。 |
+| SSH / 素の TTY で `v`（MV）が反応しない | 動画オーバーレイは mpv の GUI ウィンドウです。デスクトップセッションが必要です。 |
 
 ### Spotify インポート
 
 | 症状 | 対処 |
 | --- | --- |
 | Spotify で 403 / 「許可リスト外」 | Spotify 開発者ダッシュボードの *User Management* に自分のアカウントを追加し、Client ID のタイプミスを確認。 |
-| ブラウザに INVALID_CLIENT / リダイレクト不一致 | リダイレクト URI が**正確に**一致する必要があります: `http://127.0.0.1:9271/callback` — `localhost` ではなく IP、正しいポート、末尾スラッシュなし。 |
+| ブラウザに INVALID_CLIENT / リダイレクト不一致 | リダイレクト URI が**正確に**一致する必要があります: `http://127.0.0.1:9271/callback`。`localhost` ではなく IP、正しいポート、末尾スラッシュなし。 |
 | "could not listen on 127.0.0.1:9271" | ポートが使用中です。`config.json` の `spotify.redirect_port` を変更し、ダッシュボードのリダイレクト URI も合わせてください。 |
-| Connect を押したがブラウザが開かない | ヘッドレス/SSH では認証 URL がクリップボードにコピーされ `spotify_auth_url.txt` に保存されます — 任意のブラウザに貼り付けて承認してください。 |
+| Connect を押したがブラウザが開かない | ヘッドレス/SSH では認証 URL がクリップボードにコピーされ `spotify_auth_url.txt` に保存されます。任意のブラウザに貼り付けて承認してください。 |
 | Spotify インポートが「YouTube Music の Cookie が必要」と表示 | YTM のプレイリスト/いいねへのインポートはサインインが必要ですが、ローカルのライブラリプレイリストへのインポートは Cookie なしで動きます。[リファレンス](#リファレンス)の Cookie の項を参照。 |
 
 ### アカウント、スクロブル & OS 統合
@@ -388,10 +434,10 @@ ytt daemon stop             # デーモン停止 + mpv の後始末
 <details>
 <summary><b>スクロブルの設定 (Last.fm / ListenBrainz)</b></summary>
 
-`ytt` は実際に聴いたものだけをスクロブルします — 標準のハーフトラック/4分ルール、いいね→love 同期、そしてネットワークを試す*前に*ディスクへ書かれるオフラインキュー（クラッシュしても失いません）。TUI とデーモンの両方で動きます。
+`ytt` は標準のハーフトラック/4分ルールでスクロブルし、いいねを Last.fm の love と同期します。送信前に未送信の記録をディスクへ保存するので、アプリが終了しても再送できます。TUI とデーモンの両方で動作します。
 
-- **Last.fm** — 設定 → **アカウント** → ブラウザで承認、または `ytt auth lastfm`。自前ビルドは `config.json` の `scrobble.lastfm.api_key` / `api_secret` で設定できます（[API アカウントの作成](https://www.last.fm/api/account/create)）。
-- **ListenBrainz** — [ユーザートークン](https://listenbrainz.org/settings/)を設定 → アカウントに貼るか、`ytt auth listenbrainz <token>`。セルフホストは `scrobble.listenbrainz.api_url` を設定。
+- **Last.fm**。設定 → **アカウント** → ブラウザで承認、または `ytt auth lastfm`。自前ビルドは `config.json` の `scrobble.lastfm.api_key` / `api_secret` で設定できます（[API アカウントの作成](https://www.last.fm/api/account/create)）。
+- **ListenBrainz**。[ユーザートークン](https://listenbrainz.org/settings/)を設定 → アカウントに貼るか、`ytt auth listenbrainz <token>`。セルフホストは `scrobble.listenbrainz.api_url` を設定。
 - 未配達の再生記録は設定ファイルの隣の `scrobble-queue.jsonl` で待機し、自動で配達されます。
 
 </details>
@@ -413,9 +459,9 @@ ytt transfer backup --dir ~/music-backup --csv   # 全 YTM プレイリスト �
 ytt transfer resume <job-id>                     # レート制限/中断後の再開
 ```
 
-TUI の中でも: 設定 → **アカウント** → *Spotify からインポート…* — 音楽を流したままで。その 4 番目のモード **Music video playlist** は、Library → Playlists に別のミュージックビデオプレイリストを書き出します。
+TUI の中でも: 設定 → **アカウント** → *Spotify からインポート…*。音楽を流したままで。その 4 番目のモード **Music video playlist** は、Library → Playlists に別のミュージックビデオプレイリストを書き出します。
 
-**初回のみの設定（約5分）。** Development Mode の Spotify アプリは自分で許可リストに入れたアカウントしか受け付けないので、各自が自分の個人用アプリを作ります。[Spotify の 2026 年 Dev-Mode ルール](https://developer.spotify.com/documentation/web-api/tutorials/february-2026-migration-guide)では、アプリ所有者に Premium が必要で、新規アプリは Client ID を 1 つだけ持ち、許可リストに入れたユーザーを最大 5 人まで扱えます。クライアント*シークレット*はありません — PKCE はシークレットを使いません。
+**初回のみの設定（約5分）。** Development Mode の Spotify アプリは自分で許可リストに入れたアカウントしか受け付けないので、各自が自分の個人用アプリを作ります。[Spotify の 2026 年 Dev-Mode ルール](https://developer.spotify.com/documentation/web-api/tutorials/february-2026-migration-guide)では、アプリ所有者に Premium が必要で、新規アプリは Client ID を 1 つだけ持ち、許可リストに入れたユーザーを最大 5 人まで扱えます。クライアント*シークレット*はありません。PKCE はシークレットを使いません。
 
 1. [developer.spotify.com/dashboard](https://developer.spotify.com/dashboard) にログインして **Create app** を押します。
 2. **App name** と **App description** は何でも（例: `yututui`）。
@@ -423,10 +469,10 @@ TUI の中でも: 設定 → **アカウント** → *Spotify からインポー
 4. **Which API/SDKs are you planning to use?** で **Web API** にチェック。
 5. 規約に同意して **Save**。
 6. アプリ → **Settings** で **Client ID** をコピー（Client secret は不要）。
-7. **User Management**（アプリ設定内）を開いて自分のアカウントを追加 — 名前 + Spotify アカウントのメール。新しい Dev Mode アプリはこの許可ユーザーを最大5人まで受け付けます。
+7. **User Management**（アプリ設定内）を開いて自分のアカウントを追加。名前 + Spotify アカウントのメール。新しい Dev Mode アプリはこの許可ユーザーを最大5人まで受け付けます。
 8. ytt で **設定 → アカウント → Spotify** を開き、Client ID を貼り付けて **Connect** を押します（または `ytt auth spotify --client-id <ID>`）。ブラウザに Spotify の承認ページが開くので承認すれば完了。ブラウザが開かないヘッドレス/SSH 環境では、URL がクリップボードにコピーされ `spotify_auth_url.txt` にも保存されるので、どの端末でも開けます。
 
-マッチングはメタデータベースで（NFKC 正規化、CJK 安全）、Spotify インポートをキャッシュ優先・アルバム認識・YTM カタログ優先で解決してから、公開 YouTube 動画へ fallback します。CLI の既定は `--policy balanced`; 保守的なレビュー中心マッチングは `--policy strict`、レビュー行を減らすには `--policy aggressive`、一般の公開アップロードでも良い場合のみ `--allow-user-videos`。あいまいな曲は黙って当てずっぽうにせず、ジョブレポートに残ります — `--take-best` / `--min-score` で再実行するか、大きなプレイリストは `--dry-run` で確認してから `ytt transfer resume <job-id>` で書き込みを。
+マッチングはメタデータベースで（NFKC 正規化、CJK 安全）、Spotify インポートをキャッシュ優先・アルバム認識・YTM カタログ優先で解決してから、公開 YouTube 動画へ fallback します。CLI の既定は `--policy balanced`; 保守的なレビュー中心マッチングは `--policy strict`、レビュー行を減らすには `--policy aggressive`、一般の公開アップロードでも良い場合のみ `--allow-user-videos`。あいまいな曲は黙って当てずっぽうにせず、ジョブレポートに残ります。`--take-best` / `--min-score` で再実行するか、大きなプレイリストは `--dry-run` で確認してから `ytt transfer resume <job-id>` で書き込みを。
 
 `--media music-video` は Spotify プレイリストと `liked` で使え、保存先の名前を指定しないかぎり `<元の名前> (Music Videos)` プレイリストを別に作ります。YouTube Music の OMV / OfficialSourceMusic 分類と、強く裏付けられた公式チャンネルを優先します。これは公式系の best-effort 判定であり 100% の保証ではありません。公開 API には決定的な「公式ミュージックビデオ」フラグがないためです。明確に拒否されたユーザーアップロードはレビューでも強制できず、未解決の候補はレポートに残ります。
 
@@ -445,8 +491,8 @@ TUI の中でも: 設定 → **アカウント** → *Spotify からインポー
 
 **設定 & データ。**
 
-- 設定: `~/Library/Application Support/yututui/config.json`（macOS）· `~/.config/yututui/config.json`（Linux）· `%APPDATA%\yututui\config.json`（Windows）— その隣に `playlists.json`、`scrobble-queue.jsonl`、`transfers/`。
-- ダウンロード: `~/Music/yututui` — **Download dir** 設定か `YTM_DOWNLOAD_DIR` で変更。
+- 設定: `~/Library/Application Support/yututui/config.json`（macOS）· `~/.config/yututui/config.json`（Linux）· `%APPDATA%\yututui\config.json`（Windows）その隣に `playlists.json`、`scrobble-queue.jsonl`、`transfers/`。
+- ダウンロード: `~/Music/yututui`。**Download dir** 設定か `YTM_DOWNLOAD_DIR` で変更。
 - `GEMINI_API_KEY` と `YTM_DOWNLOAD_DIR` 環境変数は、起動時に保存済み設定より優先されます。
 
 **ポータブルな個人データのエクスポート。** アプリで **設定（`o`）→ 全般 → 個人データをエクスポート** を選ぶか、次を実行します:
@@ -469,7 +515,7 @@ ytt data export --to ~/existing-folder # 既存のディレクトリを指定
 <details>
 <summary><b>yt-dlp の選択</b></summary>
 
-**yt-dlp は自動で最新に保たれます。** YouTube は毎週変わるため、`ytt` は自前の yt-dlp を保持し（github.com から SHA-256 検証付き）、{管理版, システム版} の新しい方を使います。そのため、シェルで `yt-dlp --version` と打って見えるものと違う yt-dlp を実行する場合があります。実際の選択と候補を見るには:
+`ytt` は管理版の yt-dlp を保持し、ダウンロードを SHA-256 で検証します。管理版とシステム版の新しい方を選びます。そのため、シェルで `yt-dlp --version` と打って見えるものと違う yt-dlp を実行する場合があります。実際の選択と候補を見るには:
 
 ```sh
 ytt tools status --why
@@ -562,12 +608,12 @@ ytt data import <FILE> --apply              # 原子的に適用
 
 脆弱性を見つけたら、公開 issue ではなく
 [GitHub の非公開脆弱性報告](https://github.com/Ochichan/Yututui/security/advisories/new)を
-使ってください — サポート対象バージョンと成果物の検証方法は [SECURITY.md](SECURITY.md) にあります。
+使ってください。サポート対象バージョンと成果物の検証方法は [SECURITY.md](SECURITY.md) にあります。
 
 ## 謝辞 & ライセンス
 
-🙏 **[@ZZNN75](https://github.com/ZZNN75)** さんへ、本物の QA 時間に大きな感謝を — あなたが*出会わない*粗い角は、この方が先にぶつかってくれたから滑らかなのです。🫡
+テストとバグ報告に協力してくださった [@ZZNN75](https://github.com/ZZNN75) さんに感謝します。
 
-MIT。フォークして、出荷して、好きにどうぞ。
+[MIT ライセンス](LICENSE)で公開しています。
 
 アトラス地球儀の海岸線は [Natural Earth](https://www.naturalearthdata.com/)（パブリックドメイン）のデータを [omarchy-radio-atlas](https://github.com/AksharP5/omarchy-radio-atlas)（MIT）が整理したポリゴンとして使用し、地球儀の操作モデルもそのプロジェクトに倣っています。局のリストはコミュニティ運営の [Radio Browser](https://www.radio-browser.info/) から取得します。
