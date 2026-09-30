@@ -109,6 +109,33 @@ fn audio_device_selection_inspects_then_clears_forced_ao_before_setting_device()
 }
 
 #[test]
+fn zero_correlation_device_replay_has_no_owner_selection_result() {
+    let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+    let emit: EventSink = std::sync::Arc::new(move |event| {
+        let _ = tx.try_send(event);
+    });
+    let mut state = DispatchState::default();
+    remember_pending_audio_device_selection(
+        &mut state,
+        20,
+        PendingAudioDeviceSelection {
+            correlation_id: 0,
+            device: Some("pipewire/42".to_owned()),
+            phase: AudioDeviceSelectionPhase::SetDevice,
+        },
+    )
+    .unwrap();
+    state.audio_output.selection_request_id = Some(20);
+
+    dispatch_incoming(r#"{"error":"success","request_id":20}"#, &emit, &mut state);
+
+    assert!(
+        rx.try_recv().is_err(),
+        "a replayed device selection must not emit an owner-facing correlation result"
+    );
+}
+
+#[test]
 fn failed_ao_clear_ends_selection_without_scheduling_device_command() {
     let (tx, mut rx) = tokio::sync::mpsc::channel(8);
     let emit: EventSink = std::sync::Arc::new(move |event| {

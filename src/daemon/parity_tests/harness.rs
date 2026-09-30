@@ -59,7 +59,8 @@ pub(super) fn command_parity_class(command: &RemoteCommand) -> CommandParityClas
         | RemoteCommand::QueueRemove { .. }
         | RemoteCommand::QueuePlayIfRevision { .. }
         | RemoteCommand::QueueRemoveIfRevision { .. }
-        | RemoteCommand::ResumeSession => SharedMayRebase,
+        | RemoteCommand::ResumeSession
+        | RemoteCommand::Ban { .. } => SharedMayRebase,
         RemoteCommand::VolumeUp
         | RemoteCommand::VolumeDown
         | RemoteCommand::SetVolume { .. }
@@ -78,6 +79,7 @@ pub(super) fn command_parity_class(command: &RemoteCommand) -> CommandParityClas
             | RemoteSettingChange::SeekSeconds { .. }
             | RemoteSettingChange::Normalize { .. }
             | RemoteSettingChange::Gapless { .. }
+            | RemoteSettingChange::LocalCrossfade { .. }
             | RemoteSettingChange::AiEnabled { .. } => SharedStableEpoch,
             RemoteSettingChange::RadioMode { .. } => OwnerSpecific,
         },

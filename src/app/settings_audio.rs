@@ -302,8 +302,10 @@ impl App {
             PlayerCmd::SetLongFormSeekOptimization(draft.long_form_seek_optimization),
             PlayerCmd::SetAudioFilter(draft.filter()),
         ];
-        if !self.audio.local_crossfade.is_off() && current.draft.local_crossfade.is_off() {
-            commands.push(PlayerCmd::RetireExtra);
+        if self.audio.local_crossfade.is_off() != current.draft.local_crossfade.is_off() {
+            commands.push(PlayerCmd::SetOverlap(
+                !current.draft.local_crossfade.is_off(),
+            ));
         }
         vec![Cmd::PlayerControl(PlayerControl::Intent(Box::new(
             PlayerIntent::batch(

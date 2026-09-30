@@ -1486,6 +1486,9 @@ mod remote_owner {
             artwork: None,
             personal_sync: None,
             sleep_remaining_secs: None,
+            banned_tracks: 0,
+            banned_artists: 0,
+            seed_terms: 0,
         }
     }
 
@@ -1569,6 +1572,7 @@ mod remote_owner {
                 seek_seconds: 12,
                 normalize: true,
                 gapless: false,
+                local_crossfade_secs: None,
                 ai_enabled: true,
                 radio_mode: false,
                 long_form_seek: None,
@@ -1673,7 +1677,7 @@ mod remote_owner {
         assert!(settings.status.success(), "{}", stderr(&settings));
         assert_eq!(
             stdout(&settings).trim(),
-            "autoplay=on  •  source=internet_archive  •  mode=discovery  •  speed=1.5x  •  seek=12s  •  normalize=on  •  gapless=off  •  ai=on  •  radio-mode=off"
+            "autoplay=on  •  source=internet_archive  •  mode=discovery  •  speed=1.5x  •  seek=12s  •  normalize=on  •  gapless=off  •  crossfade=off  •  ai=on  •  radio-mode=off"
         );
         assert_credentials_hidden(&settings, &instance.endpoint);
 

@@ -271,6 +271,9 @@ async fn send_to_instance_round_trips_status_response() {
         artwork: None,
         personal_sync: None,
         sleep_remaining_secs: None,
+        banned_tracks: 0,
+        banned_artists: 0,
+        seed_terms: 0,
     };
     let response = serde_json::to_string(&RemoteResponse::status(snapshot.clone())).unwrap();
     let server = tokio::spawn(serve_one_response(listener, response, PROTOCOL_VERSION));
@@ -759,6 +762,9 @@ fn snapshot(queue: Vec<crate::remote::proto::QueueItemSnapshot>) -> StatusSnapsh
         artwork: None,
         personal_sync: None,
         sleep_remaining_secs: None,
+        banned_tracks: 0,
+        banned_artists: 0,
+        seed_terms: 0,
     }
 }
 
@@ -801,6 +807,7 @@ fn settings_formatter_includes_only_summary_fields() {
         seek_seconds: 12,
         normalize: true,
         gapless: false,
+        local_crossfade_secs: crate::crossfade::CrossfadeSecs::from_tenths(15),
         ai_enabled: true,
         radio_mode: false,
         long_form_seek: None,
@@ -808,7 +815,7 @@ fn settings_formatter_includes_only_summary_fields() {
 
     assert_eq!(
         settings_human(&status),
-        "autoplay=on  •  source=internet_archive  •  mode=discovery  •  speed=1.5x  •  seek=12s  •  normalize=on  •  gapless=off  •  ai=on  •  radio-mode=off"
+        "autoplay=on  •  source=internet_archive  •  mode=discovery  •  speed=1.5x  •  seek=12s  •  normalize=on  •  gapless=off  •  crossfade=1.5s  •  ai=on  •  radio-mode=off"
     );
 }
 

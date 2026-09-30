@@ -1,7 +1,4 @@
-use std::collections::HashMap;
 use std::ops::Deref;
-#[cfg(test)]
-use std::ops::Index;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -242,136 +239,11 @@ pub(super) fn publish_pending_batch(
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) struct JournalCompletion {
-    kind: StoreKind,
-    order: JournalOrder,
-}
-
-impl JournalCompletion {
-    pub(super) fn confirmed(kind: StoreKind, order: JournalOrder) -> Self {
-        Self { kind, order }
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum SnapshotAdmission {
     Open,
     Sealed,
 }
 
-pub(super) struct PendingQueue {
-    admission: SnapshotAdmission,
-    operations: HashMap<StoreKind, ShadowCoveredOperation>,
-    /// Monotonic acceptance frontier retained even after an operation leaves pending. Reading
-    /// this under the same mutex as insertion linearizes targeted confirmation with admission.
-    latest_accepted: HashMap<StoreKind, JournalOrder>,
-}
-
-impl PendingQueue {
-    pub(super) fn new() -> Self {
-        Self {
-            admission: SnapshotAdmission::Open,
-            operations: HashMap::new(),
-            latest_accepted: HashMap::new(),
-        }
-    }
-
-    pub(super) fn admission(&self) -> SnapshotAdmission {
-        self.admission
-    }
-
-    pub(super) fn seal(&mut self) {
-        self.admission = SnapshotAdmission::Sealed;
-    }
-
-    pub(super) fn insert_owned(
-        &mut self,
-        operation: ShadowCoveredOperation,
-    ) -> Option<ShadowCoveredOperation> {
-        self.latest_accepted
-            .entry(operation.kind())
-            .and_modify(|order| *order = (*order).max(operation.order))
-            .or_insert(operation.order);
-        self.operations.insert(operation.kind(), operation)
-    }
-
-    pub(super) fn latest_accepted(&self, kind: &StoreKind) -> Option<JournalOrder> {
-        self.latest_accepted.get(kind).copied()
-    }
-
-    pub(super) fn resolve_journal(&mut self, completion: JournalCompletion) -> bool {
-        let Some(operation) = self.operations.get_mut(&completion.kind) else {
-            return false;
-        };
-        if operation.order != completion.order {
-            return false;
-        }
-        operation.0.publication.resolve_journal();
-        true
-    }
-
-    pub(super) fn get(&self, kind: &StoreKind) -> Option<&ShadowCoveredOperation> {
-        self.operations.get(kind)
-    }
-
-    pub(super) fn values(
-        &self,
-    ) -> std::collections::hash_map::Values<'_, StoreKind, ShadowCoveredOperation> {
-        self.operations.values()
-    }
-
-    pub(super) fn iter(
-        &self,
-    ) -> std::collections::hash_map::Iter<'_, StoreKind, ShadowCoveredOperation> {
-        self.operations.iter()
-    }
-
-    pub(super) fn keys(
-        &self,
-    ) -> std::collections::hash_map::Keys<'_, StoreKind, ShadowCoveredOperation> {
-        self.operations.keys()
-    }
-
-    pub(super) fn contains_key(&self, kind: &StoreKind) -> bool {
-        self.operations.contains_key(kind)
-    }
-
-    pub(super) fn is_empty(&self) -> bool {
-        self.operations.is_empty()
-    }
-
-    #[cfg(test)]
-    pub(super) fn len(&self) -> usize {
-        self.operations.len()
-    }
-
-    pub(super) fn remove(&mut self, kind: &StoreKind) -> Option<ShadowCoveredOperation> {
-        self.operations.remove(kind)
-    }
-
-    #[cfg(test)]
-    pub(super) fn insert(
-        &mut self,
-        kind: StoreKind,
-        operation: PendingOperation,
-    ) -> Option<ShadowCoveredOperation> {
-        let operation = ShadowCoveredOperation::for_test(operation);
-        debug_assert_eq!(operation.kind(), kind);
-        self.insert_owned(operation)
-    }
-}
-
-impl Default for PendingQueue {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-#[cfg(test)]
-impl Index<&StoreKind> for PendingQueue {
-    type Output = ShadowCoveredOperation;
-
-    fn index(&self, kind: &StoreKind) -> &Self::Output {
-        &self.operations[kind]
-    }
-}
+#[path = "snapshot_state/pending_queue.rs"]
+mod pending_queue;
+pub(super) use pending_queue::{JournalCompletion, PendingQueue};

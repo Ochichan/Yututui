@@ -261,6 +261,28 @@ pub(crate) fn spawn(
 ) -> Result<super::guardian::GuardedSpawn> {
     super::lifetime::ensure_media_start_allowed()?;
     ensure_lifeline_supported()?;
+    let environment_extra = std::env::var("YTM_MPV_EXTRA").ok();
+    let args = shared_spawn_args(
+        ipc_path,
+        cookies_file,
+        gapless,
+        audio,
+        managed_cache_args,
+        environment_extra.as_deref(),
+    );
+
+    super::guardian::spawn(&crate::tools::mpv_program(), args, false)
+        .context("failed to spawn protected mpv")
+}
+
+fn shared_spawn_args(
+    ipc_path: &str,
+    cookies_file: Option<&Path>,
+    gapless: bool,
+    audio: &MpvAudioRuntimeConfig,
+    managed_cache_args: &[String],
+    environment_extra: Option<&str>,
+) -> Vec<String> {
     let mut args = vec![
         "--no-video".to_owned(),
         "--no-terminal".to_owned(),
@@ -331,43 +353,55 @@ pub(crate) fn spawn(
     // Escape hatch for tests/debugging, e.g. `YTM_MPV_EXTRA="--ao=null --volume=0"`.
     // Quote-aware so a value with spaces (`--x="/My Music/y"`) survives as one arg; simple
     // space-separated flags behave exactly as the previous `split_whitespace`.
-    if let Ok(extra) = std::env::var("YTM_MPV_EXTRA") {
-        for a in split_shell_like(&extra) {
+    if let Some(extra) = environment_extra {
+        for a in split_shell_like(extra) {
             args.push(a);
         }
     }
-
-    super::guardian::spawn(&crate::tools::mpv_program(), args, false)
-        .context("failed to spawn protected mpv")
+    args
 }
 
 pub(crate) fn spawn_standby(
     ipc_path: &str,
+    cookies_file: Option<&Path>,
     audio: &MpvAudioRuntimeConfig,
+    managed_cache_args: &[String],
 ) -> Result<super::guardian::GuardedSpawn> {
     super::lifetime::ensure_media_start_allowed()?;
     ensure_lifeline_supported()?;
-    let mut args = vec![
-        "--no-video".to_owned(),
-        "--no-terminal".to_owned(),
-        "--idle=yes".to_owned(),
-        "--keep-open=yes".to_owned(),
-        "--no-config".to_owned(),
-        "--audio-display=no".to_owned(),
-        "--gapless-audio=no".to_owned(),
-        "--cache=yes".to_owned(),
-        "--volume=0".to_owned(),
-        format!("--input-ipc-server={ipc_path}"),
-    ];
-    args.extend(structured_audio_args(audio));
+    let environment_extra = std::env::var("YTM_MPV_EXTRA").ok();
+    let args = standby_spawn_args(
+        ipc_path,
+        cookies_file,
+        audio,
+        managed_cache_args,
+        environment_extra.as_deref(),
+    );
+
+    super::guardian::spawn(&crate::tools::mpv_program(), args, false)
+        .context("failed to spawn protected standby mpv")
+}
+
+fn standby_spawn_args(
+    ipc_path: &str,
+    cookies_file: Option<&Path>,
+    audio: &MpvAudioRuntimeConfig,
+    managed_cache_args: &[String],
+    environment_extra: Option<&str>,
+) -> Vec<String> {
+    let mut args = shared_spawn_args(
+        ipc_path,
+        cookies_file,
+        false,
+        audio,
+        managed_cache_args,
+        environment_extra,
+    );
     if flag_supported("--audio-exclusive=no") {
         args.push("--audio-exclusive=no".to_owned());
     }
-    if media_controls_flag_supported() {
-        args.push("--media-controls=no".to_owned());
-    }
-    super::guardian::spawn(&crate::tools::mpv_program(), args, false)
-        .context("failed to spawn protected standby mpv")
+    args.push("--volume=0".to_owned());
+    args
 }
 
 pub(crate) fn structured_audio_args(audio: &MpvAudioRuntimeConfig) -> Vec<String> {
@@ -424,8 +458,9 @@ fn split_shell_like(s: &str) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{split_shell_like, structured_audio_args};
+    use super::{shared_spawn_args, split_shell_like, standby_spawn_args, structured_audio_args};
     use crate::config::MpvAudioRuntimeConfig;
+    use std::path::Path;
 
     #[test]
     fn split_shell_like_matches_whitespace_for_simple_values() {
@@ -488,5 +523,53 @@ mod tests {
                 "--demuxer-max-back-bytes=8MiB",
             ]
         );
+    }
+
+    #[test]
+    fn standby_uses_the_primary_shared_arguments_and_stays_muted() {
+        let audio = MpvAudioRuntimeConfig {
+            output: None,
+            device: None,
+            cache_forward: "32MiB".to_owned(),
+            cache_back: "8MiB".to_owned(),
+            long_form_seek_optimization: crate::config::LongFormSeekOptimization::Off,
+            extra_args: vec!["--audio-client-name=yututui".to_owned()],
+        };
+        let managed_cache_args = vec!["--cache-on-disk=no".to_owned()];
+        let common = shared_spawn_args(
+            "/tmp/primary.sock",
+            Some(Path::new("/tmp/cookies.txt")),
+            false,
+            &audio,
+            &managed_cache_args,
+            Some("--demuxer-lavf-o=timeout=10"),
+        );
+        let standby = standby_spawn_args(
+            "/tmp/standby.sock",
+            Some(Path::new("/tmp/cookies.txt")),
+            &audio,
+            &managed_cache_args,
+            Some("--demuxer-lavf-o=timeout=10"),
+        );
+
+        assert!(standby.contains(&"--volume=0".to_owned()));
+        assert!(standby.contains(&"--audio-client-name=yututui".to_owned()));
+        assert!(standby.contains(&"--demuxer-lavf-o=timeout=10".to_owned()));
+        for argument in common
+            .iter()
+            .filter(|argument| !argument.starts_with("--input-ipc-server="))
+        {
+            assert!(
+                standby.contains(argument),
+                "standby omitted shared primary argument {argument}"
+            );
+        }
+        for argument in crate::tools::mpv_ytdl_raw_option_args(Some(Path::new("/tmp/cookies.txt")))
+        {
+            assert!(
+                standby.contains(&argument),
+                "standby omitted yt-dlp argument {argument}"
+            );
+        }
     }
 }

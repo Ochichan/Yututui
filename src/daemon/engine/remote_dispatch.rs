@@ -73,6 +73,11 @@ impl DaemonEngine {
                     self.arm_sleep(preset)
                 }
             },
+            RemoteCommand::Ban { target } => {
+                let (response, ban_effects) = self.ban_current(target).await;
+                effects.extend(ban_effects);
+                response
+            }
             RemoteCommand::SeekBack => self.seek(-self.config.effective_seek_seconds()),
             RemoteCommand::SeekForward => self.seek(self.config.effective_seek_seconds()),
             RemoteCommand::SeekTo { ms } => self.seek_to(ms as f64 / 1000.0),

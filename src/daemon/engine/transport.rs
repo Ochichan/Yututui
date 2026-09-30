@@ -95,7 +95,7 @@ const TRANSPORT_RECOVERY_MAX_ATTEMPTS: u8 = 2;
 const TRANSPORT_RECOVERY_RETRY_DELAY: Duration = Duration::from_millis(75);
 
 #[derive(Clone, Copy)]
-enum LoadCurrentIntent {
+pub(super) enum LoadCurrentIntent {
     Ordinary,
     TransportRecovery,
 }
@@ -317,7 +317,11 @@ impl DaemonEngine {
         };
 
         let result = match self.ensure_player().await {
-            Ok(()) => self.load_current_loaded_for(LoadCurrentIntent::TransportRecovery),
+            Ok(()) => self.load_current_loaded_for(
+                LoadCurrentIntent::TransportRecovery,
+                crate::crossfade::AdvanceCause::Manual,
+                None,
+            ),
             Err(error) => Err(error),
         };
         if result.is_ok() {
@@ -360,14 +364,12 @@ impl DaemonEngine {
         }
     }
 
-    /// Admit an ordinary queue load into an already-created player and rearm transport recovery.
-    /// Automatic replacement uses the typed recovery intent below so it cannot replay a
-    /// different queue item or duplicate history/signals.
-    pub(super) fn load_current_loaded(&mut self) -> Result<(), EngineError> {
-        self.load_current_loaded_for(LoadCurrentIntent::Ordinary)
-    }
-
-    fn load_current_loaded_for(&mut self, intent: LoadCurrentIntent) -> Result<(), EngineError> {
+    pub(super) fn load_current_loaded_for(
+        &mut self,
+        intent: LoadCurrentIntent,
+        advance_cause: crate::crossfade::AdvanceCause,
+        outgoing: Option<crate::player::PlaybackLoad>,
+    ) -> Result<(), EngineError> {
         let Some(song) = self.queue.current().cloned() else {
             self.stop_playback();
             return Ok(());
@@ -418,6 +420,16 @@ impl DaemonEngine {
             },
         };
         let source_context = crate::player::MediaSourceContext::from_live(song.is_radio_station());
+        let ordinary_load = (matches!(intent, LoadCurrentIntent::Ordinary)
+            && planned_loaded_video_id.is_some())
+        .then(|| {
+            self.crossfade.load_for_advance(
+                crate::player::PlaybackLoad::from_destination(target.clone(), source_context),
+                advance_cause,
+                outgoing.as_ref(),
+                self.playback.duration,
+            )
+        });
         let restore = match recovery.as_ref().map(|recovery| recovery.mode) {
             Some(TransportRecoveryMode::ResumeRamOnly { position_secs }) => {
                 crate::player::recovery::TransportRestorePlan::resume_ram_only_if_loaded(
@@ -439,7 +451,11 @@ impl DaemonEngine {
                 )
             }
         };
-        self.send_active_player_batch("load_current", restore.into_commands(None))?;
+        let commands = ordinary_load.map_or_else(
+            || restore.into_commands(None),
+            |load| vec![PlayerCmd::Load(load)],
+        );
+        self.send_active_player_batch("load_current", commands)?;
 
         self.playback.paused = recovery_paused.unwrap_or(false);
         self.playback.time_pos = recovery_position;

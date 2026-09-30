@@ -28,6 +28,7 @@ pub(super) struct PendingStreamingRequest {
     mode: StreamingMode,
     source: crate::search_source::SearchSource,
     queue_rev: u64,
+    detached_seed: bool,
     owner_mode: crate::session::LastMode,
     pub(super) stage: StreamingRequestStage,
 }
@@ -104,10 +105,18 @@ impl DaemonEngine {
     }
 
     pub(super) fn force_autoplay_extend(&mut self) -> Vec<EngineEffect> {
-        self.autoplay_extend(true)
+        self.autoplay_extend_seeded(true, None)
     }
 
     fn autoplay_extend(&mut self, force: bool) -> Vec<EngineEffect> {
+        self.autoplay_extend_seeded(force, None)
+    }
+
+    pub(super) fn force_autoplay_extend_from(&mut self, seed: &Song) -> Vec<EngineEffect> {
+        self.autoplay_extend_seeded(true, Some(seed))
+    }
+
+    fn autoplay_extend_seeded(&mut self, force: bool, seed: Option<&Song>) -> Vec<EngineEffect> {
         self.reconcile_pending_streaming_request();
         let Some(refill) = streaming::plan_autoplay_refill(
             self.streaming_active(),
@@ -115,7 +124,7 @@ impl DaemonEngine {
             force,
             self.queue.remaining(),
             self.last_extend.map(|t| t.elapsed()),
-            self.queue.current(),
+            seed.or_else(|| self.queue.current()),
         ) else {
             return Vec::new();
         };
@@ -146,12 +155,14 @@ impl DaemonEngine {
     ) -> u64 {
         self.streaming_request_seq = self.streaming_request_seq.saturating_add(1);
         let request_id = self.streaming_request_seq;
+        let detached_seed = !self.queue.contains_video_id(&seed_video_id);
         self.pending_streaming_request = Some(PendingStreamingRequest {
             request_id,
             seed_video_id,
             mode,
             source,
             queue_rev: self.queue.rev(),
+            detached_seed,
             owner_mode: self.last_mode,
             stage: StreamingRequestStage::Pool,
         });
@@ -170,7 +181,7 @@ impl DaemonEngine {
             && self.last_mode == pending.owner_mode
             && self.config.streaming.mode == pending.mode
             && self.config.effective_search().streaming_source == pending.source
-            && self.queue.contains_video_id(&pending.seed_video_id)
+            && (pending.detached_seed || self.queue.contains_video_id(&pending.seed_video_id))
     }
 
     /// Owner-turn reconciliation makes queue/mode/session mutations cancel an in-flight result

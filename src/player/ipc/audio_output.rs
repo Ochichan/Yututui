@@ -16,6 +16,8 @@ use crate::player::proto;
 use crate::player::{PlayerCmd, PlayerEvent};
 
 const SELECTION_TIMEOUT: Duration = Duration::from_secs(5);
+// The App's user-visible allocator reserves nonzero IDs; zero is deck-local replay only.
+const REPLAY_CORRELATION_ID: u64 = 0;
 
 /// One device switch owns the player command lane until its final reply arrives.
 #[derive(Default)]
@@ -62,7 +64,9 @@ pub(super) struct Selection {
 pub(super) fn is_command(cmd: &PlayerCmd) -> bool {
     matches!(
         cmd,
-        PlayerCmd::RefreshAudioDevices | PlayerCmd::SelectAudioDevice { .. }
+        PlayerCmd::RefreshAudioDevices
+            | PlayerCmd::SelectAudioDevice { .. }
+            | PlayerCmd::ReplayAudioDevice { .. }
     )
 }
 
@@ -87,6 +91,17 @@ pub(super) async fn dispatch_command(
                 state,
                 command_request_id,
                 correlation_id,
+                device,
+            )
+            .await
+        }
+        PlayerCmd::ReplayAudioDevice { device } => {
+            dispatch_selection(
+                conn,
+                emit,
+                state,
+                command_request_id,
+                REPLAY_CORRELATION_ID,
                 device,
             )
             .await
@@ -355,11 +370,7 @@ async fn dispatch_selection(
     let device = match normalize_audio_device_request(device) {
         Ok(device) => device,
         Err(error) => {
-            emit(PlayerEvent::AudioDeviceSelectionResult {
-                correlation_id,
-                device: None,
-                result: Err(error.to_owned()),
-            });
+            emit_selection_result_for(emit, correlation_id, None, Err(error.to_owned()));
             return Ok(());
         }
     };
@@ -419,9 +430,26 @@ fn forced_output_value(data: Option<&Value>) -> Option<Value> {
 }
 
 fn emit_selection_result(emit: &EventSink, selection: &Selection, result: Result<(), String>) {
+    emit_selection_result_for(
+        emit,
+        selection.correlation_id,
+        selection.device.clone(),
+        result,
+    );
+}
+
+fn emit_selection_result_for(
+    emit: &EventSink,
+    correlation_id: u64,
+    device: Option<String>,
+    result: Result<(), String>,
+) {
+    if correlation_id == REPLAY_CORRELATION_ID {
+        return;
+    }
     emit(PlayerEvent::AudioDeviceSelectionResult {
-        correlation_id: selection.correlation_id,
-        device: selection.device.clone(),
+        correlation_id,
+        device,
         result,
     });
 }

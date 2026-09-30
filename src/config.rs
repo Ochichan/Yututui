@@ -553,6 +553,7 @@ pub struct PlayerRuntimeConfig {
     pub volume: i64,
     pub cookies_file: Option<PathBuf>,
     pub gapless: bool,
+    pub overlap_enabled: bool,
     pub audio: AudioRuntimeConfig,
 }
 
@@ -637,6 +638,7 @@ impl Config {
             volume: self.volume,
             cookies_file,
             gapless: self.effective_gapless(),
+            overlap_enabled: !self.effective_local_crossfade().is_off(),
             audio: self.audio.runtime(),
         }
     }

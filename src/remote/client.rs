@@ -690,8 +690,12 @@ fn queue_human(status: &StatusSnapshot) -> String {
 
 fn settings_human(status: &StatusSnapshot) -> String {
     let settings = &status.settings;
+    let crossfade = settings.local_crossfade_secs.map_or_else(
+        || "off".to_owned(),
+        |secs| format!("{:.1}s", secs.as_secs_f64()),
+    );
     format!(
-        "autoplay={}  •  source={}  •  mode={}  •  speed={}.{}x  •  seek={}s  •  normalize={}  •  gapless={}  •  ai={}  •  radio-mode={}",
+        "autoplay={}  •  source={}  •  mode={}  •  speed={}.{}x  •  seek={}s  •  normalize={}  •  gapless={}  •  crossfade={}  •  ai={}  •  radio-mode={}",
         on_off(settings.autoplay_streaming),
         search_source_name(settings.streaming_source),
         streaming_mode_name(settings.streaming_mode),
@@ -700,6 +704,7 @@ fn settings_human(status: &StatusSnapshot) -> String {
         settings.seek_seconds,
         on_off(settings.normalize),
         on_off(settings.gapless),
+        crossfade,
         on_off(settings.ai_enabled),
         on_off(settings.radio_mode),
     )

@@ -85,51 +85,41 @@ impl App {
             });
         }
 
-        let mut cursor = mutation.cursor_pos();
-        let mut last_cursor = cursor;
+        let mut selected_load = None;
         let mut skipped = Vec::new();
-        for _ in 0..mutation.len() {
-            let Some(song) = mutation.song_at_cursor(cursor).cloned() else {
-                break;
-            };
+        let playback = mutation.select_first_playable(|song| {
+            let song = song.clone();
             match self.prepare_track_load(song.clone()) {
                 Ok(load) => {
-                    mutation.select_cursor(cursor);
-                    return self.track_transition_intent(TrackTransitionPlan {
-                        expected_queue_rev,
-                        expected_cursor,
-                        expected_video_id,
-                        mutation: Some(mutation),
-                        recorder: None,
-                        kind: TrackTransitionKind::Load {
-                            cursor: CursorTransition::MoveTo { cursor },
-                            load: Box::new(load),
-                        },
-                        outgoing,
-                        skipped,
-                        status_after_commit: None,
-                        video_follow_up: None,
-                        post_commit,
-                    });
+                    selected_load = Some(load);
+                    true
                 }
-                Err(reason) => skipped.push(SkippedCandidate { song, reason }),
+                Err(reason) => {
+                    skipped.push(SkippedCandidate { song, reason });
+                    false
+                }
             }
-            last_cursor = cursor;
-            let Some(next) = mutation.plan_next_cursor(cursor) else {
-                break;
-            };
-            cursor = next;
-        }
-        mutation.select_cursor(last_cursor);
+        });
+        let cursor = mutation.cursor_pos();
+        let kind = match playback {
+            QueueRemovalPlayback::LoadSelected => TrackTransitionKind::Load {
+                cursor: CursorTransition::MoveTo { cursor },
+                load: Box::new(selected_load.expect("playable mutation row prepared a load")),
+            },
+            QueueRemovalPlayback::Stop => TrackTransitionKind::End {
+                target_cursor: Some(cursor),
+            },
+            QueueRemovalPlayback::Unchanged => {
+                unreachable!("playable cursor selection cannot leave playback unchanged")
+            }
+        };
         self.track_transition_intent(TrackTransitionPlan {
             expected_queue_rev,
             expected_cursor,
             expected_video_id,
             mutation: Some(mutation),
             recorder: None,
-            kind: TrackTransitionKind::End {
-                target_cursor: Some(last_cursor),
-            },
+            kind,
             outgoing,
             skipped,
             status_after_commit: None,

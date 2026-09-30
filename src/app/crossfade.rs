@@ -12,8 +12,12 @@ impl App {
     }
 
     fn nudge_local_crossfade(&mut self, steps: i8) -> Vec<Cmd> {
+        let next = self.audio.local_crossfade.nudge(steps);
+        self.set_local_crossfade(next)
+    }
+
+    pub(in crate::app) fn set_local_crossfade(&mut self, next: LocalCrossfade) -> Vec<Cmd> {
         let previous = self.audio.local_crossfade;
-        let next = previous.nudge(steps);
         self.audio.local_crossfade = next;
         self.config.local_crossfade_secs = Some(next.as_secs_f64());
         self.status.kind = StatusKind::Info;
@@ -28,11 +32,11 @@ impl App {
         );
         self.dirty = true;
         let mut cmds = Vec::new();
-        if !previous.is_off() && next.is_off() {
+        if previous.is_off() != next.is_off() {
             cmds.extend(self.player_intent(
-                "retire_extra",
-                PlayerCmd::RetireExtra,
-                PlayerCommit::RetireExtra,
+                "set_overlap",
+                PlayerCmd::SetOverlap(!next.is_off()),
+                PlayerCommit::SetOverlap,
             ));
         }
         cmds.push(Cmd::Persist(PersistCmd::Config(Box::new(
@@ -84,15 +88,21 @@ impl App {
             return Vec::new();
         };
         let incoming = load.as_playback_load();
-        let crate::crossfade::TrackHandoff::Overlap { .. } = crate::crossfade::handoff(
-            self.playback.loaded.as_ref(),
-            self.playback.duration,
-            &incoming,
-            self.audio.local_crossfade,
-            self.audio.overlap_support,
-        ) else {
+        if crate::crossfade::overlap_due(crate::crossfade::OverlapDueInput {
+            paused: self.playback.paused,
+            video_overlay: self.video.proc.is_some(),
+            setting: self.audio.local_crossfade,
+            support: self.audio.overlap_support,
+            duration: self.playback.duration,
+            position,
+            already_fired: self.playback.overlap_fired,
+            outgoing: self.playback.loaded.as_ref(),
+            next: Some(&incoming),
+        })
+        .is_none()
+        {
             return Vec::new();
-        };
+        }
         self.playback.overlap_fired = true;
         self.advance_with_outgoing(true, true)
     }

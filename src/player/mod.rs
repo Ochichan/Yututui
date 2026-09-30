@@ -228,11 +228,13 @@ pub enum PlayerCmd {
         correlation_id: u64,
         device: Option<String>,
     },
+    /// Replay the selected output on a standby deck without creating an owner-facing result.
+    ReplayAudioDevice { device: Option<String> },
     /// Set a property whose exact mpv reply is a resource-lifetime boundary. The recorder uses
     /// this only for the final `stream-record` command which closes the previous source.
     TrackedProperty(TrackedProperty),
-    /// Tear the standby deck down and restore single-deck lead. Conductor-local.
-    RetireExtra,
+    /// Enable or disable local overlap. Conductor-local.
+    SetOverlap(bool),
 }
 
 #[derive(Clone)]
@@ -303,8 +305,9 @@ impl PlayerCmd {
                 | Self::SetProperty { .. }
                 | Self::RefreshAudioDevices
                 | Self::SelectAudioDevice { .. }
+                | Self::ReplayAudioDevice { .. }
                 | Self::TrackedProperty(_)
-                | Self::RetireExtra
+                | Self::SetOverlap(_)
         )
     }
 
@@ -1107,6 +1110,7 @@ pub async fn spawn<F>(
     cookies_file: Option<PathBuf>,
     gapless: bool,
     audio: crate::config::AudioRuntimeConfig,
+    overlap_enabled: bool,
 ) -> Result<(PlayerHandle, Mpv)>
 where
     F: Fn(PlayerEvent) + Send + Sync + 'static,
@@ -1117,6 +1121,7 @@ where
         cookies_file,
         gapless,
         audio,
+        overlap_enabled,
         crate::playback_target::PlaybackRouteProviderHandle::disabled(),
     )
     .await
@@ -1133,6 +1138,7 @@ pub async fn spawn_with_route_provider<F>(
     cookies_file: Option<PathBuf>,
     gapless: bool,
     audio: crate::config::AudioRuntimeConfig,
+    overlap_enabled: bool,
     route_provider: crate::playback_target::PlaybackRouteProviderHandle,
 ) -> Result<(PlayerHandle, Mpv)>
 where
@@ -1156,6 +1162,7 @@ where
         &audio.mpv,
         &cache_support.spawn_args,
     )?;
+    let standby_cache_args = cache_support.spawn_args.clone();
     let cache_runtime = cache_runtime::CacheRuntime::for_owner_process(
         cache_support,
         audio.mpv.long_form_seek_optimization,
@@ -1210,6 +1217,9 @@ where
         lead_tx,
         emit,
         audio: audio.mpv,
+        overlap_enabled,
+        cookies_file,
+        standby_cache_args,
         gate,
         intentional_close: Arc::clone(&intentional_close),
         file_generation_rx,

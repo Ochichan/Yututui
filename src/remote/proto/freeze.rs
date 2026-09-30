@@ -181,6 +181,17 @@ fn golden_v7_setting_change_lines_parse_forever() {
 }
 
 #[test]
+fn local_crossfade_setting_shape_is_additive() {
+    let change = RemoteSettingChange::LocalCrossfade { tenths: 25 };
+    let line = serde_json::to_string(&change).unwrap();
+    assert_eq!(line, r#"{"setting":"local_crossfade","tenths":25}"#);
+    assert_eq!(
+        serde_json::from_str::<RemoteSettingChange>(&line).unwrap(),
+        change
+    );
+}
+
+#[test]
 fn golden_v7_request_serialization_is_byte_stable() {
     let req = RemoteRequest {
         version: 7,
@@ -248,6 +259,7 @@ fn golden_v7_status_response_is_byte_stable() {
             seek_seconds: 10,
             normalize: false,
             gapless: true,
+            local_crossfade_secs: None,
             ai_enabled: false,
             radio_mode: false,
             long_form_seek: None,
@@ -269,6 +281,9 @@ fn golden_v7_status_response_is_byte_stable() {
         artwork: None,
         personal_sync: None,
         sleep_remaining_secs: None,
+        banned_tracks: 0,
+        banned_artists: 0,
+        seed_terms: 0,
     };
     let line = serde_json::to_string(&RemoteResponse::status(snap)).unwrap();
     assert_eq!(
@@ -306,6 +321,9 @@ fn golden_v8_status_artwork_is_additive() {
         artwork: None,
         personal_sync: None,
         sleep_remaining_secs: None,
+        banned_tracks: 0,
+        banned_artists: 0,
+        seed_terms: 0,
     };
     // Absent artwork never appears on the wire (v7 byte stability).
     let artless_line = serde_json::to_string(&artless).unwrap();
@@ -315,6 +333,20 @@ fn golden_v8_status_artwork_is_additive() {
     assert!(!artless_line.contains("track_id"));
     assert!(!artless_line.contains("position_epoch"));
     assert!(!artless_line.contains("personal_sync"));
+    assert!(!artless_line.contains("banned_tracks"));
+    assert!(!artless_line.contains("banned_artists"));
+    assert!(!artless_line.contains("seed_terms"));
+
+    let with_counts = StatusSnapshot {
+        banned_tracks: 2,
+        banned_artists: 1,
+        seed_terms: 3,
+        ..artless.clone()
+    };
+    let counts_line = serde_json::to_string(&with_counts).unwrap();
+    assert!(counts_line.contains("\"banned_tracks\":2"));
+    assert!(counts_line.contains("\"banned_artists\":1"));
+    assert!(counts_line.contains("\"seed_terms\":3"));
 
     // Present artwork serializes as a nested ref with `mime` omitted when unknown,
     // and round-trips.
@@ -330,6 +362,19 @@ fn golden_v8_status_artwork_is_additive() {
     assert!(line.contains(r#""artwork":{"key":"vid","path":"/tmp/vid.jpg"}"#));
     let back: StatusSnapshot = serde_json::from_str(&line).unwrap();
     assert_eq!(back, with_art);
+}
+
+#[test]
+fn local_crossfade_status_setting_is_additive() {
+    let mut settings = SettingsSnapshot::default();
+    let off = serde_json::to_string(&settings).unwrap();
+    assert!(!off.contains("local_crossfade_secs"));
+
+    settings.local_crossfade_secs = crate::crossfade::CrossfadeSecs::from_tenths(15);
+    let on = serde_json::to_string(&settings).unwrap();
+    assert!(on.contains("\"local_crossfade_secs\":1.5"));
+    let round_trip: SettingsSnapshot = serde_json::from_str(&on).unwrap();
+    assert_eq!(round_trip, settings);
 }
 
 #[test]

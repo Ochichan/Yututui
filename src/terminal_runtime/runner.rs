@@ -1236,10 +1236,14 @@ pub async fn run(
             // The terminal event is the old actor's final emission. Reap the completed readiness
             // producer before starting the only successor, so no startup task is ever detached.
             player_startup.cancel_and_join().await;
+            // The startup snapshot predates any crossfade toggle, and SetOverlap is only sent on
+            // a toggle, so the successor must be seeded from the live setting.
+            let mut respawn_runtime = player_runtime.clone();
+            respawn_runtime.overlap_enabled = !app.audio.local_crossfade.is_off();
             player_startup = spawn_audio_player(
                 worker_tx.clone(),
                 player_registry_dir.clone(),
-                &player_runtime,
+                &respawn_runtime,
                 shutdown.clone(),
                 open_subsonic_routes.handle(),
             );

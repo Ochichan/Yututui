@@ -156,6 +156,30 @@ impl QueueMutationPlan {
         );
         self.cursor = cursor;
     }
+
+    pub(crate) fn select_first_playable(
+        &mut self,
+        mut is_playable: impl FnMut(&Song) -> bool,
+    ) -> QueueRemovalPlayback {
+        let mut cursor = self.cursor;
+        let mut last_cursor = cursor;
+        for _ in 0..self.len() {
+            let Some(song) = self.song_at_cursor(cursor) else {
+                break;
+            };
+            if is_playable(song) {
+                self.select_cursor(cursor);
+                return QueueRemovalPlayback::LoadSelected;
+            }
+            last_cursor = cursor;
+            let Some(next) = self.plan_next_cursor(cursor) else {
+                break;
+            };
+            cursor = next;
+        }
+        self.select_cursor(last_cursor);
+        QueueRemovalPlayback::Stop
+    }
 }
 
 impl Queue {

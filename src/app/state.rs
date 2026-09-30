@@ -652,6 +652,9 @@ pub struct StreamingRuntime {
     /// Queue membership/order snapshot at refill start. Any admitted manual mutation invalidates
     /// the entire chain even when it leaves the same seed video id present.
     pub(crate) pending_queue_revision: Option<u64>,
+    /// The current refill may retain a seed removed by the same admitted queue mutation.
+    /// Request generation and queue revision still guard every async stage.
+    pub(crate) pending_detached_seed: Option<String>,
     /// An DJ Gem rerank handed off to the assistant actor, awaiting its `StreamingMsg::AiPicks`. Holds
     /// the shortlist (to validate the returned ids against) and the local pick (the fallback).
     pub pending_rerank: Option<PendingRerank>,

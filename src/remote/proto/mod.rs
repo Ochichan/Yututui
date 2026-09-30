@@ -28,7 +28,7 @@ mod session;
 
 pub(crate) use command::RequestRetryClass;
 pub use command::{
-    DEFAULT_EXPORT_SCHEMA, REMOTE_MAX_EXPORT_DIRECTORY_BYTES, REMOTE_MAX_QUERY_BYTES,
+    BanTarget, DEFAULT_EXPORT_SCHEMA, REMOTE_MAX_EXPORT_DIRECTORY_BYTES, REMOTE_MAX_QUERY_BYTES,
     REMOTE_MAX_TOPICS, REMOTE_MAX_TRACK_IDS, RemoteCommand, RemoteSettingChange,
 };
 pub use model::{ArtworkRef, LyricLineModel, TrackModel, WhyGemModel};
@@ -248,9 +248,21 @@ pub struct StatusSnapshot {
     /// armed. Additive (post-v8); skip-serialized so older shapes stay byte-identical.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sleep_remaining_secs: Option<u64>,
+    /// Additive session-only autoplay steering counts. Zero values are omitted, and older owners
+    /// that do not send these fields read as zero.
+    #[serde(default, skip_serializing_if = "is_zero_usize")]
+    pub banned_tracks: usize,
+    #[serde(default, skip_serializing_if = "is_zero_usize")]
+    pub banned_artists: usize,
+    #[serde(default, skip_serializing_if = "is_zero_usize")]
+    pub seed_terms: usize,
 }
 
 fn is_zero_u64(value: &u64) -> bool {
+    *value == 0
+}
+
+fn is_zero_usize(value: &usize) -> bool {
     *value == 0
 }
 
@@ -275,6 +287,13 @@ pub struct SettingsSnapshot {
     pub seek_seconds: u16,
     pub normalize: bool,
     pub gapless: bool,
+    /// Local-file crossfade in seconds. Absent means off, preserving legacy status bytes.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "local_crossfade_secs"
+    )]
+    pub local_crossfade_secs: Option<crate::crossfade::CrossfadeSecs>,
     pub ai_enabled: bool,
     pub radio_mode: bool,
     /// Privacy-safe runtime diagnostics from a daemon owner. Standalone and older owners omit it.
@@ -303,9 +322,42 @@ impl SettingsSnapshot {
             seek_seconds: config.effective_seek_seconds().round() as u16,
             normalize: config.effective_normalize(),
             gapless: config.effective_gapless(),
+            local_crossfade_secs: match config.effective_local_crossfade() {
+                crate::crossfade::LocalCrossfade::Off => None,
+                crate::crossfade::LocalCrossfade::On(secs) => Some(secs),
+            },
             ai_enabled: config.effective_ai_enabled(),
             radio_mode,
             long_form_seek: None,
+        }
+    }
+}
+
+mod local_crossfade_secs {
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    use crate::crossfade::{CrossfadeSecs, LocalCrossfade};
+
+    pub fn serialize<S>(value: &Option<CrossfadeSecs>, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match value {
+            Some(secs) => serializer.serialize_f64(secs.as_secs_f64()),
+            None => serializer.serialize_none(),
+        }
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Option<CrossfadeSecs>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let Some(secs) = Option::<f64>::deserialize(deserializer)? else {
+            return Ok(None);
+        };
+        match LocalCrossfade::from_secs(secs) {
+            LocalCrossfade::Off => Ok(None),
+            LocalCrossfade::On(secs) => Ok(Some(secs)),
         }
     }
 }
@@ -634,6 +686,9 @@ mod tests {
         assert_eq!(snap.elapsed_ms, None);
         assert_eq!(snap.duration_ms, None);
         assert_eq!(snap.artwork, None);
+        assert_eq!(snap.banned_tracks, 0);
+        assert_eq!(snap.banned_artists, 0);
+        assert_eq!(snap.seed_terms, 0);
     }
 
     #[test]
@@ -692,6 +747,9 @@ mod tests {
             artwork: None,
             personal_sync: None,
             sleep_remaining_secs: None,
+            banned_tracks: 0,
+            banned_artists: 0,
+            seed_terms: 0,
         };
         let line = snap.human_line();
         assert!(line.contains("nothing playing"));
@@ -699,8 +757,8 @@ mod tests {
     }
 
     #[test]
-    fn status_json_exposes_owner_mode() {
-        let snap = StatusSnapshot {
+    fn status_json_exposes_owner_mode_and_additive_taste_counts() {
+        let mut snap = StatusSnapshot {
             title: None,
             artist: None,
             paused: false,
@@ -722,9 +780,23 @@ mod tests {
             artwork: None,
             personal_sync: None,
             sleep_remaining_secs: None,
+            banned_tracks: 0,
+            banned_artists: 0,
+            seed_terms: 0,
         };
-        let line = serde_json::to_string(&RemoteResponse::status(snap)).unwrap();
+        let line = serde_json::to_string(&RemoteResponse::status(snap.clone())).unwrap();
         assert!(line.contains("\"owner_mode\":\"daemon\""), "got {line}");
+        assert!(!line.contains("banned_tracks"), "got {line}");
+        assert!(!line.contains("banned_artists"), "got {line}");
+        assert!(!line.contains("seed_terms"), "got {line}");
+
+        snap.banned_tracks = 2;
+        snap.banned_artists = 1;
+        snap.seed_terms = 3;
+        let line = serde_json::to_string(&RemoteResponse::status(snap)).unwrap();
+        assert!(line.contains("\"banned_tracks\":2"), "got {line}");
+        assert!(line.contains("\"banned_artists\":1"), "got {line}");
+        assert!(line.contains("\"seed_terms\":3"), "got {line}");
     }
 
     #[test]

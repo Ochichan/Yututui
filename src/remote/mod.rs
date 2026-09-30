@@ -76,7 +76,8 @@ pub(crate) fn reply_timeout_for(command: &proto::RemoteCommand) -> Duration {
         | RemoteCommand::QueueRemove { .. }
         | RemoteCommand::QueuePlayIfRevision { .. }
         | RemoteCommand::QueueRemoveIfRevision { .. }
-        | RemoteCommand::ResumeSession => PLAYBACK_REPLY_TIMEOUT,
+        | RemoteCommand::ResumeSession
+        | RemoteCommand::Ban { .. } => PLAYBACK_REPLY_TIMEOUT,
         RemoteCommand::ExportPersonalData { .. } => PERSONAL_EXPORT_REPLY_TIMEOUT,
         RemoteCommand::SyncNow | RemoteCommand::SyncRevokeDevice { .. } => {
             MANUAL_SYNC_REPLY_TIMEOUT

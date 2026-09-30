@@ -288,6 +288,18 @@ impl SessionTaste {
         }
     }
 
+    pub fn banned_track_count(&self) -> usize {
+        self.banned_tracks.len()
+    }
+
+    pub fn banned_artist_count(&self) -> usize {
+        self.banned_artists.len()
+    }
+
+    pub fn seed_term_count(&self) -> usize {
+        self.seeds.len()
+    }
+
     pub fn epoch(&self) -> u64 {
         self.epoch
     }

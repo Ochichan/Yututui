@@ -9,6 +9,17 @@ fn defaults_have_full_volume() {
 }
 
 #[test]
+fn player_runtime_carries_the_local_crossfade_enablement() {
+    assert!(!Config::default().player_runtime(None).overlap_enabled);
+
+    let configured = Config {
+        local_crossfade_secs: Some(1.5),
+        ..Config::default()
+    };
+    assert!(configured.player_runtime(None).overlap_enabled);
+}
+
+#[test]
 fn load_from_preserves_unloadable_config_before_defaulting() {
     let dir = std::env::temp_dir().join(format!("ytm-cfg-load-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);

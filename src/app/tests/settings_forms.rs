@@ -482,7 +482,7 @@ fn settings_reset_all_turns_local_crossfade_off() {
     assert!(
         cmds.iter().any(|cmd| {
             cmd.player_commands()
-                .any(|command| matches!(command, PlayerCmd::RetireExtra))
+                .any(|command| matches!(command, PlayerCmd::SetOverlap(false)))
         }),
         "saving Off retires the extra deck"
     );
@@ -510,9 +510,9 @@ fn saving_an_already_off_crossfade_does_not_retire_the_extra_deck() {
     assert!(
         !cmds.iter().any(|cmd| {
             cmd.player_commands()
-                .any(|command| matches!(command, PlayerCmd::RetireExtra))
+                .any(|command| matches!(command, PlayerCmd::SetOverlap(false)))
         }),
-        "RetireExtra belongs only to an enabled-to-Off transition"
+        "SetOverlap(false) belongs only to an enabled-to-Off transition"
     );
 }
 
