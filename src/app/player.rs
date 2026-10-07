@@ -15,6 +15,10 @@ pub enum PlayerMsg {
     Duration(Option<f64>),
     /// mpv pause state changed.
     Paused(bool),
+    /// Confirmed seekability for the current file (`None` remains unknown).
+    Seekable(Option<bool>),
+    /// mpv is paused for cache rather than by user transport intent.
+    Buffering(bool),
     /// mpv volume changed (0-100, but mpv can report fractional/over-100 values).
     Volume(f64),
     /// mpv stream metadata changed. Live radio streams often expose ICY now-playing titles here.
@@ -1067,8 +1071,9 @@ impl App {
         let Some(song) = self.queue.current().cloned() else {
             return Vec::new();
         };
+        let mut cmds = Vec::new();
         if song.is_radio_station() {
-            return Vec::new();
+            return cmds;
         }
         let artist_key = signals::normalize_artist(&song.artist);
         let now = signals::unix_now();
@@ -1090,7 +1095,7 @@ impl App {
             };
             self.record_session_event(&artist_key, outcome, completion);
         }
-        let mut cmds = vec![Cmd::Persist(PersistCmd::Signals)];
+        cmds.push(Cmd::Persist(PersistCmd::Signals));
         // A skip just landed in the session log — if the listener is rejecting the active
         // station's direction, this may kick off an off-path feedback summary (self-gated).
         if let Some(feedback) = self.maybe_summarize_feedback() {

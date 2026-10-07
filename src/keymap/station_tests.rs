@@ -8,6 +8,7 @@ fn station_may_shadow_global_and_cannot_clash_inside_itself() {
             KeyContext::LocalDeck,
             KeyContext::Station,
             KeyContext::StationCard,
+            KeyContext::Listening,
         ]
     );
     let km = KeyMap::default();

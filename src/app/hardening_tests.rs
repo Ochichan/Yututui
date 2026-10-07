@@ -220,11 +220,11 @@ fn art_overlay_mask_bits_are_unique_and_fit_u32() {
     }
     assert_eq!(
         ART_OVERLAY_BITS.len(),
-        21,
+        22,
         "all assigned u32 overlay bits are inventoried"
     );
     assert!(
-        seen & super::artwork::ART_OVERLAY_STATION_CARD_BIT != 0,
+        seen & super::artwork::ART_OVERLAY_LISTENING_BIT != 0,
         "highest allocated bit is tracked"
     );
     assert_eq!(

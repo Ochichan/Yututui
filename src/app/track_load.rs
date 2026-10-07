@@ -59,6 +59,7 @@ impl App {
     pub(in crate::app) fn commit_prepared_track_load(
         &mut self,
         load: PreparedTrackLoad,
+        listening_reason: crate::listening::ListeningLoadReason,
     ) -> Vec<Cmd> {
         self.playback.loaded = Some(load.as_playback_load());
         let PreparedTrackLoad {
@@ -96,6 +97,7 @@ impl App {
         } else {
             self.status.text.clear();
         }
+        self.begin_listening_track(&song, listening_reason);
         self.library_mut().record_play(&song);
         if !song.is_radio_station() {
             self.note_session_activity();
@@ -135,6 +137,8 @@ impl App {
     }
 
     pub(in crate::app) fn commit_playback_cleared(&mut self) -> Vec<Cmd> {
+        let effects = self.snapshot_listening_progress();
+        self.clear_listening_track();
         self.supersede_source_recovery();
         self.playback.time_pos = None;
         self.playback.time_pos_at = None;
@@ -151,7 +155,7 @@ impl App {
         self.prefetch.loaded_video_id = None;
         self.clear_artwork();
         self.dirty = true;
-        Vec::new()
+        effects
     }
 
     pub(in crate::app) fn log_skipped_candidates(&mut self, skipped: &[SkippedCandidate]) {

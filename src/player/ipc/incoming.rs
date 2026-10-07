@@ -744,13 +744,16 @@ fn dispatch_incoming(line: &str, emit: &EventSink, state: &mut DispatchState) {
             "paused-for-cache" => {
                 if let Some(paused) = value.as_bool() {
                     super::diagnostics::paused_for_cache(state.active_file_generation, paused);
+                    emit_file_event(emit, state, PlayerEvent::Buffering(paused));
                 }
             }
             "demuxer-via-network" => {
                 observe_cache_network(state, value.as_bool());
             }
             "seekable" => {
-                observe_cache_seekable(state, value.as_bool());
+                let seekable = value.as_bool();
+                observe_cache_seekable(state, seekable);
+                emit_file_event(emit, state, PlayerEvent::Seekable(seekable));
             }
             "partially-seekable" => {
                 observe_cache_partially_seekable(state, value.as_bool());
@@ -1092,4 +1095,3 @@ fn dispatch_incoming(line: &str, emit: &EventSink, state: &mut DispatchState) {
         MpvIncoming::ClientMessage { .. } | MpvIncoming::Other => {}
     }
 }
-

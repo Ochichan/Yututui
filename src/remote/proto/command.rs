@@ -145,6 +145,24 @@ pub enum RemoteCommand {
     Ban {
         target: BanTarget,
     },
+    /// Listening-memory administration is daemon-owned and explicitly activation-gated.
+    Listening {
+        action: ListeningRemoteAction,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "action", rename_all = "snake_case")]
+pub enum ListeningRemoteAction {
+    Enable,
+    List,
+    BookmarkAdd { label: String },
+    BookmarkJump { bookmark_id: String },
+    BookmarkDelete { bookmark_id: String },
+    Restart,
+    PresetSave { name: String },
+    PresetLoad { preset_id: String },
+    PresetDelete { preset_id: String },
 }
 
 impl RemoteCommand {
@@ -165,7 +183,10 @@ impl RemoteCommand {
         match self {
             // The status read re-executes freshly on a same-ID retry — replaying a
             // retained snapshot would pin stale data.
-            RemoteCommand::Status => RequestRetryClass::ReexecuteReadOnly,
+            RemoteCommand::Status
+            | RemoteCommand::Listening {
+                action: ListeningRemoteAction::List,
+            } => RequestRetryClass::ReexecuteReadOnly,
             RemoteCommand::Next
             | RemoteCommand::Prev
             | RemoteCommand::TogglePause
@@ -193,7 +214,8 @@ impl RemoteCommand {
             | RemoteCommand::QueueMove { .. }
             | RemoteCommand::QueueClearUpcoming { .. }
             | RemoteCommand::Sleep { .. }
-            | RemoteCommand::Ban { .. } => RequestRetryClass::RetainedOutcome,
+            | RemoteCommand::Ban { .. }
+            | RemoteCommand::Listening { .. } => RequestRetryClass::RetainedOutcome,
         }
     }
 
@@ -201,7 +223,13 @@ impl RemoteCommand {
     /// The status read is excluded so a lost fetch reply surfaces as `timeout`, never as the
     /// alarming `confirmation_lost`.
     pub(crate) fn requires_confirmation(&self) -> bool {
-        !matches!(self, RemoteCommand::Status)
+        !matches!(
+            self,
+            RemoteCommand::Status
+                | RemoteCommand::Listening {
+                    action: ListeningRemoteAction::List
+                }
+        )
     }
 
     pub fn validate(&self) -> Result<(), RemoteCommandValidationError> {
@@ -228,7 +256,7 @@ impl RemoteCommand {
             }
             RemoteCommand::ExportPersonalData { directory, schema } => {
                 validate_export_directory(directory)?;
-                if schema.is_some_and(|schema| !matches!(schema, 1 | 2)) {
+                if schema.is_some_and(|schema| !(1..=3).contains(&schema)) {
                     return Err(validation_error("bad_export_schema"));
                 }
                 Ok(())
@@ -248,6 +276,25 @@ impl RemoteCommand {
                 minutes: Some(minutes),
             } if *minutes > yututui_core::sleep_timer::SLEEP_MAX_MINUTES => {
                 Err(validation_error("bad_sleep_minutes"))
+            }
+            RemoteCommand::Listening {
+                action:
+                    ListeningRemoteAction::BookmarkAdd { label }
+                    | ListeningRemoteAction::PresetSave { name: label },
+            } if invalid_listening_label(label) => Err(validation_error("bad_listening_label")),
+            RemoteCommand::Listening {
+                action:
+                    ListeningRemoteAction::BookmarkJump { bookmark_id }
+                    | ListeningRemoteAction::BookmarkDelete { bookmark_id },
+            } if crate::listening::BookmarkId::new(bookmark_id.clone()).is_err() => {
+                Err(validation_error("bad_bookmark_id"))
+            }
+            RemoteCommand::Listening {
+                action:
+                    ListeningRemoteAction::PresetLoad { preset_id }
+                    | ListeningRemoteAction::PresetDelete { preset_id },
+            } if crate::listening::DjPresetId::new(preset_id.clone()).is_err() => {
+                Err(validation_error("bad_preset_id"))
             }
             _ => Ok(()),
         }
@@ -274,7 +321,8 @@ fn validate_query(query: &str) -> Result<(), RemoteCommandValidationError> {
 
 /// Export schema used when a remote `ExportPersonalData` command omits the field: the newest
 /// personal-state export schema, so older clients keep receiving current exports.
-pub const DEFAULT_EXPORT_SCHEMA: u32 = 2;
+/// Internal sentinel for an omitted wire field: select the newest format the loaded state needs.
+pub const DEFAULT_EXPORT_SCHEMA: u32 = 0;
 
 fn validate_export_directory(directory: &str) -> Result<(), RemoteCommandValidationError> {
     if directory.is_empty() {
@@ -294,6 +342,27 @@ fn validate_export_directory(directory: &str) -> Result<(), RemoteCommandValidat
 
 fn forbidden_command_char(ch: char) -> bool {
     ch == '\0' || ch.is_control()
+}
+
+fn invalid_listening_label(value: &str) -> bool {
+    let lower = value.to_ascii_lowercase();
+    value.trim().is_empty()
+        || value.trim() != value
+        || value.chars().count() > 256
+        || value.chars().any(forbidden_command_char)
+        || lower.contains("http://")
+        || lower.contains("https://")
+        || lower.contains("file://")
+        || value.split_whitespace().any(|word| {
+            let normalized = word.to_ascii_lowercase();
+            let word = normalized.strip_prefix("local:").unwrap_or(&normalized);
+            word.starts_with('/')
+                || word.starts_with("~/")
+                || word.starts_with("\\\\")
+                || (word.len() >= 3
+                    && word.as_bytes()[1] == b':'
+                    && matches!(word.as_bytes()[2], b'/' | b'\\'))
+        })
 }
 
 /// A single persisted/live setting mutation from companion surfaces such as the tray panel.

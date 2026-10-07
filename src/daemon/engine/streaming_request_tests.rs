@@ -244,3 +244,35 @@ async fn duplicate_pool_result_during_preflight_does_not_consume_the_generation(
     assert!(!engine.streaming_pending);
     assert!(engine.queue.contains_video_id("preflight-pick"));
 }
+
+#[tokio::test]
+async fn idle_autoplay_refill_does_not_apply_a_saved_resume_point() {
+    let mut engine = tests::engine_with_queue(&[]);
+    assert!(engine.enable_listening_records().ok);
+    let mut pick = song("idle-auto");
+    pick.duration = "30:00".to_owned();
+    pick.duration_secs = Some(1_800);
+    let track =
+        crate::listening::portable_track(&pick, engine.config.listening_local_scope.as_deref());
+    let device_id = crate::personal_state::listening_device_id(
+        &engine.personal_state,
+        engine.personal_state_device_id.as_ref(),
+    )
+    .unwrap();
+    engine
+        .commit_listening_change(crate::listening::ListeningOperation::SetResume {
+            point: crate::listening::ResumePoint {
+                track,
+                position_ms: 120_000,
+                provenance: crate::listening::ResumeProvenance {
+                    playback_session_id: engine.listening.playback_session_id().to_owned(),
+                    device_id,
+                },
+            },
+        })
+        .unwrap();
+    let _player_rx = tests::install_accepting_player(&mut engine);
+
+    assert!(engine.extend_queue_from_picks(vec![pick]).await.is_empty());
+    assert!(!engine.listening.has_pending_seek());
+}

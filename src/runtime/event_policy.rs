@@ -151,6 +151,14 @@ pub(super) fn player_msg_policy(msg: &PlayerMsg) -> EventPolicy {
             lane: Lane::Telemetry,
             key: Key::PlayerPaused,
         },
+        PlayerMsg::Seekable(_) => EventPolicy::CoalesceLatest {
+            lane: Lane::Telemetry,
+            key: Key::PlayerSeekable,
+        },
+        PlayerMsg::Buffering(_) => EventPolicy::CoalesceLatest {
+            lane: Lane::Telemetry,
+            key: Key::PlayerBuffering,
+        },
         PlayerMsg::Volume(_) => EventPolicy::CoalesceLatest {
             lane: Lane::Telemetry,
             key: Key::PlayerVolume,

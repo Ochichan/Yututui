@@ -32,6 +32,14 @@ pub(crate) fn player_event_policy(event: &crate::player::PlayerEvent) -> EventPo
             lane: Lane::Telemetry,
             key: Key::PlayerPaused,
         },
+        crate::player::PlayerEvent::Seekable(_) => EventPolicy::CoalesceLatest {
+            lane: Lane::Telemetry,
+            key: Key::PlayerSeekable,
+        },
+        crate::player::PlayerEvent::Buffering(_) => EventPolicy::CoalesceLatest {
+            lane: Lane::Telemetry,
+            key: Key::PlayerBuffering,
+        },
         crate::player::PlayerEvent::Volume(_) => EventPolicy::CoalesceLatest {
             lane: Lane::Telemetry,
             key: Key::PlayerVolume,

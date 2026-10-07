@@ -6,7 +6,7 @@ use super::{
     EXPORT_KIND, EXPORT_PROFILE, ExportSnapshot, PortableCatalogId, PortableTrackV1, SearchSource,
 };
 
-/// Decode either a legacy v1 portable export or a v2 personal-state bundle.
+/// Decode either a legacy v1 portable export or a personal-state bundle.
 ///
 /// The caller owns the 192 MiB input cap. This decoder rejects exports whose public privacy
 /// metadata claims credentials, paths, or playable URLs are present.
@@ -21,14 +21,16 @@ pub fn decode_personal_state_export(
 
     let header: Header = serde_json::from_slice(bytes)?;
     match header.schema_version {
-        2 if header.kind == crate::personal_state::PERSONAL_STATE_KIND => decode_v2(bytes),
+        2 | 3 if header.kind == crate::personal_state::PERSONAL_STATE_KIND => {
+            decode_personal_state(bytes)
+        }
         1 if header.kind == EXPORT_KIND => decode_v1(bytes),
-        1 | 2 => Err(crate::personal_state::PersonalStateError::UnsupportedKind),
+        1..=3 => Err(crate::personal_state::PersonalStateError::UnsupportedKind),
         schema => Err(crate::personal_state::PersonalStateError::UnsupportedSchema(schema)),
     }
 }
 
-fn decode_v2(
+fn decode_personal_state(
     bytes: &[u8],
 ) -> Result<crate::personal_state::PersonalStateV2, crate::personal_state::PersonalStateError> {
     let state: crate::personal_state::PersonalStateV2 = serde_json::from_slice(bytes)?;

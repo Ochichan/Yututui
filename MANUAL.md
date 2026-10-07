@@ -1,12 +1,11 @@
-# The YuTuTui! Manual
+# The YuTuTui! manual
 
-**English** · [한국어](MANUAL.ko.md) · [日本語](MANUAL.ja.md)
+English · [한국어](MANUAL.ko.md) · [日本語](MANUAL.ja.md)
 
-This is the friendly, take-your-time guide to YuTuTui!. It's written for people who don't live in a terminal — no jargon, every step spelled out. (If you *do* live in a terminal, the [README](README.md) has the fast version.)
+Press `?` anywhere in the app to open the key guide. It uses your current keybindings.
+The [README](README.md) has a shorter command reference.
 
-One thing before anything else: **you can always press `?` inside the app.** It opens a cheat sheet of every key, and it always matches *your* settings. If you remember one thing from this manual, remember `?`.
-
-[DJ Gem & Momoring](#dj-gem) · [Atlas globe](#atlas-mode) · [All chapters](#contents)
+[DJ Gem and Momoring](#dj-gem) · [Atlas globe](#atlas-mode) · [All chapters](#contents)
 
 <a id="contents"></a>
 
@@ -14,14 +13,14 @@ One thing before anything else: **you can always press `?` inside the app.** It 
 <summary>Contents</summary>
 
 1. [First steps](#chapter-1)
-2. [Everyday music (the normal mode)](#chapter-2)
-3. [Radio mode — the app becomes a radio tuner](#chapter-3)
-4. [Local Deck — your own music, beautifully](#chapter-4)
-5. [Moving in from Spotify — the full, gentle walkthrough](#chapter-5)
-6. [Backing up your personal data](#chapter-6)
-7. [Keeping two computers in step](#chapter-7)
-8. [Playing from your own music server](#chapter-8)
-9. [When something goes wrong (anywhere)](#chapter-9)
+2. [Everyday music](#chapter-2)
+3. [Radio mode](#chapter-3)
+4. [Local Deck](#chapter-4)
+5. [Moving from Spotify](#chapter-5)
+6. [Backing up personal data](#chapter-6)
+7. [Syncing computers](#chapter-7)
+8. [Playing from a music server](#chapter-8)
+9. [Troubleshooting](#chapter-9)
 
 </details>
 
@@ -31,139 +30,281 @@ One thing before anything else: **you can always press `?` inside the app.** It 
 
 ## 1. First steps
 
-### Install and open it
+### Install and open YuTuTui!
 
-Follow the one-line install for your computer in the [README](README.md#install). On Windows,
-you can now choose **YuTuTui!** in the Start Menu; it opens Windows Terminal and the player for
-you. The tray icon's **Open Player** action does the same. On the other systems, open your terminal
-app — that's the window where you type commands:
+Follow the instructions for your system in the [README](README.md#install). On Windows, choose
+**YuTuTui!** from the Start Menu. This opens Windows Terminal and starts the player. The tray
+icon's **Open Player** action does the same.
 
-- **macOS** — the app called *Terminal* (or iTerm2 if you have it)
-- **Windows** — *Windows Terminal* from the Start menu
-- **Linux** — you know which one you like
-
-Type this and press Enter:
+On macOS or Linux, open a terminal. Windows users can also open Windows Terminal and run:
 
 ```sh
 ytt
 ```
 
-That's the whole launch. The player appears in the window.
-
-The first launch points to Search for ten seconds; press its displayed key (normally `s`) or click
-**Search**. If mpv, yt-dlp, or ffmpeg is missing, use the setup card's copy/guide buttons and choose
-**Check again** after installing it. The technical details remain available through `ytt doctor`.
+For ten seconds after the first launch, the app points to Search. Press the displayed Search key,
+normally `s`, or click **Search**. If mpv, yt-dlp, or ffmpeg is missing, use the setup card's copy
+or guide buttons. Install the missing program, then choose **Check again**. Run `ytt doctor` for
+the full setup report.
 
 <details>
 <summary>Terminal closing and background playback</summary>
 
-On POSIX systems, guarded playback requires mpv 0.33 or newer. The interactive `ytt` player exits
-immediately for a definitive Unix terminal or multiplexer loss. An ambiguous cursor reply or
-unusable multiplexer query must be observed independently twice before shutdown. A liveness
-output-gate conflict defers the probe; owner frame/control output has a separate seven-second
-deadline, and a worker that
-never returns is bounded by an eight-second watchdog. Retained Windows ConPTY/tmux-control brokers and repeated same-type tmux/Screen/Zellij nesting
-cannot be distinguished from an attached client; use `ytt daemon` or a host-side lifetime
-supervisor/lease there. The supported scope is in [terminal compatibility](docs/terminal-compatibility.md#terminal-lifetime-detection).
+On POSIX systems, guarded playback requires mpv 0.33 or newer. The interactive `ytt` process exits
+when it confirms that its terminal or multiplexer is gone. Retained Windows ConPTY or tmux-control
+brokers can look like attached clients, as can repeated nesting of tmux, Screen, or Zellij. Use
+`ytt daemon` or a host-side lifetime supervisor or lease in those cases. See
+[terminal compatibility](docs/terminal-compatibility.md#terminal-lifetime-detection) for the
+supported cases.
 
 </details>
 
-### Play your first song
+### Play a song
 
-1. Press **`s`** — a search box opens.
-2. Type a song or artist name, press **`Enter`**. In any text field, **`←`** / **`→`** moves the cursor by one character and **`Ctrl+←`** / **`Ctrl+→`** by one word; **`Backspace`** deletes one character and **`Ctrl+Backspace`** the previous word.
-   On an older or multiplexed terminal that sends `Ctrl+Backspace` and `Ctrl+H` as the same code, YuTuTui! safely reserves that ambiguous code for word deletion (and ignores it outside text fields) while the Delete Word binding is still at its default. See [keyboard input modes](docs/terminal-compatibility.md#keyboard-input-modes).
-3. Move down the results with **`↓`**, press **`Enter`** on the one you want.
+1. Press `s` to open Search.
+2. Type a song or artist, then press `Enter`.
+3. Use `↓` to select a result and press `Enter` to play it.
 
-Music. If instead you got an error, type `ytt doctor` in the terminal — it checks your setup and tells you, in plain words, what to fix.
+Text fields support these editing keys:
 
-**Looking for more than songs?** In the search box, **`Ctrl+P`** cycles what it searches: **songs → YouTube playlists → artists**. A playlist row plays, queues (`\`) or imports (`p`) the whole list; an artist row opens that artist's page — top songs and albums/singles — where `Enter` plays and `Esc` returns to your results.
+| Key | Action |
+| --- | --- |
+| `←` / `→` | Move one character |
+| `Ctrl+←` / `Ctrl+→` | Move one word |
+| `Backspace` | Delete one character |
+| `Ctrl+Backspace` | Delete the previous word |
 
-**Brand new to this?** In **Settings → General**, switch on **Beginner Mode** — the next launch adds an interactive, nine-step walkthrough that points out each part as you go. Its very first card asks which language you'd like: one button per language — **English**, **한국어**, **日本語** — each written in its own script, and highlighting an option previews the card in that language. Press `Enter` and the rest of the tour, and the whole app, switch to your pick (change it any time under **Settings → General → Language**). In retro mode that step simply explains the UI stays English and offers Continue / Skip.
+Some older or multiplexed terminals send the same code for `Ctrl+Backspace` and `Ctrl+H`. While
+the Delete Word binding is at its default, YuTuTui! treats that code as word deletion inside text
+fields and ignores it elsewhere. See
+[keyboard input modes](docs/terminal-compatibility.md#keyboard-input-modes).
+
+In Search, `Ctrl+P` cycles among songs, YouTube playlists, and artists. A playlist row can play,
+queue with `\`, or import with `p` the entire playlist. An artist row opens the artist page, which
+lists top songs, albums, and singles. Press `Enter` to play and `Esc` to return to the results.
+
+### Beginner mode and language
+
+Open **Settings → General** and enable **Beginner Mode** to start a nine-step walkthrough on the
+next launch. Its first card offers **English**, **한국어**, and **日本語**. Moving between the choices
+previews the card in that language. Press `Enter` to apply the choice to the walkthrough and the
+rest of the app. You can later change it under **Settings → General → Language**.
+
+In retro mode, the language card explains that the interface remains in English and offers
+Continue or Skip.
 
 ### The five screens
 
-YuTuTui! is five screens, each one key away:
-
-| Key | Screen | What it's for |
+| Default key | Screen | Purpose |
 | --- | --- | --- |
-| — | **Player** | The now-playing screen: album art, lyrics, progress bar |
-| `s` | **Search** | Find songs, albums, artists, stations |
-| `l` | **Library** | Your favorites, history, downloads and playlists |
-| `o` | **Settings** | Everything adjustable, including accounts |
-| `g` | **DJ Gem** | Ask for music in plain words *(optional, see below)* |
+| None | **Player** | Now playing, album art, lyrics, and progress |
+| `s` | **Search** | Songs, albums, artists, and stations |
+| `l` | **Library** | Favorites, history, downloads, and playlists |
+| `o` | **Settings** | Playback, accounts, appearance, and other options |
+| `g` | **DJ Gem** | Optional natural-language music requests |
 
-The keys below are defaults outside text fields. Radio and Local Deck change the Player; Atlas is a globe view inside Radio mode. In Atlas, some keys have different meanings — see the [Atlas controls](#atlas-mode).
+These defaults apply outside text fields. Radio mode and Local Deck replace the normal Player.
+Atlas is a globe view within Radio mode and has its own controls. `Esc` usually moves back one
+level. Mouse scrolling can move a list, change volume, or zoom Atlas, depending on the pointer's
+location.
 
-`Esc` generally takes you back a step. Mouse actions depend on what is under the pointer: scrolling can move a list, change volume, or zoom the Atlas globe.
+### The player bar
 
-### The player bar follows you
+The player bar remains at the bottom of every screen. It shows the title, progress, transport
+controls, and status, so you can pause or seek while viewing Search or Library. On screens other
+than Player, press `Shift+B` or click the `▼` or `▲` by the footer mouse hint to collapse or restore
+the bar. The Player screen always shows it.
 
-The now-playing controls — title, progress bar, transport, status — live in a bar docked to
-the bottom of **every** screen, so you can pause or seek from Search or Library without
-leaving. Press `Shift+B` (or click the `▼` / `▲` next to the footer's mouse hint) to tuck the bar
-away on those screens and reclaim the rows; the Player screen always keeps it. If you
-prefer the classic look with the controls at the top of the Player screen only, switch
-*Settings › General › Player bar position* to **Top**.
+To keep the controls only at the top of Player, set **Settings → General → Player bar position**
+to **Top**.
 
-Shrink the window far enough (below ~32×14 cells) and the whole app becomes a tiny
-miniplayer — title, progress, transport — then springs back to the full layout as soon as
-the window grows again. Nothing to configure; it just follows the window.
+Below about 32 by 14 terminal cells, YuTuTui! switches to a small layout with the title, progress,
+and transport controls. The full layout returns when the window grows.
 
 ---
 
 <a id="chapter-2"></a>
 
-## 2. Everyday music (the normal mode)
+## 2. Everyday music
 
-### The keys you'll actually use
+### Playback keys
 
-| Key | Does |
+| Key | Action |
 | --- | --- |
-| `Space` | Play / pause |
-| `,` / `.` | Previous / next song |
-| `←` / `→` | Rewind / fast-forward |
-| `↑` / `↓` | Volume |
-| `f` | Cycle the current song through like / dislike / unrated |
-| `x` / `r` | Shuffle / cycle repeat |
-| `c` | Show the queue (what plays next) |
-| `Shift+L` | Lyrics, synced to the music; click a visible line to seek there |
-| `z` / `Shift+Z` | Show lyrics 0.1s earlier / later |
-| `v` | Music video in a floating window |
-| `!` / `@` | Jump to the previous / next chapter (long mixes and podcasts) |
-| `Shift+S` | Sleep timer: type minutes (or `off`), the volume fades out, playback pauses |
-| `w` | Explain the selected queue recommendation, or the current track |
+| `Space` | Play or pause |
+| `,` / `.` | Previous or next song |
+| `←` / `→` | Rewind or fast-forward |
+| `↑` / `↓` | Change volume |
+| `f` | Cycle the current song through like, dislike, and unrated |
+| `x` / `r` | Toggle shuffle or cycle repeat |
+| `c` | Show the queue |
+| `Shift+L` | Show synchronized lyrics |
+| `z` / `Shift+Z` | Show lyrics 0.1 seconds earlier or later |
+| `v` | Open the music video in a floating window |
+| `!` / `@` | Previous or next chapter in a long mix or podcast |
+| `Shift+S` | Set the sleep timer in minutes, or type `off` |
+| `w` | Explain the selected queue recommendation or current track |
 | `Ctrl+Q` | Quit |
 
-When synced lyrics load, **`[ − 0.0s + ]`** appears at the lower right for three seconds. After it folds to **`[±]`**, click the handle to reopen it for three seconds; **`−/+`** fine-tunes the lyrics earlier / later in 0.1-second steps. Clicking any visible lyric line seeks to its synced position.
+When synchronized lyrics load, `[ − 0.0s + ]` appears at the lower right for three seconds. It
+then folds into `[±]`. Click that handle to reopen the control for three seconds. Use `−` or `+`
+to change the timing by 0.1 seconds. Clicking a visible lyric line seeks to its timestamp.
 
-**Sound going to the wrong speakers?** Open **Settings → Playback → Audio output** to pick from the outputs the app detects on your machine; **Audio backend** exposes the underlying mpv audio options.
+Open **Settings → Playback → Audio output** to select an output that YuTuTui! detected. **Audio
+backend** exposes the underlying mpv audio options.
 
-The mouse works throughout: **right-click** a row for a context menu (its gestures are remappable via `mouse_bindings` in `config.json`).
+Right-click a row to open its context menu. You can remap mouse gestures through `mouse_bindings`
+in `config.json`.
 
-### Your Library
+### Library and downloads
 
-Press **`l`**. The Library has five tabs: **All**, **Favorites**, **History**, **Downloads**, and **Playlists**. Everything you favorite, play, download or collect ends up in one of them. Press **`n`** to start a new playlist of your own.
+Press `l` to open the Library. Its five tabs are **All**, **Favorites**, **History**, **Downloads**,
+and **Playlists**. Press `n` to create a playlist.
 
-### Downloads — keep songs offline
+Press `d` on a song to save it as a music file with its title and cover art in your Music folder.
+It then appears under **Library → Downloads**. Press `Shift+D` to download a list or playlist.
+Downloaded tracks play without an internet connection and also appear in Local Deck.
 
-On any song, press **`d`**: it's saved as a proper music file (cover art and title included) into your Music folder, and appears under Library → Downloads. **`Shift+D`** downloads a whole list or playlist at once. Downloaded songs play without internet — and they feed the Local Deck (chapter 4).
+<a id="listening-records"></a>
+
+### Listening records
+
+Listening records are disabled on a new device. Press `Ctrl+B` to open them. The first opening
+asks whether to enable recording locally. Update every paired client to a version that supports
+the new records before confirming. Older clients stop syncing when they encounter the new data
+format. To enable the feature on a remote owner, run:
+
+```sh
+ytt -r listening enable
+```
+
+Enabling the feature saves the local configuration. The first change to a listening record
+upgrades the personal ledger to schema 3. Playback while the feature is disabled neither enables
+recording nor upgrades the ledger.
+
+The records view has three tabs: bookmarks and resume points, DJ presets, and the listening
+passport. A bookmarks button also appears in the player footer when there is room. Use `Tab` to
+change tabs, the arrow keys to select a row, and `Enter` to open it. The displayed shortcut labels
+follow your remapped keys.
+
+The common record actions are:
+
+| Key | Action |
+| --- | --- |
+| `n` | Add a bookmark or save a preset |
+| `e` | Edit the selected record |
+| `Delete` | Confirm removal |
+| `i` | Open complete, read-only details |
+| `↑` / `↓` | Scroll the detail view |
+| `Esc` | Close the detail view |
+
+#### Manual bookmarks and automatic resume
+
+Press `n` while any finite, seekable track is playing to save its current position under a label.
+This works for tracks shorter than 20 minutes, and a track may have several labeled positions.
+Opening a bookmark for another track loads the exact saved source and seeks after it is ready.
+Live radio does not accept time bookmarks.
+
+Automatic resume requires confirmed seekability and a duration of at least 20 minutes. YuTuTui!
+starts saving useful positions at 30 seconds. It saves confirmed progress when you pause, leave a
+track, or shut down normally. Periodic progress writes occur at most once every 60 seconds.
+Reaching the final 60 seconds or finishing naturally clears the automatic point but leaves manual
+bookmarks intact.
+
+Deliberately reopening a track or restoring a session uses the automatic resume point.
+Recommendation transitions and repeats start the track at zero. An explicit bookmark takes
+precedence over automatic resume. Press `a` to toggle automatic resume. Press `r` in this view to
+restart the currently playing track.
+
+#### DJ presets
+
+Prepare recommendation preferences from the normal music Player:
+
+1. If repeat is on, press `r` until it is off. Then enable streaming with `Ctrl+R`.
+2. Press `e` to open the station preferences.
+3. Type `jazz` and press `Enter` to add a more-like term. Type `-rock` and press `Enter` to add an
+   exclusion. Press `Enter` with empty input to add the current artist.
+4. Select an entry and press `Delete` to remove it.
+5. Press `Alt+Shift+P` to open saved DJ presets.
+
+A preset stores at most 12 more-like and exclusion terms, plus excluded tracks and artists. It
+does not contain the station query or explore state, DJ Gem chat, API or model settings, the
+queue, or audio settings.
+
+Press `n` to save the current preferences under a name. `Enter` replaces the active recommendation
+preferences with the selected preset as one operation. Playback, the queue, and playback modes
+remain unchanged, and YuTuTui! discards recommendations that were pending for the previous
+preferences. Press `e` to edit a preset. Press `s` and confirm to replace its saved snapshot with
+the current preferences. Changing the active preferences never changes the saved preset until you
+explicitly save it.
+
+#### Listening passport
+
+In Atlas, press `Shift+P` to open the listening passport. A station visit qualifies after 30
+seconds of observed, active playback. Paused and buffering time does not count. YuTuTui! marks a
+country only when the station supplies a known country code. It does not infer missing locations.
+
+Select a station and press `e` to edit its note. Press `Delete` to remove one station. Press
+`Shift+C` and confirm to clear the passport.
+
+#### Remote listening commands
+
+The remote commands require the main app or daemon to be running. `list` returns at most 256 rows
+and supplies the identifiers used by the other commands.
+
+```sh
+ytt -r listening enable
+ytt -r listening list
+ytt -r listening bookmark-add <label>
+ytt -r listening bookmark-jump <bookmark-id>
+ytt -r listening bookmark-delete <bookmark-id>
+ytt -r listening restart
+ytt -r listening preset-save <name>
+ytt -r listening preset-load <preset-id>
+ytt -r listening preset-delete <preset-id>
+```
+
+#### Sync and local-file limits
+
+Encrypted sync and personal-data export or import include listening records. Syncing does not seek
+the current playback position or apply a preset. If devices save different resume positions, both
+choices remain explicit. Concurrent notes, presets, and bookmarks remain visible. For presets,
+press `i` to inspect the saved contents, then edit the version you want to keep.
+Offline edits remain in the ledger and merge during the next sync.
+
+YuTuTui! does not upload local audio files. A synced record can remain on a device that cannot play
+its source. Local track identity belongs to the device and does not use title matching. Moving a
+file can therefore require a new bookmark.
 
 <a id="dj-gem"></a>
 
-### DJ Gem *(optional)*
+### DJ Gem
 
-DJ Gem can help choose music and build playlists. Chat uses a Gemini API key; regular search, playback, radio and Atlas do not need one.
+DJ Gem is optional. Its chat requires a Gemini API key. Search, playback, radio, Atlas, and
+fallback station recommendations work without that key.
 
-1. Open **Settings → DJ Gem**, enter your **API key**, and turn **DJ Gem chat** on. You can also set `GEMINI_API_KEY` before launching `ytt`; that value takes precedence over the saved key.
-2. From the Player, press **`g`**, type a request such as *"play some quiet piano"* or *"make me a rainy-day playlist"*, and send it with **`Enter`**. DJ Gem can create a playlist in your Library.
-3. Choose the Gemini model in Settings → DJ Gem, or click the model name at the bottom of the chat screen.
+1. Open **Settings → DJ Gem**, enter the API key, and enable **DJ Gem chat**. You can instead set
+   `GEMINI_API_KEY` before starting `ytt`; the environment value takes precedence.
+2. On Player, press `g`. Enter a request such as `play some quiet piano` or
+   `make me a rainy-day playlist`, then press `Enter`. DJ Gem can create a Library playlist.
+3. Choose a Gemini model under **Settings → DJ Gem**, or click the model name at the bottom of the
+   chat screen.
 
-**An endless station:** in normal music mode, **`Ctrl+R`** toggles streaming around the current song. It can keep the queue filled without a Gemini key using fallback recommendations. Streaming and repeat cannot be enabled together: turn repeat off with **`r`** before enabling streaming.
+In normal music mode, `Ctrl+R` toggles a continuous station around the current track. Fallback
+recommendations can keep it running without a Gemini key. Streaming and repeat are mutually
+exclusive. If repeat is active, YuTuTui! rejects the streaming change and shows a toast. Press `r`
+to turn repeat off, then enable streaming.
 
-**Why this recommendation?** Recommended tracks carry a clickable **`?`** in the queue and beside Now Playing. With the queue open, **`w`** explains the selected row; otherwise it explains the current track. The card always names the recommendation source. When DJ Gem supplied model detail, it also shows the track's role, reasons and optional confidence; picks without that detail show their source alone.
+Recommended tracks show a clickable `?` in the queue and beside Now Playing. With the queue open,
+press `w` to explain the selected row. Otherwise, `w` explains the current track. The explanation
+always identifies the recommendation source. If DJ Gem supplied model details, it also shows the
+track's role, reasons, and optional confidence. Other recommendations show their source only.
 
-**Momoring, the new mascot:** the empty DJ Gem screen shows a Braille character beside the setup text when the terminal has enough room. She animates while a queued track is playing and animations are enabled; paused playback or disabled animations leaves her still. She hides once the conversation has messages, or when the window is too small. The mascot itself needs no API key or terminal image protocol. Toggle animations with **`A`** on the Player screen.
+The empty DJ Gem screen shows Momoring as a Braille character beside the setup text when the
+terminal has enough room. She animates only while a queued track is playing and animations are
+enabled. She remains still during paused playback or when animations are disabled. She disappears
+after the conversation has messages and in small windows. Momoring needs neither an API key nor a
+terminal image protocol. Press `A` on Player to toggle animations.
 
 [Watch the 3-second Momoring close-up](docs/media/dj-gem-momoring.gif).
 
@@ -171,186 +312,259 @@ DJ Gem can help choose music and build playlists. Chat uses a Gemini API key; re
 
 <a id="chapter-3"></a>
 
-## 3. Radio mode — the app becomes a radio tuner
+## 3. Radio mode
 
-Sometimes you don't want to pick songs. Radio mode turns the whole app into an internet-radio tuner with thousands of real, live stations.
+### Enter and leave Radio mode
 
-### In and out
+On Player, press `Alt+Shift+R` and confirm **Switch to dedicated Radio mode?** The app saves the
+music queue, changes to the Radio theme, and opens the radio player. Press `Alt+Shift+R` again to
+restore normal music mode and its queue. Radio mode and Local Deck cannot be active together, so
+leave one before entering the other.
 
-On the Player screen, press **`Alt+Shift+R`**. The app asks *"Switch to dedicated Radio mode?"* — confirm, and everything changes: the colors switch to a radio-only theme (that's on purpose — it's how you know where you are), and your music queue is safely tucked away, exactly as it was, until you come back.
+### Find and save stations
 
-Press **`Alt+Shift+R`** again to return to normal music mode. (One rule: Radio and the Local Deck can't be open at the same time — leave one before entering the other.)
+Press `s` in Radio mode to search the Radio Browser directory. You can search by station name,
+country, or genre. Select a result and press `Enter` to tune in.
 
-### Finding a station
+The Radio Library, opened with `l`, has **Radio Likes** and **Radio History**. These are separate
+from music favorites and music history. Press `f` on a station to add or remove its radio favorite.
 
-Press **`s`** and search, just like for songs — except now you're searching **Radio Browser**, a huge public directory of internet stations. Search for a genre ("jazz"), a country, or a station name, and press `Enter` to tune in.
+Live radio cannot rewind. If playback falls behind the broadcast, the app reports the delay, such
+as `Live: 25s behind`. Press `r` to return to the live edge.
 
-Your Library (press `l`) also changes in radio mode: it shows just two tabs, **Radio Likes** and **Radio History** — your favorite stations and recently tuned ones. They're kept completely separate from your music favorites. Press **`f`** on a station to like it.
+Press `i` to open the station metadata card for the current broadcast. It uses the station's
+metadata and does not send a Gemini request. If the station supplies no song metadata, the card
+reports that instead of trying to identify the audio. In the card, `f` saves the identified song
+to normal music favorites. `g` asks DJ Gem for more information or related songs and requires DJ
+Gem chat setup.
 
-### While you listen
-
-Live radio is *live*, so there's no rewinding. If your connection hiccups and you drift behind the broadcast, the app tells you — *"Live: 25s behind"* — and pressing **`r`** snaps you back to the live edge.
-
-The best part: **press `i`** when a song catches your ear. A little card pops up telling you *what's playing right now*, using the station's own broadcast info. Inside that card:
-
-- **`f`** saves the identified song to your *music* favorites (so you'll find it back in normal mode),
-- **`g`** asks DJ Gem to tell you more or find similar songs.
-
-There's also a recordings browser on **`Alt+Shift+E`**.
-
-This card reads broadcast metadata, without a Gemini request. If the station sends no song metadata, it reports that rather than identifying audio. The card's DJ Gem action requires chat setup.
+Press `Alt+Shift+E` to open the recordings browser.
 
 <a id="atlas-mode"></a>
 
-### Atlas mode — tune the world
+### Atlas mode
 
-On the **Radio Player**, press **`a`** (or click *Atlas globe* under the radio artwork). Enter Radio mode first with **`Alt+Shift+R`**. Atlas draws its globe in Braille or ASCII characters, so no image protocol is needed; it is unavailable in the tiny miniplayer layout.
+Enter Radio mode, then press `a` on the Radio Player or click **Atlas globe** below the radio
+artwork. Atlas renders the globe with Braille or ASCII characters and needs no image protocol. It
+is unavailable in the small player layout.
 
 [Watch the 27-second Atlas recording](docs/media/atlas.mp4) · [Animated preview](docs/media/atlas.gif)
 
-**Start with the mouse:** drag the globe to rotate, flick to coast when animations and coasting are on, and scroll to zoom. Click a station marker to tune in, or click a country to browse its stations. Nearby stations can share a marker at this scale; zoom in or use the list to choose a station.
+Drag the globe to rotate it. If animations and coasting are enabled, a flick keeps it moving.
+Scroll to zoom. Click a marker to tune to a station, or click a country to browse its stations.
+Nearby stations may share a marker at the current zoom level. Zoom in or use the station list to
+choose among them.
 
-The side panel has **World**, **Favorites** and **Recent** tabs. **`Tab`** switches focus between globe and panel. In the panel, **`↑` / `↓`** selects a row and **`←` / `→`** changes tabs. If the panel is hidden, `Tab` reveals it when there is enough width; enlarge the terminal if necessary.
+The side panel contains **World**, **Favorites**, and **Recent**. `Tab` moves focus between the
+globe and panel. With panel focus, `↑` and `↓` select a row, while `←` and `→` change tabs. If the
+panel is hidden, `Tab` reveals it when the terminal is wide enough.
 
-| Key | In Atlas |
+| Key | Action in Atlas |
 | --- | --- |
-| Arrows / `h j k l` | Rotate with globe focus; navigate with panel focus |
-| `Shift` + arrows | Rotate in larger steps with globe focus |
-| `+` / `-` | Zoom in / out (`=` also zooms in) |
-| `0` | Reset zoom and leave the country view; center on the playing station when available |
-| `n` / `p` | Highlight the next / previous visible signal |
-| `Enter` | Activate the selected signal or panel row |
+| Arrows or `h j k l` | Rotate with globe focus, or navigate with panel focus |
+| `Shift` plus arrows | Rotate in larger steps with globe focus |
+| `+` / `-` | Zoom in or out; `=` also zooms in |
+| `0` | Reset zoom, leave country view, and center on the playing station when available |
+| `n` / `p` | Select the next or previous visible signal |
+| `Enter` | Open the selected signal or panel row |
 | `c` | Browse the country under the globe cursor |
-| `r` | Tune a random station, favoring ones not heard recently |
+| `r` | Tune a random station, favoring stations not heard recently |
 | `g` | Return to the station playing from Atlas |
 | `f` | Toggle the selected station's radio favorite |
-| `/` | Search by name, country, language or tag; `Enter` fetches matching stations |
-| `Tab` / `Shift+Tab` | Switch globe / panel focus |
-| `G` / `R` | Toggle grid / autorotation (rotation needs animations on) |
-| `PageUp` / `PageDown` | Volume up / down |
-| `Space` / `m` / `,` / `.` | Pause / mute / previous / next |
-| `q` / `a` | Close Atlas when not typing in search |
-| `Esc` | Leave search editing or clear search, then highlight, then country view, then close |
+| `/` | Search by name, country, language, or tag; `Enter` fetches results |
+| `Tab` / `Shift+Tab` | Move between globe and panel focus |
+| `G` / `R` | Toggle the grid or autorotation; rotation also requires animations |
+| `Shift+P` | Open the [listening passport](#listening-records) |
+| `PageUp` / `PageDown` | Raise or lower the volume |
+| `Space` / `m` / `,` / `.` | Pause, mute, previous, or next |
+| `q` / `a` | Close Atlas when search text is not being edited |
+| `Esc` | Leave search editing or clear search, then clear the signal, leave country view, or close |
 
-**Keys depend on the screen.** In Atlas, `g` returns to the playing station and `r` picks a random one. Close Atlas to use `g` for DJ Gem or `r` to return to the live edge. To enable animations with **`A`**, return to the Player first.
+Keys can mean different things in Atlas. Here, `g` returns to the playing station and `r` chooses
+a random station. Close Atlas to use `g` for DJ Gem or `r` for the live edge. Return to Player to
+toggle animations with `A`.
 
-In Radio mode, **Settings → Playback** includes the Atlas renderer, station limit, panel visibility, coasting, grid, follow-playing and autorotation options. The default world catalog loads up to **2,000 stations**, adjustable from **500 to 5,000**. Auto rendering uses Braille normally and ASCII in retro mode; choose ASCII yourself if your font lacks Braille glyphs.
+Radio mode adds Atlas options under **Settings → Playback**. They control the renderer, station
+limit, side panel, coasting, grid, follow-playing behavior, and autorotation. The world catalog
+loads up to 2,000 stations by default. You can set the limit from 500 to 5,000. Automatic
+rendering uses Braille, except that retro mode uses ASCII. Select ASCII yourself if your font
+does not contain Braille glyphs.
 
-Station listings come from Radio Browser and are cached for **24 hours**. Stations without coordinates are marked as approximate locations within their country. Cached listings do not make the broadcasts offline: live playback and fresh searches still need a network connection.
+Radio Browser listings are cached for 24 hours. Stations without coordinates receive an
+approximate position within their country. The cache does not make broadcasts available offline.
+Live playback and fresh searches still need a network connection.
 
 ---
 
 <a id="chapter-4"></a>
 
-## 4. Local Deck — your own music, beautifully
+## 4. Local Deck
 
-The Local Deck is a dedicated player for music that lives *on your computer*: your downloads and your own audio files. Browsing, Find and playback use those local files and never fall back to an online stream. Other features you have opted into — such as lyrics, scrobbling or update checks — may still use the network, so the Local Deck is not a whole-app airplane mode.
+Local Deck browses and plays downloaded or other local audio files. Browsing, Find, and playback
+stay local and never replace a missing result with an online stream. Features you separately
+enabled, including lyrics, scrobbling, and update checks, may still use the network. Local Deck is
+therefore not a whole-app offline switch.
 
-### In and out
+### Enter and leave Local Deck
 
-Open the Library (**`l`**), then press **`Alt+Shift+L`**. The app asks *"Switch to Local Player mode?"* — confirm, and you're in an immersive shell built just for browsing local music. Press **`Alt+Shift+L`** again to leave.
+Open Library with `l`, then press `Alt+Shift+L` and confirm **Switch to Local Player mode?** Press
+`Alt+Shift+L` again to leave.
 
-The Local Deck has its own saved theme, separate from your normal and Radio themes. On a fresh install — or when upgrading a config that has no Local theme yet — it starts with **Local Launch**. Change and save the theme while you are in the Local Deck and it will remember that choice. Leaving restores your normal theme; returning, including after a restart, restores your saved Local theme.
+Local Deck has a saved theme separate from the normal and Radio themes. A new installation, or an
+upgraded configuration with no Local theme, starts with **Local Launch**. Save a different theme
+while Local Deck is active to use it on later visits, including after a restart. Leaving restores
+the normal theme.
 
-### What you'll see
+### Browse the collection
 
-The Local Deck scans your download folder (it understands the *Artist / Album / track* layout) and organizes everything into sections. Press the **number keys** to jump between them:
+Local Deck scans the download folder and recognizes an `Artist / Album / track` directory layout.
+Number keys move among these sections:
 
-**Home · Tracks · Albums · Artists · Genres · Folders · Smart Lists · Scan Errors · Import Sessions · Inbox**
+| Section | Contents |
+| --- | --- |
+| **Home** | Local Deck overview |
+| **Tracks**, **Albums**, **Artists**, **Genres** | Indexed views of the collection |
+| **Folders** | Files in their directory structure |
+| **Smart Lists** | Automatically maintained collections |
+| **Scan Errors** | Files whose metadata the scanner could not read |
+| **Import Sessions**, **Inbox** | Spotify imports that need review |
 
-- **Tracks / Albums / Artists / Genres** — your collection, sliced every way.
-- **Folders** — browse exactly as the files sit on disk.
-- **Smart Lists** — automatic collections.
-- **Scan Errors** — files the scanner couldn't read, so nothing fails silently.
-- **Import Sessions / Inbox** — where Spotify imports arrive for review (next chapter!).
+### Find local music
 
-### Finding anything in the Local Deck
+Choose **Find** in Local Deck navigation or press `Ctrl+F`. Find searches **All**, **Tracks**,
+**Albums**, **Artists**, **Genres**, **Folders**, and the locally playable portion of **Playlists**.
+An empty local result stays empty. Outside Find, `/` filters only the section you are viewing.
 
-Choose **Find** in the Local Deck navigation or press **`Ctrl+F`**. This is a separate, local-only search across **All, Tracks, Albums, Artists, Genres, Folders** and the locally playable part of **Playlists**. It never hands an empty result to YouTube or another provider. Pressing **`/`** outside Find still means something deliberately smaller: filter only the Local Deck section you are currently viewing.
+Plain words require every word to match. Put an exact phrase in quotes. These prefixes restrict
+the query:
 
-Type ordinary words to require all of them, or put a phrase in quotes. You can narrow a query with `t:` (title), `ar:` (track artist), `al:` (album), `aa:` (album artist), `g:` (genre), `path:`, `fmt:`, `year:`, `is:`, `missing:` and `sort:`. For example, `ar:bjork year:1995..2001 sort:recent` searches a year range and puts the newest matches first. A query beginning with **`>`** offers safe Local Deck commands such as rescan, rebuild, queue and section shortcuts — it never runs a shell command.
+| Prefix | Field |
+| --- | --- |
+| `t:` | Title |
+| `ar:` | Track artist |
+| `al:` | Album |
+| `aa:` | Album artist |
+| `g:` | Genre |
+| `path:` | File path |
+| `fmt:` | File format |
+| `year:` | Year or year range |
+| `is:` | Indexed property |
+| `missing:` | Missing property |
+| `sort:` | Result order |
 
-Open **Refine** — or press **`/`** while the result list has focus — to choose the scope and the default sort without rewriting the query. (`/` typed in the Find input remains an ordinary path character.) Apply commits the change; Cancel or `Esc` throws the draft away. A `sort:` term in the query temporarily overrides Refine's default and removing it restores that default.
+For example, `ar:bjork year:1995..2001 sort:recent` searches Björk tracks from that year range and
+puts the newest matches first. A query beginning with `>` offers Local Deck commands for tasks
+such as rescanning, rebuilding, queueing, or moving to a section. It never runs a shell command.
 
-- On a track, `Enter` or double-click plays it now. On an album, artist, genre, folder or playlist, it opens the matching local tracks.
-- **`a`** or **`\`** adds the selected track or collection to the queue; **`P`** plays it now.
-- **`A`** adds the whole result mix; **`s`** shuffles and plays the whole result mix. The order follows the selected sort, duplicates are removed, and an exact confirmation appears before the 999-item queue limit would omit anything.
-- Empty and no-result views offer local recovery actions such as Rescan, Add Music Folder and View Scan Errors — not an online fallback.
+Open **Refine**, or press `/` while the results have focus, to set the scope and default sort
+without changing the query. A `/` typed in the Find input remains a path character. **Apply** saves
+the choice. **Cancel** or `Esc` discards the draft. A `sort:` term temporarily overrides the
+Refine default. Removing the term restores that default.
 
-One workflow crosses that boundary on purpose: from an **Import Sessions** row, you can explicitly request a manual online candidate search. YuTuTui! asks before leaving the Local Deck; only after you confirm and the mode switch succeeds does it submit that one search in normal mode. Cancelling or a stale/failed switch submits nothing.
+### Play and queue results
 
-### Getting music in
+- On a track, `Enter` or double-click plays it. On an album, artist, genre, folder, or playlist,
+  the same action opens its local tracks.
+- Press `a` or `\` to add the selected track or collection to the queue. Press `P` to play it now.
+- Press `A` to add the entire result mix. Press `s` to shuffle and play the entire result mix.
+  YuTuTui! follows the selected sort, removes duplicates, and shows an exact confirmation before
+  the 999-item queue limit would omit any tracks.
+- Empty and no-result screens offer local actions such as **Rescan**, **Add Music Folder**, and
+  **View Scan Errors**.
 
-- Every song you download with `d` / `Shift+D` shows up here automatically.
-- You can add more folders to scan in Settings (Local Deck roots).
-- Spotify imports can download straight into it — read on.
+A manual candidate search from **Import Sessions** is the one explicit exit to online Search.
+YuTuTui! asks before leaving Local Deck. It sends that single query in normal mode only after you
+confirm and the mode switch succeeds. Cancelling, or a stale or failed switch, sends nothing.
+
+Downloaded tracks from `d` and `Shift+D` appear in Local Deck automatically. Add other scan roots
+under **Settings → Local Deck roots**. Spotify imports can also download into the collection.
 
 ---
 
 <a id="chapter-5"></a>
 
-## 5. Moving in from Spotify — the full, gentle walkthrough
+## 5. Moving from Spotify
 
-You can bring your Spotify playlists and liked songs into YuTuTui!. Nothing is guessed silently: every song is matched by its actual title, artist and album, and anything uncertain is set aside for *you* to decide.
+YuTuTui! can import Spotify playlists and Liked Songs. Matching uses available title, artist, and
+album data. Results can still be uncertain, so the app keeps uncertain rows for review.
 
-**Where can the music go?** Two options:
+The in-app flow writes to YuTuTui!'s Library playlists and does not require a YouTube account. The
+command-line flow can also write playlists or likes to your YouTube Music account when you provide
+the YouTube sign-in cookies described in the README.
 
-1. **Into the app's own Library playlists** — works immediately, no YouTube account needed. This is what the in-app import does.
-2. **Into your real YouTube Music account** (playlists or likes) — the command-line way, needs your YouTube sign-in cookies (see the README reference).
+### Register a Spotify app
 
-### 5a. One-time setup (~5 minutes)
+Spotify requires a registered app and an allowlist for Development Mode. Under
+[Spotify's 2026 Development Mode rules](https://developer.spotify.com/documentation/web-api/tutorials/february-2026-migration-guide),
+the app owner needs Premium. New developers are limited to one Client ID, which means one
+development app, and may allowlist up to five users. Spotify grandfathered existing allocations
+above those limits. YuTuTui! uses PKCE, so it does not need a client secret.
 
-Here's the honest reason this setup exists: Spotify only lets apps read your library if the app is registered with them, and their registration for personal apps ("Development Mode") only serves people the app owner explicitly lists. So instead of everyone sharing one app, *you create your own tiny personal one*. Under [Spotify's 2026 Dev-Mode rules](https://developer.spotify.com/documentation/web-api/tutorials/february-2026-migration-guide), its owner needs a Premium account, a new app gets one Client ID, and it can serve up to five allowlisted users. There is no secret password involved; you'll only copy one ID.
+1. Sign in at [developer.spotify.com/dashboard](https://developer.spotify.com/dashboard).
+2. Select **Create app**.
+3. Enter any **App name** and **App description**.
+4. Add this exact value under **Redirect URIs**:
 
-1. Go to **[developer.spotify.com/dashboard](https://developer.spotify.com/dashboard)** in your browser and log in with your normal Spotify account.
-2. Click **Create app**.
-3. **App name** and **App description** can be anything — `yututui` is fine.
-4. In **Redirect URIs**, type exactly:
-
-   ```
+   ```text
    http://127.0.0.1:9271/callback
    ```
 
-   and click **Add**. This must be letter-for-letter exact — the numbers `127.0.0.1`, not the word `localhost` (Spotify refuses that), and no extra slash at the end. This address just means "come back to the app on this computer" — nothing leaves your machine.
-5. Where it asks **Which API/SDKs are you planning to use?**, tick **Web API**.
-6. Accept the terms, click **Save**.
-7. Open your new app → **Settings**, and copy the **Client ID** (a long string of letters and numbers). Ignore the "Client secret" — you don't need it.
-8. Still in the app's settings, open **User Management** and add *yourself*: your name and the email of your Spotify account. This is the allowlist — without this step Spotify will answer "403" later. New Dev-Mode apps can list up to five users.
+   Use `127.0.0.1`, not `localhost`, and do not add a trailing slash. Spotify's
+   [redirect URI rules](https://developer.spotify.com/documentation/web-api/concepts/redirect_uri)
+   allow an explicit loopback IP address.
+5. Select **Web API** under **Which API/SDKs are you planning to use?**
+6. Accept the terms and select **Save**.
+7. Open the app's **Settings** and copy the **Client ID**. Do not copy the Client secret.
+8. Open **User Management** and add the Spotify account that will connect. An authorized account
+   that is not allowlisted can still receive HTTP 403 responses. Spotify documents this in its
+   [quota-mode rules](https://developer.spotify.com/documentation/web-api/concepts/quota-modes).
 
-Done. You never have to do this again.
+### Connect YuTuTui! to Spotify
 
-### 5b. Connect YuTuTui! to Spotify
+Open **Settings (`o`) → Accounts → Spotify**, paste the Client ID, and choose **Connect**. Your
+browser opens Spotify's approval page. After approval, Spotify redirects to the listener on
+`127.0.0.1`. YuTuTui! waits for that callback for five minutes.
 
-In the app: **Settings (`o`) → Accounts → Spotify** → paste the Client ID → choose **Connect**. Your browser opens a Spotify page asking to approve — click approve, and the app says connected.
+You can start the same flow from a terminal:
 
-(Prefer typing? `ytt auth spotify --client-id <YOUR-ID>` does the same. On a machine with no browser, the approval link is copied to your clipboard and saved to `spotify_auth_url.txt` — open it on any device.)
+```sh
+ytt auth spotify --client-id <YOUR-ID>
+```
 
-### 5c. Import, inside the app
+If the browser does not open, YuTuTui! copies the authorization URL and saves it in
+`spotify_auth_url.txt`. Open that URL in a browser on the same computer so the loopback callback
+can reach YuTuTui!. Using another device requires separate network forwarding.
 
-1. Go to **Settings → Accounts → "Import from Spotify…"**.
-2. A picker opens with your Spotify playlists. Choose one.
-3. Pick an **import mode** (there's a dropdown right there):
+### Import in the app
 
-   | Mode | What it means |
-   | --- | --- |
-   | **Fast playlist** | Take confident matches *and* safe near-matches. Most songs land immediately. |
-   | **Strict playlist** | Only take matches the app is sure about; everything else waits for your review. |
-   | **Review first** | Match everything but write *nothing* yet — you approve it all later. |
-   | **Music video playlist** | Build a separate Library playlist from official-family music-video matches. |
+1. Open **Settings → Accounts → Import from Spotify…**.
+2. Select a Spotify playlist.
+3. Choose an import mode.
 
-4. That's it — the import runs **in the background while your music keeps playing**. The status line shows the progress.
+| Mode | Behavior |
+| --- | --- |
+| **Fast playlist** | Accept confident matches and safe near-matches; keep uncertain rows for review |
+| **Strict playlist** | Accept only the strongest matches; keep the rest for review |
+| **Review first** | Match rows but write nothing until you approve them |
+| **Music video playlist** | Build a separate Library playlist from official-family video candidates |
 
-When it finishes, you'll see: *"Import finished … saved in Library → Playlists"*. The playlist is there, playable right away.
+The status line reports progress while the app remains running. When the import finishes, the
+result appears under **Library → Playlists**.
 
-The music-video mode names its playlist `<original name> (Music Videos)`. It prefers YouTube Music's OMV / OfficialSourceMusic classifications and strongly corroborated official channels. That is a careful best-effort check, not a 100% guarantee — the public APIs do not publish one definitive “official music video” flag. Clearly ineligible user uploads are rejected; uncertain candidates wait for review.
+Music-video mode names the result `<original name> (Music Videos)`. It favors YouTube Music OMV
+and OfficialSourceMusic classifications and corroborated official channels. Public APIs do not
+provide one definitive official-music-video flag. The importer rejects clearly ineligible user
+uploads and sends uncertain candidates to review.
 
-### 5d. Reviewing the leftovers
+### Review uncertain matches
 
-Songs the app wasn't sure about are never guessed — they wait in the **Local Deck → Import Sessions** (and its **Inbox**). Go there (chapter 4), open the session, and go through the rows: each shows what Spotify had and what the best candidates are. Accept the ones that look right — or press **`Shift+A`** to accept all matched candidates at once. Rows can also retry their downloads or open candidate links so you can check with your own ears.
+Open **Local Deck → Import Sessions** or **Inbox**, then open the session. Each row shows the
+Spotify item and its candidate matches. Accept individual matches, or press `Shift+A` to accept
+all matched candidates. A row can also retry its download or open candidate links for inspection.
 
-### 5e. The command-line version *(optional)*
+### Command-line transfers
 
-If you're comfortable typing commands, the same machinery is available with more options:
+The command line exposes all transfer destinations and recovery controls:
 
 ```sh
 ytt transfer import <spotify-url-or-id>      # playlist → your YTM account (needs cookies)
@@ -367,127 +581,180 @@ ytt transfer backup --dir ~/music-backup     # back up every playlist to files
 ytt transfer session <id>                    # inspect an import session
 ```
 
-Imports are checkpointed: a rate limit, a closed lid or a power cut just means `resume` later — it continues where it stopped.
+Imports store checkpoints. If a rate limit, suspension, power loss, or app shutdown interrupts a
+job, run `ytt transfer resume <job-id>` after restarting. A checkpoint does not keep the process
+running after shutdown.
 
-The ordinary `--to spotify` export uses Spotify's current `POST /me/playlists` API when it needs to create a destination, then appends missing tracks. It does not remove extras, reproduce duplicate positions, reorder later or keep syncing in the background.
+An export to `--to spotify` uses Spotify's current `POST /me/playlists` endpoint when it must
+create the destination, then appends missing tracks. It does not remove extra tracks, reproduce
+duplicate positions, reorder existing entries later, or continue syncing in the background.
 
-The ID-targeted `--sync` form is deliberately stricter and destructive. It accepts only an existing playlist owned by the connected Spotify account. Run `--dry-run` first to see additions, removals and reordering. If any source row is unresolved or the source was truncated, the whole operation stops before changing Spotify. Otherwise the real run mirrors order, duplicates and removals exactly. Without `--yes`, ytt previews and asks before replacement; `ytt transfer resume <job-id>` refreshes that preview and asks again, while `resume <job-id> --yes` deliberately skips confirmation.
+The ID-targeted `--sync` form performs an exact, destructive mirror to an existing playlist owned
+by the connected Spotify account. Run it with `--dry-run` first to inspect additions, removals,
+and ordering. If a source row is unresolved or the source was truncated, YuTuTui! stops before
+changing Spotify. Otherwise, the real run mirrors order, duplicates, and removals.
 
-### If something goes wrong
+Without `--yes`, YuTuTui! previews the replacement and asks for confirmation. Running
+`ytt transfer resume <job-id>` refreshes that preview and asks again. Running
+`ytt transfer resume <job-id> --yes` skips the confirmation.
 
-The most common hiccups (403 "not allowlisted", INVALID_CLIENT, a busy port) all have one-line fixes in the **[README's troubleshooting section](README.md#troubleshooting)**.
+For HTTP 403, `INVALID_CLIENT`, and port conflicts, see the
+[README troubleshooting section](README.md#troubleshooting).
 
 ---
 
 <a id="chapter-6"></a>
 
-## 6. Backing up your personal data
+## 6. Backing up personal data
 
-YuTuTui! can gather the portable parts of your setup and music taste into one versioned, human-readable JSON file. Inside the app, open **Settings (`o`) → General → Export personal data**. It writes to your computer's normal **Downloads** folder and tells you the completed filename.
+Open **Settings (`o`) → General → Export personal data** to write a versioned JSON export to the
+system Downloads folder. The app reports the completed filename.
 
-You can do the same from a terminal:
+The terminal commands are:
 
 ```sh
 ytt data export                         # save to the OS Downloads folder
 ytt data export --to ~/existing-folder # choose an existing directory
 ```
 
-The folder after `--to` must already exist; give a directory, not a filename. YuTuTui! will not create the folder or silently fall back to the current directory if Downloads cannot be found.
+The directory passed to `--to` must already exist. Pass a directory, not a filename. YuTuTui!
+does not create the directory or fall back to the current directory when it cannot find Downloads.
 
-When the normal primary `ytt` app or daemon is running, the CLI asks that owner for its current in-memory state instead of reading a possibly stale file. An outdated, malformed, live-but-unreachable, or ambiguous owner stops the export rather than silently falling back to disk. Only when an advertised endpoint is provably stale and an exclusive data lock confirms no process owns the stores does the CLI recover with an offline snapshot. If `--new-instance` players are also open, the CLI exports only the advertised primary; export each secondary from its own Settings screen. An offline CLI export refuses to read the stores until every current-version ytt owner, including secondaries, is closed.
+### What the export contains
 
-**What's included:** sanitized portable settings; track and radio favorites; listening and radio history; your Library playlists; safe track metadata and public catalog IDs; and the recommendation signals, artist affinities and station preferences that represent your taste.
+The default schema 2 or 3 export contains the portable personal ledger. This includes track and
+radio favorites, listening and radio history, Library playlists, safe track metadata, public
+catalog identifiers, recommendation signals, artist affinities, station preferences, and any
+listening records supported by that ledger.
 
-**What's deliberately left out:**
+The default export does not contain:
 
-- authentication cookies, API keys, OAuth tokens and account identifiers;
-- filesystem paths and machine-specific audio settings;
-- playable, origin, artwork and radio-stream URLs;
-- downloaded or recorded music, download manifests and media sidecars;
-- pending scrobbles, transfer jobs and reports, and session queues;
-- AI usage logs, generated caches, artwork caches and application logs;
-- managed-tool binaries and paths, desktop window geometry and recovery backups.
+- the app configuration or Settings values, including pending edits;
+- live volume, shuffle state, or queues;
+- authentication cookies, API keys, OAuth tokens, or account identifiers;
+- actual filesystem paths, playable URLs, origin URLs, artwork URLs, radio stream URLs, or media
+  files;
+- downloads, recordings, download manifests, or media sidecars;
+- caches, logs, managed-tool binaries or paths, desktop geometry, or recovery backups;
+- pending scrobbles, transfer jobs, reports, or other pending work.
 
-The export is **not encrypted**. It has no passwords or tokens, but it does contain your private listening history, so treat it as a personal file before uploading or sharing it.
+The export is not encrypted and contains private listening data. Store and share it as a private
+file.
 
-### Bringing an export back in
+### Exporting from a running owner
+
+When the main `ytt` app or daemon is running, the CLI asks it for the current personal data instead
+of reading a possibly stale file. Export stops if that app is outdated, its connection information
+is invalid, it is running but unreachable, or the CLI cannot identify the main instance. The CLI
+reads saved data only after confirming that the registered process has ended and acquiring a lock
+that prevents another instance from using the data at the same time.
+
+If `--new-instance` players are open, the CLI exports only the registered main instance. Export
+each additional instance through its own Settings screen. For an offline CLI export, close every
+current-version instance.
+
+### Import a file
 
 ```sh
 ytt data import ~/Downloads/the-file.json              # preview only (the default)
 ytt data import ~/Downloads/the-file.json --apply      # actually merge it
 ```
 
-Nothing changes unless you pass `--apply`; without it you get a preview of what the merge *would* do. A file from a different setup is merged without deleting anything you already have. A file from *this* setup is merged by causal order, so re-importing an older export of your own will not undo newer listening.
+Without `--apply`, the command only previews the merge. An export from another installation adds
+data without deleting the destination's existing records. For an export from the same
+installation, the recorded order of changes prevents an older export from replacing newer
+listening data.
 
-Exports are written in schema 2 by default. `ytt data export --schema 1` writes the older format if you need to hand the file to an older copy of YuTuTui!.
+### Schema compatibility
 
-YuTuTui! creates a new owner-only file and never overwrites an existing one. It also rejects a destination where an untrusted local account could create, replace, or delete the completed path. If the destination filesystem cannot enforce and verify these private permissions or ACLs, the export fails instead of leaving a broadly readable copy.
+The default export uses the ledger's current format. It is schema 2 before listening records have
+upgraded the ledger and schema 3 afterward.
+
+```sh
+ytt data export --schema 2  # request v2; refuses a ledger already upgraded to v3
+ytt data export --schema 3  # request v3 explicitly
+ytt data export --schema 1  # legacy format; omits listening records
+```
+
+Schema 1 alone contains its legacy settings representation. It is not a full backup of this
+version after you start using listening records.
+
+YuTuTui! creates a new owner-only export file and never overwrites an existing path. It rejects a
+destination where another local account could create, replace, or remove the completed file. If
+the filesystem cannot enforce and verify the required private permissions or access-control list,
+the export fails.
 
 ---
 
 <a id="chapter-7"></a>
 
-## 7. Keeping two computers in step
+## 7. Syncing computers
 
-If you use YuTuTui! on more than one machine, it can keep your favorites, history, playlists and taste signals in step through a **WebDAV** folder — the kind of storage Nextcloud, ownCloud and most NAS boxes provide.
+YuTuTui! can sync favorites, history, playlists, taste signals, and listening records through a
+WebDAV folder on services such as Nextcloud, ownCloud, or a NAS. Sync is disabled until you set it
+up.
 
-The important part: **the server never sees your data.** Everything is encrypted on your computer before it is uploaded, and only devices you have personally approved can read it. A WebDAV provider that reads its own disks learns nothing but file sizes and timestamps.
+The client encrypts vault contents before upload. The WebDAV service cannot read those contents,
+but it can observe connection metadata and file metadata such as names, sizes, and timestamps.
 
-This is **off until you turn it on.**
+### Set up the first device
 
-### Setting up the first device
-
-Inside the app: **Settings (`o`) → Sync**, which walks you through the same steps. From a terminal:
+Open **Settings (`o`) → Sync**, or run:
 
 ```sh
 ytt sync setup
 ```
 
-It asks for your WebDAV address (`https://…`, or a plain `http://` address only if it is on this same machine), your username and password, and a name for this device. Passwords are typed with the screen not showing them, and they are never accepted as part of the command itself.
+Enter the WebDAV address, username, password, and a name for the device. Use an `https://` address.
+A plain `http://` address is accepted only for a server on the same computer. The password prompt
+does not display the password, and the command does not accept a password as an argument.
 
-At the end it writes a **recovery kit** — a small file, saved wherever you tell it. **Keep it somewhere safe and off this computer.** It is the material any future recovery would need, and nobody — including the author of YuTuTui! — can regenerate it for you. One honest caveat for now: there is no command yet that rebuilds a vault from the kit alone, so keep at least one connected machine rather than relying on the kit as a restore.
+Setup writes a recovery kit to the location you choose. Keep it outside this computer. It contains
+material needed for a future recovery and cannot be regenerated. No command currently restores a
+vault from the kit alone, so retain at least one connected device.
 
-### Adding a second device
+### Pair another device
 
-On the machine that already works:
+On a connected device, run:
 
 ```sh
 ytt sync pair create
 ```
 
-It prints a one-time connection code that is good for ten minutes. Then, on the new machine:
+The command prints a one-use code that expires after ten minutes. On the new device, run:
 
 ```sh
 ytt sync pair join ABCDE-FGHIJ-KLMNO-PQRST-UV
 ```
 
-The new machine asks for the same WebDAV details, then waits. Back on the first machine, approve it: that screen shows the joining machine's name and a short key fingerprint before you say yes. Only approve a name you recognise, and only while you are the one setting the other machine up. (The joining machine does not show you that fingerprint yet, so there is nothing to compare it against — the ten-minute one-time code is what keeps a stranger out.)
+Enter the same WebDAV details on the new device. It then waits for approval. The connected device
+shows the joining device's name and a short key fingerprint before you approve it. Approve only
+the device you are currently adding. The joining device does not display the fingerprint for
+comparison, so the short-lived one-use code protects this step.
 
-If you get interrupted halfway, nothing is lost:
+Resume or cancel an unfinished pairing with:
 
 ```sh
 ytt sync pair join --resume   # pick up where you left off, no code needed
 ytt sync pair cancel          # throw away an unfinished attempt
 ```
 
-### Day to day
+### Check and run sync
 
 ```sh
 ytt sync status          # one line: what state sync is in
 ytt sync now             # merge this device with the folder right now
 ```
 
-Status is always one of five things:
+| Status | Meaning |
+| --- | --- |
+| **Off** | Sync is not configured on this device |
+| **Up to date** | The local device and vault match |
+| **Syncing** | A merge is running |
+| **Offline — will retry** | The service is unreachable and the client will retry |
+| **Needs attention** | The following line describes a decision or problem |
 
-| It says | It means |
-|---|---|
-| **Off** | Sync is not set up on this device. |
-| **Up to date** | Everything matches. Nothing to do. |
-| **Syncing** | A merge is happening right now. |
-| **Offline — will retry** | No connection. It will pick up by itself; you do not need to do anything. |
-| **Needs attention** | Something needs a decision from you — the next line tells you what. |
-
-### Managing devices
+### Manage devices
 
 ```sh
 ytt sync devices                  # list active and removed devices
@@ -496,17 +763,17 @@ ytt sync recovery export --to DIR # save another copy of the recovery kit
 ytt sync audit                    # what sync has done, with no private details
 ```
 
-Removing a device is real: it re-locks your data so the removed machine cannot read anything uploaded afterwards. Do this if a laptop is lost or sold. It cannot un-read what that machine already downloaded.
+Revoking a device changes access so it cannot decrypt data uploaded afterward. Revocation cannot
+erase or make unreadable anything that the device downloaded before it was removed.
 
 ---
 
 <a id="chapter-8"></a>
 
-## 8. Playing from your own music server
+## 8. Playing from a music server
 
-YuTuTui! can also play from one **OpenSubsonic** or **Navidrome** server — your own library, on your own hardware, alongside everything else in the app.
-
-Inside the app: **Settings (`o`) → Music server**. From a terminal:
+YuTuTui! can connect to one OpenSubsonic or Navidrome server. Open
+**Settings (`o`) → Music server**, or use these commands:
 
 ```sh
 ytt server setup            # test and save a connection
@@ -514,9 +781,11 @@ ytt server status           # show the connection, with secrets left out
 ytt server remove           # forget the server; your local data stays
 ```
 
-`setup` asks for the address and either a password or an API key, prompted without showing them on screen. As with sync, secrets are never accepted as part of the command.
+`ytt server setup` asks for the address and either a password or API key. It hides the entered
+secret and does not accept the secret as a command argument.
 
-Your ratings and listening history flow back to the server. When a report cannot be delivered, it waits instead of being thrown away:
+YuTuTui! sends ratings and listening reports to the server. A failed report remains pending until
+you retry it or mark it as sent:
 
 ```sh
 ytt server scrobbles list                  # reports waiting on a decision
@@ -524,40 +793,48 @@ ytt server scrobbles retry <OPAQUE_ID>     # try that one again
 ytt server scrobbles mark-sent <OPAQUE_ID> # accept it as done, stop retrying
 ```
 
-Playlists you create can hit the same situation — the server may or may not have finished creating one when the connection dropped:
+If a connection drops during playlist creation, the server may have created the playlist even
+though YuTuTui! did not receive confirmation. Inspect or abandon the local guard with:
 
 ```sh
 ytt server playlists pending
 ytt server playlists abandon <LOCAL_PLAYLIST_ID>   # forget the guard; deletes nothing
 ```
 
-There is also an experimental, off-by-default mode for Navidrome's detailed history:
+Navidrome detailed history is experimental and disabled by default:
 
 ```sh
 ytt server history enable --experimental
 ytt server history disable      # also removes the extra saved password
 ```
 
-It needs a second password of its own. Turning it off never affects ordinary server access.
+Detailed history needs its own password. Disabling it does not change the ordinary server
+connection.
 
 ---
 
 <a id="chapter-9"></a>
 
-## 9. When something goes wrong (anywhere)
+## 9. Troubleshooting
 
-First, always: quit the app and run
+Quit the app and run:
 
 ```sh
 ytt doctor
 ```
 
-It checks all the helper programs and tells you exactly what's missing and how to get it. For everything else — songs that won't play, missing album art, scrobbles, Spotify errors — the **[README troubleshooting tables](README.md#troubleshooting)** cover the known cases, sorted by symptom.
+The report checks required helper programs and gives setup instructions for anything missing. For
+playback, artwork, scrobbling, Spotify, and other known problems, use the symptom tables in the
+[README troubleshooting section](README.md#troubleshooting).
 
-**YouTube rejects a stream (403/429)?** Run `ytt doctor --verbose` and follow the [playback troubleshooting steps](README.md#playback). Include the error and diagnostic results when reporting a problem; redact any personal paths or credentials.
+For a YouTube stream error such as HTTP 403 or 429, run:
 
-Still stuck? [Open an issue](https://github.com/Ochichan/Yututui/issues) and just describe what you saw — mention your operating system.
+```sh
+ytt doctor --verbose
+```
 
----
+Then follow the [playback troubleshooting steps](README.md#playback).
 
-*Happy listening! — and remember: `?`*
+If the problem remains, [open an issue](https://github.com/Ochichan/Yututui/issues). Include your
+operating system, the action that caused the problem, the complete error, and relevant diagnostic
+results. Remove credentials and personal paths before posting.

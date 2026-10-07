@@ -8,8 +8,8 @@ use super::legacy::{
 };
 use super::{
     CausalStamp, DeviceId, Dot, EngagementKind, Operation, OperationEnvelope, OperationOrigin,
-    PersonalStateError, PersonalStateV2, PlaylistEntryId, PlaylistId, PortableTrack,
-    PortableTrackKey, project, refresh_device_registry,
+    PERSONAL_STATE_LISTENING_SCHEMA_VERSION, PersonalStateError, PersonalStateV2, PlaylistEntryId,
+    PlaylistId, PortableTrack, PortableTrackKey, VersionVector, project, refresh_device_registry,
 };
 
 const MAX_EXTERNAL_OPERATION_BATCH: usize = 4_096;
@@ -75,6 +75,95 @@ pub fn append_operation_as(
         operation,
         recorded_at_unix,
     )
+}
+
+/// Resolve the causal author used by a listening mutation.
+pub fn listening_device_id(
+    state: &PersonalStateV2,
+    local_device_id: Option<&DeviceId>,
+) -> Result<DeviceId, PersonalStateError> {
+    match local_device_id {
+        Some(device_id) => {
+            validate_local_device_binding(state, device_id, true)?;
+            Ok(device_id.clone())
+        }
+        None => local_device(state),
+    }
+}
+
+/// Append one listening-memory mutation, upgrading the ledger to schema 3 atomically.
+pub fn append_listening(
+    state: &PersonalStateV2,
+    local_device_id: Option<&DeviceId>,
+    change: crate::listening::ListeningOperation,
+    recorded_at_unix: i64,
+) -> Result<PersonalStateV2, PersonalStateError> {
+    let device_id = listening_device_id(state, local_device_id)?;
+    append_operation_with_origin_as_inner(
+        state,
+        &device_id,
+        None,
+        OperationOrigin::Local,
+        Operation::Listening { change },
+        recorded_at_unix,
+        local_device_id.is_some(),
+    )
+}
+
+/// Re-author a detached local operation without claiming observation of newly downloaded dots.
+pub(crate) fn append_rebased_operation_as(
+    state: &PersonalStateV2,
+    local_device_id: &DeviceId,
+    operation: Operation,
+    recorded_at_unix: i64,
+    observed: VersionVector,
+) -> Result<PersonalStateV2, PersonalStateError> {
+    state.validate()?;
+    validate_local_device_binding(state, local_device_id, true)?;
+    if matches!(
+        &operation,
+        Operation::AddDevice { .. } | Operation::RevokeDevice { .. }
+    ) || observed
+        .0
+        .iter()
+        .any(|(device, sequence)| state.version_vector.observed(device) < *sequence)
+    {
+        return Err(PersonalStateError::InvalidOperation(
+            "invalid detached local operation",
+        ));
+    }
+    let sequence = state
+        .version_vector
+        .observed(local_device_id)
+        .checked_add(1)
+        .ok_or(PersonalStateError::InvalidOperation(
+            "operation sequence exhausted",
+        ))?;
+    if observed.observed(local_device_id) >= sequence {
+        return Err(PersonalStateError::InvalidVersionVector);
+    }
+    let dot = Dot {
+        device_id: local_device_id.clone(),
+        sequence,
+    };
+    let mut candidate = state.clone();
+    if matches!(&operation, Operation::Listening { .. }) {
+        candidate.schema_version = PERSONAL_STATE_LISTENING_SCHEMA_VERSION;
+    }
+    candidate.operations.push(OperationEnvelope {
+        operation_id: format!("{}:{sequence}", local_device_id.as_str()),
+        stamp: CausalStamp {
+            dot: dot.clone(),
+            observed,
+            recorded_at_unix,
+        },
+        origin: OperationOrigin::Local,
+        operation,
+    });
+    candidate.version_vector.observe(&dot);
+    candidate.projection_fingerprint = None;
+    candidate.normalize()?;
+    Ok(candidate)
 }
 
 /// Append one operation observed from an external bridge under the local device's causal dot.
@@ -261,6 +350,12 @@ fn append_external_operations_inner(
     }
 
     let mut candidate = state.clone();
+    if operations
+        .iter()
+        .any(|input| matches!(input.operation, Operation::Listening { .. }))
+    {
+        candidate.schema_version = PERSONAL_STATE_LISTENING_SCHEMA_VERSION;
+    }
     let mut appender = OperationAppender::new(&mut candidate, local_device_id.clone());
     for (input, envelope_id) in operations.iter().zip(&envelope_ids) {
         if appender
@@ -338,6 +433,9 @@ fn append_operation_with_origin_as_inner(
     }
 
     let mut candidate = state.clone();
+    if matches!(operation, Operation::Listening { .. }) {
+        candidate.schema_version = PERSONAL_STATE_LISTENING_SCHEMA_VERSION;
+    }
     OperationAppender::new(&mut candidate, local_device_id.clone()).append_with_metadata(
         operation_id,
         origin,

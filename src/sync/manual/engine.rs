@@ -19,7 +19,7 @@ use super::super::{
     authorize_compaction, verify_compaction_authorization,
 };
 use super::budget::ManualSyncBudget;
-use super::protocol::{SignedDeviceHead, SignedVaultManifest, segment_bounds};
+use super::protocol::{DeviceHeadTip, SignedDeviceHead, SignedVaultManifest, segment_bounds};
 
 const MAX_SYNC_ATTEMPTS: usize = 8;
 const SMALL_OBJECT_LIMIT: usize = 2 * 1024 * 1024;
@@ -167,6 +167,8 @@ impl<'a, T: VaultTransport + ?Sized> ManualSyncEngine<'a, T> {
         if checkpoint.payload.membership != manifest.payload.membership
             || checkpoint.payload.checkpoint_sequence != manifest.payload.checkpoint_sequence
             || checkpoint.hash()? != manifest.payload.checkpoint_hash
+            || checkpoint.payload.personal_state_schema_version
+                != manifest.payload.personal_state_schema_version
         {
             return Err(VaultError::MembershipFork);
         }
@@ -777,6 +779,7 @@ impl<'a, T: VaultTransport + ?Sized> ManualSyncEngine<'a, T> {
                 }
             }
             let mut terminal_segment_key = None;
+            let mut terminal_personal_state_schema_version = None;
             while anchor.last_sequence < head.payload.last_sequence {
                 let expected = anchor
                     .last_sequence
@@ -802,10 +805,14 @@ impl<'a, T: VaultTransport + ?Sized> ManualSyncEngine<'a, T> {
                         .saturating_add(batch.payload.operations.len());
                     summary.downloaded_segments = summary.downloaded_segments.saturating_add(1);
                 }
+                terminal_personal_state_schema_version =
+                    Some(batch.payload.personal_state_schema_version);
                 terminal_segment_key = Some(key);
             }
             if anchor.last_batch_hash.as_deref() != Some(&head.payload.last_batch_hash)
                 || terminal_segment_key.as_ref() != Some(&head.payload.last_segment_key)
+                || terminal_personal_state_schema_version
+                    != Some(head.payload.personal_state_schema_version)
             {
                 return Err(VaultError::RollbackDetected);
             }
@@ -901,12 +908,15 @@ impl<'a, T: VaultTransport + ?Sized> ManualSyncEngine<'a, T> {
             membership,
             device_id,
             input.device,
-            anchor.last_sequence,
-            anchor
-                .last_batch_hash
-                .clone()
-                .ok_or(VaultError::InvalidEncryptedObject)?,
-            last_segment_key,
+            DeviceHeadTip {
+                last_sequence: anchor.last_sequence,
+                last_batch_hash: anchor
+                    .last_batch_hash
+                    .clone()
+                    .ok_or(VaultError::InvalidEncryptedObject)?,
+                last_segment_key,
+                personal_state_schema_version: personal_state_marker(&state)?,
+            },
         )?;
         let encrypted_head = head.encrypt(membership)?;
         let condition = current_head.map_or(ObjectCondition::CreateOnly, |metadata| {
@@ -1274,11 +1284,22 @@ fn largest_batch(
 }
 
 fn sync_equivalent(left: &PersonalStateV2, right: &PersonalStateV2) -> bool {
-    left.dataset_id == right.dataset_id
+    left.schema_version == right.schema_version
+        && left.dataset_id == right.dataset_id
         && left.device_registry == right.device_registry
         && left.version_vector == right.version_vector
         && left.operations == right.operations
         && left.compaction_checkpoint == right.compaction_checkpoint
+}
+
+fn personal_state_marker(state: &PersonalStateV2) -> Result<Option<u32>, VaultError> {
+    match state.schema_version {
+        crate::personal_state::PERSONAL_STATE_SCHEMA_VERSION => Ok(None),
+        crate::personal_state::PERSONAL_STATE_LISTENING_SCHEMA_VERSION => Ok(Some(
+            crate::personal_state::PERSONAL_STATE_LISTENING_SCHEMA_VERSION,
+        )),
+        _ => Err(VaultError::InvalidEncryptedObject),
+    }
 }
 
 pub(super) fn is_adjacent_compaction_transition(

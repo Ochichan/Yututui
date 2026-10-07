@@ -300,7 +300,7 @@ fn settings_keys_lists_radio_normal_mode_binding() {
     app.update(Msg::Key(key(KeyCode::Char('o')))); // open settings
     app.settings.as_mut().unwrap().tab = SettingsTab::Keys;
 
-    let buf = render_app_buffer(&app, 120, 40);
+    let buf = render_app_buffer(&app, 120, 50);
     let text: String = buf
         .content()
         .iter()

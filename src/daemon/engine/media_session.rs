@@ -16,6 +16,7 @@ use crate::signals;
 impl DaemonEngine {
     /// Retire every daemon-owned media process before slower shutdown durability barriers.
     pub(crate) fn shutdown_media_owners(&mut self) {
+        self.snapshot_listening_progress();
         self.player = None;
     }
 

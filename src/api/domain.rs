@@ -197,6 +197,10 @@ pub struct Song {
     /// tracks (whose `video_id` is already the YouTube ID). Old persisted JSON omits it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub yt_video_id: Option<String>,
+    /// Radio Browser's normalized ISO-3166 alpha-2 code. Safe catalog metadata retained after
+    /// `RadioStation` becomes a queueable `Song`; absent for ordinary tracks and unknown stations.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub radio_country_code: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -296,6 +300,7 @@ impl Song {
             playable: None,
             local_path: None,
             yt_video_id: None,
+            radio_country_code: None,
         }
     }
 
@@ -363,6 +368,7 @@ impl Song {
             playable: Some(playable),
             local_path: None,
             yt_video_id: None,
+            radio_country_code: None,
         }
     }
 
@@ -441,6 +447,7 @@ impl Song {
             playable: None,
             local_path: Some(path),
             yt_video_id,
+            radio_country_code: None,
         }
     }
 
@@ -490,6 +497,7 @@ impl Song {
             playable: self.playable.clone(),
             local_path: Some(path),
             yt_video_id: self.youtube_id().map(str::to_owned),
+            radio_country_code: self.radio_country_code.clone(),
         }
     }
 

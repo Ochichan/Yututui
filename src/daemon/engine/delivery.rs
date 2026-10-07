@@ -187,7 +187,24 @@ impl super::DaemonEngine {
         &mut self,
         previous: QueueSnapshot,
     ) -> Result<(), EngineError> {
-        match self.load_current().await {
+        self.load_current_or_restore_queue_with_cause(
+            previous,
+            crate::crossfade::AdvanceCause::Manual,
+        )
+        .await
+    }
+
+    pub(super) async fn load_current_or_restore_queue_with_cause(
+        &mut self,
+        previous: QueueSnapshot,
+        cause: crate::crossfade::AdvanceCause,
+    ) -> Result<(), EngineError> {
+        self.ensure_player().await?;
+        match self.load_current_loaded_for(
+            super::transport::LoadCurrentIntent::Ordinary,
+            cause,
+            None,
+        ) {
             Ok(()) => Ok(()),
             Err(error) => {
                 self.queue.restore_snapshot(previous);

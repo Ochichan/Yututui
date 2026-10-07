@@ -154,6 +154,7 @@ pub(crate) struct PersonalSyncState {
 pub(crate) struct PersonalStateRuntime {
     pub(crate) ledger: crate::personal_state::PersonalStateV2,
     pub(crate) device_id: Option<crate::personal_state::DeviceId>,
+    pub(crate) listening: crate::listening::ListeningPlaybackState,
     pub(crate) revision_guard: crate::sync::OwnerRevisionGuard,
     pub(crate) sync: PersonalSyncState,
     pub(crate) sync_ui: SyncUiState,

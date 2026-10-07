@@ -221,6 +221,7 @@ impl App {
         // cannot move underneath the dismissed modal before button-up.
         if self.overlays.why_gem_video_id.is_some()
             || self.overlays.station_card.is_some()
+            || self.overlays.listening.is_some()
             || self.interaction.why_gem_click.is_some()
         {
             return Vec::new();
@@ -343,6 +344,7 @@ impl App {
         if self.personal_state.sync_ui.modal_open()
             || self.overlays.why_gem_video_id.is_some()
             || self.overlays.station_card.is_some()
+            || self.overlays.listening.is_some()
         {
             self.cancel_seekbar_scrub();
             self.interaction.ai_transcript_drag = None;
@@ -412,7 +414,10 @@ impl App {
         row: u16,
         ctrl: bool,
     ) -> Vec<Cmd> {
-        if self.overlays.why_gem_video_id.is_some() || self.overlays.station_card.is_some() {
+        if self.overlays.why_gem_video_id.is_some()
+            || self.overlays.station_card.is_some()
+            || self.overlays.listening.is_some()
+        {
             return Vec::new();
         }
         if self.local_find_mouse_scroll_modal(up, MOUSE_SCROLL_LINES) {

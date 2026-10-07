@@ -30,10 +30,15 @@ use crate::streaming::StreamingConfig;
 mod import_v1;
 pub(crate) mod live;
 pub(crate) mod offline;
+mod personal_state;
 mod publish;
 #[cfg(unix)]
 mod unix_private;
 pub(crate) use offline::load_playlists_read_only;
+pub(crate) use personal_state::reconcile_v2_sources;
+pub use personal_state::{
+    export_personal_state_from_sources, export_personal_state_snapshot, export_v2_from_sources,
+};
 #[cfg(target_os = "macos")]
 mod macos_private;
 #[cfg(windows)]
@@ -53,11 +58,14 @@ const EXPORT_KIND: &str = "yututui_personal_data_export";
 const EXPORT_PROFILE: &str = "portable";
 const FILE_PREFIX: &str = "yututui-personal-data-v1";
 const FILE_PREFIX_V2: &str = "yututui-personal-data-v2";
+const FILE_PREFIX_V3: &str = "yututui-personal-data-v3";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExportSchema {
+    Current,
     V1,
     V2,
+    V3,
 }
 
 const OMITTED_CATEGORIES: &[&str] = &[
@@ -396,7 +404,7 @@ pub fn default_export_directory() -> Result<PathBuf, ExportError> {
 /// Remote clients use this as part of validating an owner's completion response before showing a
 /// filesystem path as a successful backup.
 pub fn is_personal_export_file_name(name: &str) -> bool {
-    [FILE_PREFIX, FILE_PREFIX_V2]
+    [FILE_PREFIX, FILE_PREFIX_V2, FILE_PREFIX_V3]
         .into_iter()
         .any(|prefix| is_export_file_name_with_prefix(name, prefix))
 }
@@ -422,7 +430,7 @@ fn is_export_file_name_with_prefix(name: &str, prefix: &str) -> bool {
 
 /// Load all typed stores (including persistence journals), sanitize them, and export to `directory`.
 pub fn export_from_disk(directory: &Path) -> Result<PathBuf, ExportError> {
-    export_from_disk_with_schema(directory, ExportSchema::V2)
+    export_from_disk_with_schema(directory, ExportSchema::Current)
 }
 
 pub fn export_from_disk_with_schema(
@@ -430,7 +438,10 @@ pub fn export_from_disk_with_schema(
     schema: ExportSchema,
 ) -> Result<PathBuf, ExportError> {
     let sources = offline::load_sources()?;
-    if schema == ExportSchema::V2 {
+    if matches!(
+        schema,
+        ExportSchema::Current | ExportSchema::V2 | ExportSchema::V3
+    ) {
         let paths = crate::personal_state::PersonalStatePaths::current().map_err(|error| {
             ExportError::SourceStore {
                 store: "personal state",
@@ -443,7 +454,7 @@ pub fn export_from_disk_with_schema(
                 detail: error.to_string(),
             }
         })?;
-        let state =
+        let mut state =
             match loaded {
                 Some(state) => {
                     let local_device = crate::persist::load_personal_state_device_id(&state)
@@ -472,6 +483,29 @@ pub fn export_from_disk_with_schema(
                 store: "personal state",
                 detail: error.to_string(),
             })?;
+        if schema == ExportSchema::V2
+            && state.state().schema_version != crate::personal_state::PERSONAL_STATE_SCHEMA_VERSION
+        {
+            return Err(ExportError::SourceStore {
+                store: "personal state",
+                detail: "schema 2 cannot represent listening records; export schema 3 instead"
+                    .to_owned(),
+            });
+        }
+        if schema == ExportSchema::V3
+            && state.state().schema_version == crate::personal_state::PERSONAL_STATE_SCHEMA_VERSION
+        {
+            let mut upgraded = state.state().clone();
+            upgraded.schema_version =
+                crate::personal_state::PERSONAL_STATE_LISTENING_SCHEMA_VERSION;
+            state =
+                crate::personal_state::PersonalStateCommit::prepare(upgraded).map_err(|error| {
+                    ExportError::SourceStore {
+                        store: "personal state",
+                        detail: error.to_string(),
+                    }
+                })?;
+        }
         return export_personal_state_snapshot(directory, state.state());
     }
     let snapshot = ExportSnapshot::new(
@@ -495,69 +529,6 @@ pub fn export_snapshot(
     snapshot: &ExportSnapshot,
 ) -> Result<PathBuf, ExportError> {
     export_serializable(directory, snapshot, snapshot.created_at_unix, FILE_PREFIX)
-}
-
-pub fn export_personal_state_snapshot(
-    directory: &Path,
-    state: &crate::personal_state::PersonalStateV2,
-) -> Result<PathBuf, ExportError> {
-    state.validate().map_err(|error| ExportError::SourceStore {
-        store: "personal state",
-        detail: error.to_string(),
-    })?;
-    export_serializable(directory, state, unix_now(), FILE_PREFIX_V2)
-}
-
-pub fn export_v2_from_sources(
-    directory: &Path,
-    personal_state: &crate::personal_state::PersonalStateV2,
-    local_device: Option<&crate::personal_state::DeviceId>,
-    library: &Library,
-    playlists: &Playlists,
-    signals: &Signals,
-    station: &StationStore,
-) -> Result<PathBuf, ExportError> {
-    let state = reconcile_v2_sources(
-        personal_state,
-        local_device,
-        library,
-        playlists,
-        signals,
-        station,
-    )
-    .and_then(crate::personal_state::PersonalStateCommit::prepare)
-    .map_err(|error| ExportError::SourceStore {
-        store: "personal state",
-        detail: error.to_string(),
-    })?;
-    export_personal_state_snapshot(directory, state.state())
-}
-
-pub(crate) fn reconcile_v2_sources(
-    personal_state: &crate::personal_state::PersonalStateV2,
-    local_device: Option<&crate::personal_state::DeviceId>,
-    library: &Library,
-    playlists: &Playlists,
-    signals: &Signals,
-    station: &StationStore,
-) -> Result<crate::personal_state::PersonalStateV2, crate::personal_state::PersonalStateError> {
-    match local_device {
-        Some(device_id) => crate::personal_state::reconcile_runtime_as(
-            personal_state,
-            device_id,
-            library,
-            playlists,
-            signals,
-            station,
-        ),
-        None => crate::personal_state::reconcile_runtime(
-            personal_state,
-            library,
-            playlists,
-            signals,
-            station,
-        ),
-    }
 }
 
 fn export_serializable(

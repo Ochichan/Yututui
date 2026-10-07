@@ -672,6 +672,19 @@ pub fn render_help_button(frame: &mut Frame, app: &App, area: Rect) {
             glyph,
         ));
     }
+    let records_label = t!("bookmarks", "북마크", "ブックマーク");
+    let used: u16 = segs.iter().map(|segment| text_width(segment.text)).sum();
+    if used
+        .saturating_add(text_width(records_label))
+        .saturating_add(3)
+        <= area.width
+    {
+        segs.push(Seg::label("   "));
+        segs.push(Seg::button(
+            MouseTarget::Global(Action::OpenBookmarks),
+            records_label,
+        ));
+    }
     let hint = app.theme.style(R::TextMuted);
     render_segments(frame, app, area, &segs, hint, hint, Alignment::Center);
 }

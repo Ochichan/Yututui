@@ -491,6 +491,7 @@ pub(super) fn bare_local(path: &str, title: &str) -> Song {
         playable: None,
         local_path: Some(PathBuf::from(path)),
         yt_video_id: None,
+        radio_country_code: None,
     }
 }
 
@@ -572,6 +573,13 @@ pub(super) fn rendered_help_cluster(app: &App, width: u16, height: u16) -> Rect 
     if let Some(c) = collapse {
         right = right.max(c.right());
         bottom = bottom.max(c.bottom());
+    }
+    if let Some(records) = buttons
+        .iter()
+        .find(|button| button.target == MouseTarget::Global(Action::OpenBookmarks))
+    {
+        right = right.max(records.rect.right());
+        bottom = bottom.max(records.rect.bottom());
     }
     Rect {
         x: left,

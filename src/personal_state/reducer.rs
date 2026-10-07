@@ -157,6 +157,7 @@ pub fn merge(
     }
 
     let mut merged = local.clone();
+    merged.schema_version = local.schema_version.max(remote.schema_version);
     let local_ids = operation_set(local);
     let mut operations = local
         .operations
@@ -436,6 +437,7 @@ pub(crate) fn project_at(
             }
             Operation::AddDevice { .. } | Operation::RevokeDevice { .. } => {}
             Operation::LegacyBaseline { .. } => {}
+            Operation::Listening { .. } => {}
         }
     }
 

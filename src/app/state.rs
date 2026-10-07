@@ -1298,6 +1298,7 @@ pub struct Overlays {
     /// card rather than silently retargeting an indistinguishable duplicate occurrence.
     pub(crate) why_gem_queue_revision: Option<u64>,
     pub station_card: Option<StationCard>,
+    pub listening: Option<ListeningDialog>,
     /// The "what's playing" (지듣노) overlay — the radio identify card with favorite /
     /// ask-DJ Gem actions. `None` = closed. Opened by `Action::IdentifyNowPlaying` (`i`).
     pub now_playing_overlay: Option<NowPlayingOverlay>,

@@ -131,6 +131,7 @@ pub struct TrackTransitionPlan {
     recorder: Option<crate::recorder::RecorderTransitionPlan>,
     kind: TrackTransitionKind,
     outgoing: Option<bool>,
+    listening_reason: crate::listening::ListeningLoadReason,
     skipped: Vec<SkippedCandidate>,
     status_after_commit: Option<(StatusKind, String)>,
     video_follow_up: Option<VideoFollowUp>,
@@ -290,6 +291,10 @@ impl App {
         let expected_queue_rev = self.queue.rev();
         let expected_cursor = self.queue.cursor_pos();
         let expected_video_id = self.queue.current().map(|song| song.video_id.clone());
+        let listening_reason = match movement {
+            TrackMove::Next { auto: true } => crate::listening::ListeningLoadReason::Automatic,
+            _ => crate::listening::ListeningLoadReason::Deliberate,
+        };
         let first_cursor = match movement {
             TrackMove::Next { auto } => self.queue.plan_next_cursor(expected_cursor, auto),
             TrackMove::Previous => self.queue.plan_prev_cursor(expected_cursor),
@@ -314,6 +319,7 @@ impl App {
                     target_cursor: None,
                 },
                 outgoing,
+                listening_reason,
                 skipped: Vec::new(),
                 status_after_commit: None,
                 video_follow_up: None,
@@ -341,6 +347,7 @@ impl App {
                             load: Box::new(load),
                         },
                         outgoing,
+                        listening_reason,
                         skipped,
                         status_after_commit: None,
                         video_follow_up: None,
@@ -366,6 +373,7 @@ impl App {
                 target_cursor: Some(last_cursor),
             },
             outgoing,
+            listening_reason,
             skipped,
             status_after_commit: None,
             video_follow_up: None,
@@ -570,6 +578,7 @@ impl App {
             recorder,
             kind,
             outgoing,
+            listening_reason,
             skipped,
             status_after_commit,
             video_follow_up,
@@ -605,9 +614,14 @@ impl App {
         }
         let recorder = recorder.expect("track transition must carry recorder teardown");
         self.validate_recorder_transition(&recorder);
-        let mut effects = outgoing
-            .map(|full| self.record_outgoing(full))
-            .unwrap_or_default();
+        let mut effects = if matches!(&kind, TrackTransitionKind::Load { .. }) {
+            self.snapshot_listening_progress()
+        } else {
+            Vec::new()
+        };
+        if let Some(full) = outgoing {
+            effects.extend(self.record_outgoing(full));
+        }
         effects.extend(self.commit_recorder_transition(recorder));
         if let Some(plan) = post_commit.mode_switch.as_ref() {
             self.commit_mode_switch_before_track(plan);
@@ -628,7 +642,7 @@ impl App {
                     );
                 }
                 self.log_skipped_candidates(&skipped);
-                effects.extend(self.commit_prepared_track_load(*load));
+                effects.extend(self.commit_prepared_track_load(*load, listening_reason));
             }
             TrackTransitionKind::End { target_cursor } => {
                 if let Some(plan) = mutation.take() {

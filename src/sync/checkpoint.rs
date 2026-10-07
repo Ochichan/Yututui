@@ -4,7 +4,9 @@ use ed25519_dalek::SigningKey;
 use serde::{Deserialize, Serialize};
 
 use crate::personal_state::{
-    DeviceId, Operation, OperationEnvelope, OperationOrigin, PersonalStateV2, VersionVector,
+    DeviceId, Operation, OperationEnvelope, OperationOrigin,
+    PERSONAL_STATE_LISTENING_SCHEMA_VERSION, PERSONAL_STATE_SCHEMA_VERSION, PersonalStateV2,
+    VersionVector,
 };
 
 use super::batch::BatchAnchor;
@@ -36,6 +38,8 @@ pub struct CheckpointBatchAnchor {
 pub struct CheckpointPayload {
     pub kind: String,
     pub schema_version: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub personal_state_schema_version: Option<u32>,
     pub dataset_id: String,
     pub checkpoint_sequence: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -112,6 +116,7 @@ impl SignedCheckpoint {
         let payload = CheckpointPayload {
             kind: CHECKPOINT_KIND.to_owned(),
             schema_version: super::VAULT_SCHEMA_VERSION,
+            personal_state_schema_version: personal_state_marker(&state)?,
             dataset_id: verified.dataset_id.clone(),
             checkpoint_sequence: checkpoint_anchor
                 .checkpoint_sequence
@@ -278,6 +283,7 @@ fn validate_payload(
 ) -> Result<(), VaultError> {
     if payload.kind != CHECKPOINT_KIND
         || payload.schema_version != super::VAULT_SCHEMA_VERSION
+        || payload.personal_state_schema_version != personal_state_marker(&payload.state)?
         || payload.dataset_id != membership.dataset_id
         || payload.membership_epoch != membership.epoch
         || payload.checkpoint_sequence == 0
@@ -361,6 +367,16 @@ fn validate_payload(
     }
     active_signer(membership, &payload.signer_device_id)?;
     Ok(())
+}
+
+fn personal_state_marker(state: &PersonalStateV2) -> Result<Option<u32>, VaultError> {
+    match state.schema_version {
+        PERSONAL_STATE_SCHEMA_VERSION => Ok(None),
+        PERSONAL_STATE_LISTENING_SCHEMA_VERSION => {
+            Ok(Some(PERSONAL_STATE_LISTENING_SCHEMA_VERSION))
+        }
+        _ => Err(VaultError::InvalidEncryptedObject),
+    }
 }
 
 fn derive_batch_anchors(
@@ -664,6 +680,65 @@ mod tests {
     }
 
     #[test]
+    fn checkpoint_schema_marker_is_authenticated_and_schema_two_omits_it() {
+        let fixture = fixture();
+        let schema_two = SignedCheckpoint::create(
+            fixture.chain.clone(),
+            &fixture.anchor,
+            fixture.device_one.device_id.clone(),
+            fixture.device_one_secrets.signing_key(),
+            &CheckpointAnchor::default(),
+            fixture.state.clone(),
+        )
+        .unwrap();
+        assert_eq!(schema_two.payload.personal_state_schema_version, None);
+        assert!(
+            !serde_json::to_string(&schema_two)
+                .unwrap()
+                .contains("personal_state_schema_version")
+        );
+
+        let mut listening_state = fixture.state.clone();
+        listening_state.schema_version = PERSONAL_STATE_LISTENING_SCHEMA_VERSION;
+        let schema_three = SignedCheckpoint::create(
+            fixture.chain.clone(),
+            &fixture.anchor,
+            fixture.device_one.device_id.clone(),
+            fixture.device_one_secrets.signing_key(),
+            &CheckpointAnchor::default(),
+            listening_state,
+        )
+        .unwrap();
+        assert_eq!(
+            schema_three.payload.personal_state_schema_version,
+            Some(PERSONAL_STATE_LISTENING_SCHEMA_VERSION)
+        );
+        let encrypted = schema_three.encrypt(&fixture.anchor).unwrap();
+        assert_eq!(
+            SignedCheckpoint::decrypt_for_device(
+                &encrypted,
+                &fixture.device_one_secrets,
+                &fixture.anchor,
+            )
+            .unwrap(),
+            schema_three
+        );
+
+        let mut spoofed = schema_three;
+        spoofed.payload.personal_state_schema_version = None;
+        spoofed.signature = sign_serializable(
+            CHECKPOINT_SIGNATURE_DOMAIN,
+            fixture.device_one_secrets.signing_key(),
+            &spoofed.payload,
+        )
+        .unwrap();
+        assert_eq!(
+            spoofed.verify(&fixture.anchor),
+            Err(VaultError::InvalidEncryptedObject)
+        );
+    }
+
+    #[test]
     fn revoked_device_is_excluded_from_rotated_checkpoint() {
         let mut fixture = fixture();
         let (device_two, device_two_secrets) = device("device-two");
@@ -846,6 +921,7 @@ mod tests {
             coverage: VersionVector::default(),
             previous_checkpoint_hash: None,
             retained_engagement_operations: BTreeSet::new(),
+            retained_listening_operations: BTreeSet::new(),
             leader_authorization: None,
             acknowledged_by: BTreeSet::from([fixture.device_one.device_id.clone()]),
         });

@@ -86,6 +86,7 @@ pub fn default_bindings() -> Vec<(KeyContext, Action, Chord)> {
         (C::Atlas, A::VolUp, key(KeyCode::PageUp)),
         (C::Atlas, A::VolDown, key(KeyCode::PageDown)),
         (C::Atlas, A::AtlasClose, ch('q')),
+        (C::Atlas, A::OpenPassport, ch('P')),
         // External mpv video window controls. These are installed into mpv on the next
         // overlay open; compatibility aliases (`<`, `>`, `p`) stay fixed in video.rs.
         (C::MpvOverlay, A::VideoTogglePause, ch(' ')),
@@ -147,10 +148,20 @@ pub fn default_bindings() -> Vec<(KeyContext, Action, Chord)> {
         // scrolling with a modifier held); the Ctrl+-/= keys stay live either way.
         (C::Global, A::ToggleZoomWheelLock, ctrl('l')),
         (C::Global, A::Quit, ctrl('q')),
+        (C::Global, A::OpenBookmarks, ctrl('b')),
+        (C::Global, A::OpenDjPresets, alt_shift('p')),
         (C::Station, A::BanTrack, ch('B')),
         (C::Station, A::BanArtist, ch('A')),
         (C::Station, A::OpenStationCard, ch('e')),
         (C::StationCard, A::StationForget, key(KeyCode::Delete)),
+        (C::Listening, A::ListeningAdd, ch('n')),
+        (C::Listening, A::ListeningEdit, ch('e')),
+        (C::Listening, A::ListeningDetails, ch('i')),
+        (C::Listening, A::ListeningOverwrite, ch('s')),
+        (C::Listening, A::ListeningDelete, key(KeyCode::Delete)),
+        (C::Listening, A::ListeningRestart, ch('r')),
+        (C::Listening, A::ListeningToggleResume, ch('a')),
+        (C::Listening, A::ListeningClearPassport, ch('C')),
         // Library list commands.
         (C::Library, A::Confirm, key(KeyCode::Enter)),
         (C::Library, A::ToggleLocalMode, alt_shift('l')),

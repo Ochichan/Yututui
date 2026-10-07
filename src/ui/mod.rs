@@ -114,6 +114,9 @@ pub fn render(frame: &mut Frame, app: &App) {
     if app.overlays.station_card.is_some() {
         views::station_card::render(frame, app, area);
     }
+    if app.overlays.listening.is_some() {
+        views::listening::render(frame, app, area);
+    }
     // The "what's playing" identify card (radio): the result + favorite / ask-DJ Gem
     // actions. Below the mode confirmations so those stay on top.
     if app.overlays.now_playing_overlay.is_some() {

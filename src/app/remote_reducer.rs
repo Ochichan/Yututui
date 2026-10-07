@@ -224,6 +224,7 @@ impl App {
                 let cmds = self.quit_app();
                 (RemoteResponse::ok("quitting ytt".to_string()), cmds)
             }
+            RemoteCommand::Listening { action } => self.remote_listening(action),
         }
     }
 

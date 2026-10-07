@@ -315,6 +315,7 @@ impl DownloadStore {
                     import_source_order: rec.import_source_order,
                     duration_secs: rec.duration_secs,
                     yt_video_id: rec.yt_video_id.clone(),
+                    radio_country_code: None,
                     ..song
                 },
                 None => song,

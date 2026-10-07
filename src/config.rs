@@ -364,6 +364,9 @@ pub struct Config {
     /// Auto-play the restored last track as soon as the app launches. `None` → off
     /// (opt-in; a fresh launch otherwise seeds the track paused and idle).
     pub autoplay_on_start: Option<bool>,
+    pub listening_resume: Option<bool>,
+    pub listening_records_enabled: Option<bool>,
+    pub listening_local_scope: Option<String>,
     /// When the `v` video overlay is open, auto-play the next queue track's video as the
     /// current one ends (TUI only; the overlay doesn't exist in the daemon). `None` → off.
     pub auto_continue_videos: Option<bool>,
@@ -602,6 +605,9 @@ impl Default for Config {
             enqueue_next: None,
             autoplay_streaming: None,
             autoplay_on_start: None,
+            listening_resume: None,
+            listening_records_enabled: None,
+            listening_local_scope: None,
             auto_continue_videos: None,
             search: SearchConfig::default(),
             streaming: StreamingConfig::default(),
@@ -633,6 +639,14 @@ impl Default for Config {
 }
 
 impl Config {
+    pub fn effective_listening_resume(&self) -> bool {
+        self.listening_resume.unwrap_or(true)
+    }
+
+    pub fn effective_listening_records_enabled(&self) -> bool {
+        self.listening_records_enabled.unwrap_or(false) && self.listening_local_scope.is_some()
+    }
+
     pub fn player_runtime(&self, cookies_file: Option<PathBuf>) -> PlayerRuntimeConfig {
         PlayerRuntimeConfig {
             volume: self.volume,

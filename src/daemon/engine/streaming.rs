@@ -339,8 +339,9 @@ impl DaemonEngine {
             self.queue
                 .goto(old_len.min(self.queue.len().saturating_sub(1)));
             if self
-                .load_current_or_restore_queue(
+                .load_current_or_restore_queue_with_cause(
                     previous.expect("idle streaming extension captured a queue snapshot"),
+                    crate::crossfade::AdvanceCause::EndOfTrack,
                 )
                 .await
                 .is_err()

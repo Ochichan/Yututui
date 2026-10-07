@@ -23,11 +23,17 @@ impl LandMask {
     }
 
     pub fn build_country(country: &Country) -> Self {
+        Self::build_countries(std::iter::once(country))
+    }
+
+    pub fn build_countries<'a>(countries: impl IntoIterator<Item = &'a Country>) -> Self {
         let mut mask = Self {
             bits: vec![0; MASK_W * MASK_H / 64],
         };
-        for ring in &country.rings {
-            mask.fill_ring(&ring.pts);
+        for country in countries {
+            for ring in &country.rings {
+                mask.fill_ring(&ring.pts);
+            }
         }
         mask
     }

@@ -20,7 +20,7 @@ Usage: ytt data <command>
 Export portable personal data without credentials, machine paths, or media files.
 
 Commands:
-  export [--to DIR] [--schema 1|2]
+  export [--to DIR] [--schema 1|2|3]
                           Export personal state (schema 2 by default)
   import <FILE> [--dry-run] [--apply]
                           Preview or apply a personal-state import
@@ -30,7 +30,7 @@ Options:
 ";
 
 const EXPORT_USAGE: &str = "\
-Usage: ytt data export [--to DIR] [--schema 1|2]
+Usage: ytt data export [--to DIR] [--schema 1|2|3]
 
 Write one versioned JSON export. By default, DIR is the operating system's Downloads
 folder. An explicit DIR must already exist.
@@ -40,7 +40,7 @@ paths, and media files are excluded.
 
 Options:
       --to DIR            Existing destination directory
-      --schema 1|2        Export schema (default: 2)
+      --schema 1|2|3      Export schema (default: current)
   -h, --help              Show this help
 ";
 
@@ -530,19 +530,19 @@ fn parse_export_args(args: &[String]) -> Result<ParseExport, String> {
                 index += 1;
                 args.get(index)
                     .filter(|value| !value.is_empty())
-                    .ok_or_else(|| "`--schema` requires 1 or 2".to_string())?
+                    .ok_or_else(|| "`--schema` requires 1, 2, or 3".to_string())?
                     .as_str()
             } else {
                 argument
                     .strip_prefix("--schema=")
                     .filter(|value| !value.is_empty())
-                    .ok_or_else(|| "`--schema` requires 1 or 2".to_string())?
+                    .ok_or_else(|| "`--schema` requires 1, 2, or 3".to_string())?
             };
             let parsed = raw
                 .parse::<u32>()
                 .ok()
-                .filter(|value| matches!(value, 1 | 2))
-                .ok_or_else(|| "`--schema` must be 1 or 2".to_string())?;
+                .filter(|value| matches!(value, 1..=3))
+                .ok_or_else(|| "`--schema` must be 1, 2, or 3".to_string())?;
             if schema.replace(parsed).is_some() {
                 return Err("`--schema` may only be specified once".to_string());
             }
@@ -577,10 +577,12 @@ fn parse_export_args(args: &[String]) -> Result<ParseExport, String> {
 }
 
 fn export_schema(schema: u32) -> yututui::data_export::ExportSchema {
-    if schema == 1 {
-        yututui::data_export::ExportSchema::V1
-    } else {
-        yututui::data_export::ExportSchema::V2
+    match schema {
+        0 => yututui::data_export::ExportSchema::Current,
+        1 => yututui::data_export::ExportSchema::V1,
+        2 => yututui::data_export::ExportSchema::V2,
+        3 => yututui::data_export::ExportSchema::V3,
+        _ => unreachable!("export schema was validated by the CLI parser"),
     }
 }
 
@@ -733,11 +735,11 @@ mod tests {
             panic!("expected export request");
         };
         assert_eq!(request.destination, None);
-        assert_eq!(request.schema, 2);
+        assert_eq!(request.schema, crate::remote::proto::DEFAULT_EXPORT_SCHEMA);
         match parse_export_args(&strings(&["--to", "/tmp"])).unwrap() {
             ParseExport::Request(request) => {
                 assert_eq!(request.destination.as_deref(), Some("/tmp"));
-                assert_eq!(request.schema, 2);
+                assert_eq!(request.schema, crate::remote::proto::DEFAULT_EXPORT_SCHEMA);
             }
             _ => panic!("expected destination"),
         }
@@ -764,7 +766,7 @@ mod tests {
             strings(&["--to"]),
             strings(&["--to="]),
             strings(&["--to", "/tmp", "--to", "/var/tmp"]),
-            strings(&["--schema", "3"]),
+            strings(&["--schema", "4"]),
             strings(&["--schema=1", "--schema=2"]),
             strings(&["unexpected"]),
         ] {

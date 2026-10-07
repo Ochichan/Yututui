@@ -9,6 +9,7 @@
 //! - Fetch replies carry the generation they were requested under; anything older than
 //!   `AtlasState::generation` is dropped, so closing and reopening never mixes catalogs.
 
+use std::cell::RefCell;
 use std::sync::OnceLock;
 use std::time::Instant;
 
@@ -44,6 +45,7 @@ pub enum AtlasTarget {
     Close,
     /// The "Atlas" button drawn in the radio set piece while Atlas is closed.
     Open,
+    Passport,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -153,6 +155,7 @@ pub struct AtlasState {
     pub pages_fetched: u32,
     pub grid: bool,
     pub autorotate: bool,
+    pub passport_map: RefCell<crate::app::listening_map::PassportMap>,
     pub last_tick: Option<Instant>,
     /// Centre on the playing station once it starts (config `follow_playing`).
     pub follow_uuid: Option<Box<str>>,
@@ -562,6 +565,7 @@ impl App {
 
     pub(in crate::app) fn on_atlas_action(&mut self, action: Action) -> Vec<Cmd> {
         match action {
+            Action::OpenPassport => self.open_listening(super::ListeningTab::Passport),
             Action::AtlasRotateLeft => self.atlas_rotate(0.0, -ROTATE_STEP_DEG),
             Action::AtlasRotateRight => self.atlas_rotate(0.0, ROTATE_STEP_DEG),
             Action::AtlasRotateUp => self.atlas_rotate(ROTATE_STEP_DEG, 0.0),
@@ -1005,6 +1009,7 @@ impl App {
                 self.dirty = true;
                 Vec::new()
             }
+            AtlasTarget::Passport => self.open_listening(super::ListeningTab::Passport),
             AtlasTarget::PanelRow(i) => {
                 let atlas = &mut self.radio_mode.atlas;
                 atlas.focus = AtlasFocus::Panel;

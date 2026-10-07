@@ -1,5 +1,7 @@
 use std::collections::HashSet;
 
+use serde::{Deserialize, Serialize};
+
 use crate::api::Song;
 use crate::signals::normalize_artist;
 use crate::streaming::candidate::Candidate;
@@ -7,16 +9,22 @@ use crate::streaming::candidate::Candidate;
 pub const SEED_TERMS_MAX: usize = 12;
 
 const SEED_TERM_CHARS_MAX: usize = 48;
+const SNAPSHOT_BANS_MAX: usize = 256;
+const SNAPSHOT_ID_CHARS_MAX: usize = 512;
+const SNAPSHOT_LABEL_CHARS_MAX: usize = 256;
 
 pub const SEED_BIAS_WEIGHT: f32 = 0.22;
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
 pub struct TrackId(String);
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
 pub struct ArtistKey(String);
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
 pub struct SeedTerm(String);
 
 impl TrackId {
@@ -78,27 +86,32 @@ pub enum TasteError {
     MissingTrackId,
     MissingArtist,
     EmptyTerm,
+    InvalidSnapshot(&'static str),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum SeedPolarity {
     MoreLike,
     Exclude,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct BannedTrack {
     pub id: TrackId,
     pub label: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct BannedArtist {
     pub key: ArtistKey,
     pub display: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Seed {
     pub term: SeedTerm,
     pub polarity: SeedPolarity,
@@ -110,6 +123,84 @@ pub struct SessionTaste {
     banned_artists: Vec<BannedArtist>,
     seeds: Vec<Seed>,
     epoch: u64,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TasteSnapshot {
+    pub banned_tracks: Vec<BannedTrack>,
+    pub banned_artists: Vec<BannedArtist>,
+    pub seeds: Vec<Seed>,
+}
+
+impl TasteSnapshot {
+    pub fn validate(&self) -> Result<(), TasteError> {
+        if self.banned_tracks.len() > SNAPSHOT_BANS_MAX
+            || self.banned_artists.len() > SNAPSHOT_BANS_MAX
+            || self.seeds.len() > SEED_TERMS_MAX
+        {
+            return Err(TasteError::InvalidSnapshot("too many taste entries"));
+        }
+        let valid_text = |value: &str, max| {
+            value.chars().count() <= max
+                && !value.chars().any(char::is_control)
+                && !looks_like_location(value)
+        };
+        let mut tracks = HashSet::new();
+        for row in &self.banned_tracks {
+            if row.id.0.trim() != row.id.0
+                || row.id.0.is_empty()
+                || row.id.0.to_ascii_lowercase().starts_with("local:")
+                || !valid_text(&row.id.0, SNAPSHOT_ID_CHARS_MAX)
+                || !valid_text(&row.label, SNAPSHOT_LABEL_CHARS_MAX)
+                || !tracks.insert(&row.id)
+            {
+                return Err(TasteError::InvalidSnapshot("invalid banned track"));
+            }
+        }
+        let mut artists = HashSet::new();
+        for row in &self.banned_artists {
+            if row.key.0.is_empty()
+                || normalize_artist(&row.key.0) != row.key.0
+                || !valid_text(&row.key.0, SNAPSHOT_LABEL_CHARS_MAX)
+                || !valid_text(&row.display, SNAPSHOT_LABEL_CHARS_MAX)
+                || !artists.insert(&row.key)
+            {
+                return Err(TasteError::InvalidSnapshot("invalid banned artist"));
+            }
+        }
+        let mut terms = HashSet::new();
+        for row in &self.seeds {
+            if SeedTerm::new(&row.term.0).as_ref() != Some(&row.term)
+                || !valid_text(&row.term.0, SEED_TERM_CHARS_MAX)
+                || !terms.insert(&row.term)
+            {
+                return Err(TasteError::InvalidSnapshot("invalid seed term"));
+            }
+        }
+        // One preference snapshot must fit in a signed sync batch with room for its envelope.
+        if serde_json::to_vec(self).map_or(true, |encoded| encoded.len() > 256 * 1024) {
+            return Err(TasteError::InvalidSnapshot(
+                "taste snapshot exceeds byte limit",
+            ));
+        }
+        Ok(())
+    }
+}
+
+fn looks_like_location(value: &str) -> bool {
+    let lower = value.to_ascii_lowercase();
+    lower.contains("http://")
+        || lower.contains("https://")
+        || lower.contains("file://")
+        || value.split_whitespace().any(|word| {
+            word.starts_with('/')
+                || word.starts_with("~/")
+                || word.starts_with("\\\\")
+                || (word.len() >= 3
+                    && word.as_bytes()[1] == b':'
+                    && matches!(word.as_bytes()[2], b'/' | b'\\'))
+        })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -197,6 +288,23 @@ impl TasteEdit {
 impl SessionTaste {
     fn bump_epoch(&mut self) {
         self.epoch = self.epoch.wrapping_add(1);
+    }
+
+    pub fn snapshot(&self) -> TasteSnapshot {
+        TasteSnapshot {
+            banned_tracks: self.banned_tracks.clone(),
+            banned_artists: self.banned_artists.clone(),
+            seeds: self.seeds.clone(),
+        }
+    }
+
+    pub fn replace_snapshot(&mut self, snapshot: TasteSnapshot) -> Result<(), TasteError> {
+        snapshot.validate()?;
+        self.banned_tracks = snapshot.banned_tracks;
+        self.banned_artists = snapshot.banned_artists;
+        self.seeds = snapshot.seeds;
+        self.bump_epoch();
+        Ok(())
     }
 
     pub fn apply(&mut self, edit: TasteEdit) -> TasteOutcome {
@@ -624,5 +732,83 @@ mod tests {
         assert_eq!(taste.counts().seeds, 1);
         assert!(taste.forget_at(0));
         assert!(taste.counts().is_empty());
+    }
+
+    #[test]
+    fn snapshot_replacement_is_atomic_and_bumps_epoch() {
+        let mut source = SessionTaste::default();
+        assert_eq!(
+            source.apply(TasteEdit::ban_track(&song("track", "Song", "Artist")).unwrap()),
+            TasteOutcome::Applied
+        );
+        assert_eq!(
+            source.apply(TasteEdit::parse_seed("ambient").unwrap()),
+            TasteOutcome::Applied
+        );
+        let snapshot = source.snapshot();
+
+        let mut target = SessionTaste::default();
+        let epoch = target.epoch();
+        target.replace_snapshot(snapshot.clone()).unwrap();
+        assert_eq!(target.snapshot(), snapshot);
+        assert_eq!(target.epoch(), epoch.wrapping_add(1));
+    }
+
+    #[test]
+    fn invalid_snapshot_does_not_mutate_session_taste() {
+        let banned = BannedTrack {
+            id: TrackId::new("duplicate").unwrap(),
+            label: "Duplicate".to_owned(),
+        };
+        let snapshot = TasteSnapshot {
+            banned_tracks: vec![banned.clone(), banned],
+            banned_artists: Vec::new(),
+            seeds: Vec::new(),
+        };
+        let mut taste = SessionTaste::default();
+        let before = taste.clone();
+        assert_eq!(
+            taste.replace_snapshot(snapshot),
+            Err(TasteError::InvalidSnapshot("invalid banned track"))
+        );
+        assert_eq!(taste, before);
+    }
+
+    #[test]
+    fn unicode_snapshot_cannot_block_the_sync_stream_with_an_oversized_operation() {
+        let snapshot = TasteSnapshot {
+            banned_tracks: (0..256)
+                .map(|index| BannedTrack {
+                    id: TrackId::new(&format!("{}{:03}", "😀".repeat(509), index)).unwrap(),
+                    label: "😀".repeat(256),
+                })
+                .collect(),
+            ..Default::default()
+        };
+        assert_eq!(
+            snapshot.validate(),
+            Err(TasteError::InvalidSnapshot(
+                "taste snapshot exceeds byte limit"
+            ))
+        );
+    }
+
+    #[test]
+    fn portable_presets_never_include_local_file_identifiers() {
+        for path in [
+            "/Users/alice/Music/private.mp3",
+            "C:\\Users\\alice\\Music\\private.mp3",
+        ] {
+            let song = Song::local_file(std::path::PathBuf::from(path));
+            let mut taste = SessionTaste::default();
+            assert_eq!(
+                taste.apply(TasteEdit::ban_track(&song).unwrap()),
+                TasteOutcome::Applied
+            );
+            assert_eq!(
+                taste.snapshot().validate(),
+                Err(TasteError::InvalidSnapshot("invalid banned track"))
+            );
+        }
     }
 }

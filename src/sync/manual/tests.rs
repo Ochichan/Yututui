@@ -457,6 +457,66 @@ fn leave_unpublished_two_operation_head(
 }
 
 #[test]
+fn interrupted_schema_three_manifest_publication_retries_without_rewriting_schema_two_manifest() {
+    let fixture = fixture(2);
+    let transport = MemoryTransport::new();
+    let bootstrap = synchronize(
+        &transport,
+        &fixture,
+        0,
+        &fixture.state,
+        &CheckpointAnchor::default(),
+    );
+    let device_id = DeviceId::new(fixture.devices[0].device_id()).unwrap();
+    let upgraded = crate::personal_state::append_listening(
+        &bootstrap.state,
+        Some(&device_id),
+        crate::listening::ListeningOperation::ClearPassport,
+        1,
+    )
+    .unwrap();
+    let manifest_key = manifest_key(&upgraded.dataset_id).unwrap();
+    let old_manifest = transport.objects.borrow()[&manifest_key].clone();
+
+    transport.reject_manifest_matches(true);
+    assert_eq!(
+        synchronize_result(
+            &transport,
+            &fixture,
+            0,
+            &upgraded,
+            &bootstrap.checkpoint_anchor,
+        )
+        .err(),
+        Some(VaultError::PreconditionFailed)
+    );
+    assert_eq!(transport.objects.borrow()[&manifest_key], old_manifest);
+
+    transport.reject_manifest_matches(false);
+    let retried = synchronize(
+        &transport,
+        &fixture,
+        0,
+        &upgraded,
+        &bootstrap.checkpoint_anchor,
+    );
+    assert_eq!(
+        retried.state.schema_version,
+        crate::personal_state::PERSONAL_STATE_LISTENING_SCHEMA_VERSION
+    );
+    let manifest = SignedVaultManifest::decrypt_for_device(
+        &EncryptedObject::from_bytes(transport.objects.borrow()[&manifest_key].clone()).unwrap(),
+        &fixture.devices[0],
+        &fixture.anchor,
+    )
+    .unwrap();
+    assert_eq!(
+        manifest.payload.personal_state_schema_version,
+        Some(crate::personal_state::PERSONAL_STATE_LISTENING_SCHEMA_VERSION)
+    );
+}
+
+#[test]
 fn two_clients_converge_and_a_no_op_sync_writes_nothing() {
     let fixture = fixture(2);
     let transport = MemoryTransport::new();
@@ -510,6 +570,207 @@ fn two_clients_converge_and_a_no_op_sync_writes_nothing() {
     assert_eq!(transport.writes(), writes_before);
     assert_eq!(no_op.summary.remote_writes, 0);
     assert!(!no_op.summary.manifest_written);
+}
+
+#[test]
+fn two_clients_converge_listening_records_through_the_encrypted_vault() {
+    let fixture = fixture(2);
+    let transport = MemoryTransport::new();
+    let bootstrap = synchronize(
+        &transport,
+        &fixture,
+        0,
+        &fixture.state,
+        &CheckpointAnchor::default(),
+    );
+    let initial_anchor = bootstrap.checkpoint_anchor.clone();
+    let first_device = DeviceId::new(fixture.devices[0].device_id()).unwrap();
+    let second_device = DeviceId::new(fixture.devices[1].device_id()).unwrap();
+    let resume_track = track("vault-listening");
+    let first = crate::personal_state::append_listening(
+        &bootstrap.state,
+        Some(&first_device),
+        crate::listening::ListeningOperation::UpsertBookmark {
+            bookmark: crate::listening::BookmarkRecord {
+                bookmark_id: crate::listening::BookmarkId::new("vault-bookmark").unwrap(),
+                track: resume_track.clone(),
+                position_ms: 30_000,
+                label: "Intro".to_owned(),
+            },
+        },
+        100,
+    )
+    .and_then(|state| {
+        crate::personal_state::append_listening(
+            &state,
+            Some(&first_device),
+            crate::listening::ListeningOperation::SetResume {
+                point: crate::listening::ResumePoint {
+                    track: resume_track.clone(),
+                    position_ms: 60_000,
+                    provenance: crate::listening::ResumeProvenance {
+                        playback_session_id: "first-session".to_owned(),
+                        device_id: first_device.clone(),
+                    },
+                },
+            },
+            101,
+        )
+    })
+    .and_then(|state| {
+        crate::personal_state::append_listening(
+            &state,
+            Some(&first_device),
+            crate::listening::ListeningOperation::UpsertDjPreset {
+                preset: crate::listening::DjPreset {
+                    preset_id: crate::listening::DjPresetId::new("vault-preset").unwrap(),
+                    name: "First preset".to_owned(),
+                    snapshot: crate::streaming::TasteSnapshot::default(),
+                },
+            },
+            102,
+        )
+    })
+    .unwrap();
+    let second = crate::personal_state::append_listening(
+        &bootstrap.state,
+        Some(&second_device),
+        crate::listening::ListeningOperation::SetPassportNote {
+            note: crate::listening::PassportNote {
+                station_uuid: "station-vault".to_owned(),
+                note: "Remote note".to_owned(),
+            },
+        },
+        103,
+    )
+    .and_then(|state| {
+        crate::personal_state::append_listening(
+            &state,
+            Some(&second_device),
+            crate::listening::ListeningOperation::ClearResume {
+                clear: crate::listening::ResumeClear {
+                    track: resume_track.clone(),
+                    provenance: crate::listening::ResumeProvenance {
+                        playback_session_id: "second-session".to_owned(),
+                        device_id: second_device.clone(),
+                    },
+                },
+            },
+            104,
+        )
+    })
+    .and_then(|state| {
+        crate::personal_state::append_listening(
+            &state,
+            Some(&second_device),
+            crate::listening::ListeningOperation::UpsertDjPreset {
+                preset: crate::listening::DjPreset {
+                    preset_id: crate::listening::DjPresetId::new("vault-preset").unwrap(),
+                    name: "Second preset".to_owned(),
+                    snapshot: crate::streaming::TasteSnapshot::default(),
+                },
+            },
+            105,
+        )
+    })
+    .unwrap();
+
+    let first_synced = synchronize(&transport, &fixture, 0, &first, &initial_anchor);
+    let second_synced = synchronize(&transport, &fixture, 1, &second, &initial_anchor);
+    let first_converged = synchronize(
+        &transport,
+        &fixture,
+        0,
+        &first_synced.state,
+        &first_synced.checkpoint_anchor,
+    );
+    let first_projection =
+        crate::listening::ListeningProjection::from_ledger(&first_converged.state).unwrap();
+    let second_projection =
+        crate::listening::ListeningProjection::from_ledger(&second_synced.state).unwrap();
+
+    assert_eq!(first_projection, second_projection);
+    assert!(
+        first_projection
+            .bookmarks
+            .contains_key(&crate::listening::BookmarkId::new("vault-bookmark").unwrap())
+    );
+    assert_eq!(
+        first_projection.passport_notes["station-vault"][0].note,
+        "Remote note"
+    );
+    assert_eq!(
+        first_projection.resumes[&resume_track.key].candidates.len(),
+        2
+    );
+    assert_eq!(
+        first_projection.dj_presets[&crate::listening::DjPresetId::new("vault-preset").unwrap()]
+            .len(),
+        2
+    );
+    assert_eq!(
+        first_converged.state.schema_version,
+        crate::personal_state::PERSONAL_STATE_LISTENING_SCHEMA_VERSION
+    );
+
+    let deleted = crate::personal_state::append_listening(
+        &first_converged.state,
+        Some(&first_device),
+        crate::listening::ListeningOperation::DeleteBookmark {
+            bookmark_id: crate::listening::BookmarkId::new("vault-bookmark").unwrap(),
+        },
+        200,
+    )
+    .unwrap();
+    let deletion_synced = synchronize(
+        &transport,
+        &fixture,
+        0,
+        &deleted,
+        &first_converged.checkpoint_anchor,
+    );
+    let offline_edit = crate::personal_state::append_listening(
+        &second_synced.state,
+        Some(&second_device),
+        crate::listening::ListeningOperation::UpsertBookmark {
+            bookmark: crate::listening::BookmarkRecord {
+                bookmark_id: crate::listening::BookmarkId::new("vault-bookmark").unwrap(),
+                track: resume_track,
+                position_ms: 90_000,
+                label: "Offline edit".to_owned(),
+            },
+        },
+        201,
+    )
+    .unwrap();
+    let offline_synced = synchronize(
+        &transport,
+        &fixture,
+        1,
+        &offline_edit,
+        &second_synced.checkpoint_anchor,
+    );
+    let compacted = synchronize(
+        &transport,
+        &fixture,
+        0,
+        &deletion_synced.state,
+        &deletion_synced.checkpoint_anchor,
+    );
+    let restored = synchronize(
+        &transport,
+        &fixture,
+        1,
+        &offline_synced.state,
+        &offline_synced.checkpoint_anchor,
+    );
+    assert!(compacted.state.compaction_checkpoint.is_some());
+    assert!(
+        crate::listening::ListeningProjection::from_ledger(&restored.state)
+            .unwrap()
+            .bookmarks
+            .is_empty()
+    );
 }
 
 #[test]
@@ -842,9 +1103,12 @@ fn same_sequence_head_fork_cannot_supply_the_upload_etag() {
         &membership,
         device_id,
         &fixture.devices[0],
-        head.payload.last_sequence,
-        "0".repeat(64),
-        head.payload.last_segment_key,
+        super::protocol::DeviceHeadTip {
+            last_sequence: head.payload.last_sequence,
+            last_batch_hash: "0".repeat(64),
+            last_segment_key: head.payload.last_segment_key,
+            personal_state_schema_version: head.payload.personal_state_schema_version,
+        },
     )
     .unwrap()
     .encrypt(&membership)
@@ -901,9 +1165,12 @@ fn signed_head_must_name_the_terminal_segment() {
         &membership,
         device_id,
         &fixture.devices[0],
-        head.payload.last_sequence,
-        head.payload.last_batch_hash,
-        wrong_terminal,
+        super::protocol::DeviceHeadTip {
+            last_sequence: head.payload.last_sequence,
+            last_batch_hash: head.payload.last_batch_hash,
+            last_segment_key: wrong_terminal,
+            personal_state_schema_version: head.payload.personal_state_schema_version,
+        },
     )
     .unwrap()
     .encrypt(&membership)
@@ -971,6 +1238,7 @@ fn local_compaction_publication_requires_the_immediate_remote_generation() {
             previous_checkpoint_hash: previous_checkpoint_hash
                 .map(|hash| hash.to_string().repeat(64)),
             retained_engagement_operations: BTreeSet::new(),
+            retained_listening_operations: BTreeSet::new(),
             leader_authorization: None,
             acknowledged_by: BTreeSet::new(),
         }

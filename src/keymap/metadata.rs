@@ -153,6 +153,17 @@ pub enum Action {
     BanArtist,
     OpenStationCard,
     StationForget,
+    OpenBookmarks,
+    OpenDjPresets,
+    OpenPassport,
+    ListeningAdd,
+    ListeningEdit,
+    ListeningDetails,
+    ListeningOverwrite,
+    ListeningDelete,
+    ListeningRestart,
+    ListeningToggleResume,
+    ListeningClearPassport,
 }
 
 /// Stable id (for config keys) + English + Korean + Japanese human label (for the editor
@@ -1001,6 +1012,83 @@ const ACTION_META: &[(Action, &str, &str, &str, &str)] = &[
         "선택한 차단/시드 해제",
         "選択した禁止/シードを解除",
     ),
+    (
+        Action::OpenBookmarks,
+        "open_bookmarks",
+        "Bookmarks and resume",
+        "북마크와 이어듣기",
+        "ブックマークと再開",
+    ),
+    (
+        Action::OpenDjPresets,
+        "open_dj_presets",
+        "Saved DJ presets",
+        "저장한 DJ 프리셋",
+        "保存したDJプリセット",
+    ),
+    (
+        Action::OpenPassport,
+        "open_passport",
+        "Listening passport",
+        "청취 여권",
+        "リスニングパスポート",
+    ),
+    (
+        Action::ListeningAdd,
+        "listening_add",
+        "Save a new record",
+        "새 기록 저장",
+        "新しい記録を保存",
+    ),
+    (
+        Action::ListeningEdit,
+        "listening_edit",
+        "Edit selected record",
+        "선택한 기록 수정",
+        "選択した記録を編集",
+    ),
+    (
+        Action::ListeningDetails,
+        "listening_details",
+        "View record details",
+        "기록 상세 보기",
+        "記録の詳細を表示",
+    ),
+    (
+        Action::ListeningOverwrite,
+        "listening_overwrite",
+        "Overwrite preset",
+        "프리셋 덮어쓰기",
+        "プリセットを上書き",
+    ),
+    (
+        Action::ListeningDelete,
+        "listening_delete",
+        "Delete selected record",
+        "선택한 기록 삭제",
+        "選択した記録を削除",
+    ),
+    (
+        Action::ListeningRestart,
+        "listening_restart",
+        "Start from beginning",
+        "처음부터 재생",
+        "最初から再生",
+    ),
+    (
+        Action::ListeningToggleResume,
+        "listening_toggle_resume",
+        "Toggle automatic resume",
+        "자동 이어듣기 전환",
+        "自動再開を切り替え",
+    ),
+    (
+        Action::ListeningClearPassport,
+        "listening_clear_passport",
+        "Clear listening passport",
+        "청취 여권 비우기",
+        "パスポートを消去",
+    ),
 ];
 
 impl Action {
@@ -1188,6 +1276,7 @@ pub enum KeyContext {
     Atlas,
     Station,
     StationCard,
+    Listening,
 }
 
 const CONTEXT_META: &[(KeyContext, &str, &str, &str, &str)] = &[
@@ -1297,6 +1386,13 @@ const CONTEXT_META: &[(KeyContext, &str, &str, &str, &str)] = &[
         "Station card",
         "스테이션 카드",
         "ステーションカード",
+    ),
+    (
+        KeyContext::Listening,
+        "listening",
+        "Listening records",
+        "청취 기록",
+        "リスニング記録",
     ),
 ];
 

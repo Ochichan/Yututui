@@ -91,6 +91,12 @@ impl App {
     }
 
     pub(in crate::app) fn station_card_key(&mut self, k: KeyEvent, chord: Chord) -> Vec<Cmd> {
+        if matches!(
+            self.keymap.global_action(chord),
+            Some(Action::OpenDjPresets)
+        ) {
+            return self.open_listening(ListeningTab::Presets);
+        }
         let close = k.code == KeyCode::Esc
             || matches!(
                 self.keymap.action(KeyContext::Common, chord),

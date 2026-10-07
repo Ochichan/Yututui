@@ -28,8 +28,9 @@ mod session;
 
 pub(crate) use command::RequestRetryClass;
 pub use command::{
-    BanTarget, DEFAULT_EXPORT_SCHEMA, REMOTE_MAX_EXPORT_DIRECTORY_BYTES, REMOTE_MAX_QUERY_BYTES,
-    REMOTE_MAX_TOPICS, REMOTE_MAX_TRACK_IDS, RemoteCommand, RemoteSettingChange,
+    BanTarget, DEFAULT_EXPORT_SCHEMA, ListeningRemoteAction, REMOTE_MAX_EXPORT_DIRECTORY_BYTES,
+    REMOTE_MAX_QUERY_BYTES, REMOTE_MAX_TOPICS, REMOTE_MAX_TRACK_IDS, RemoteCommand,
+    RemoteSettingChange,
 };
 pub use model::{ArtworkRef, LyricLineModel, TrackModel, WhyGemModel};
 pub use model_player::{EqModel, PlayerModel, QueueModel};
