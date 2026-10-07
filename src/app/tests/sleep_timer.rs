@@ -175,9 +175,10 @@ fn tick_fires_past_deadline_and_restores_pre_fade_volume() {
 fn tick_fades_through_the_canonical_set_volume_path() {
     let mut app = App::new(100);
     app.playback.volume = 100;
-    // Arm then move the deadline to 10 s from now: the fade window is exactly "now".
-    let mut timer = SleepTimer::armed(Instant::now(), 1, 10);
-    timer.deadline = Instant::now() + Duration::from_secs(10);
+    // Start halfway through the fade so even a same-timestamp tick lowers the volume.
+    let now = Instant::now();
+    let mut timer = SleepTimer::armed(now, 1, 10);
+    timer.deadline = now + Duration::from_secs(5);
     app.sleep.timer = Some(timer);
     // The fade window began: the first tick emits one volume step through player_intent.
     let cmds = app.handle_sleep_tick();
