@@ -18,7 +18,8 @@ jobs:
   verify-version:
     name: Verify synchronized 1.7.8 source versions
     if: >-
-      github.head_ref == 'codex/prepare-1.7.8' &&
+      (github.head_ref == 'codex/prepare-1.7.8' ||
+       github.head_ref == 'codex/test-unwind-size') &&
       github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     steps:
@@ -53,7 +54,8 @@ jobs:
   release-build:
     name: Native release build and package
     if: >-
-      github.head_ref == 'codex/prepare-1.7.8' &&
+      (github.head_ref == 'codex/prepare-1.7.8' ||
+       github.head_ref == 'codex/test-unwind-size') &&
       github.event.pull_request.head.repo.full_name == github.repository
     needs: verify-version
     uses: ./.github/workflows/native-release-build.yml
@@ -64,7 +66,8 @@ jobs:
   aggregate:
     name: Aggregate 1.7.8 preflight artifacts
     if: >-
-      github.head_ref == 'codex/prepare-1.7.8' &&
+      (github.head_ref == 'codex/prepare-1.7.8' ||
+       github.head_ref == 'codex/test-unwind-size') &&
       github.event.pull_request.head.repo.full_name == github.repository
     needs: release-build
     runs-on: ubuntu-latest
@@ -161,7 +164,8 @@ jobs:
     name: Release preflight 1.7.8 result
     if: >-
       always() &&
-      github.head_ref == 'codex/prepare-1.7.8' &&
+      (github.head_ref == 'codex/prepare-1.7.8' ||
+       github.head_ref == 'codex/test-unwind-size') &&
       github.event.pull_request.head.repo.full_name == github.repository
     needs: [verify-version, release-build, aggregate]
     runs-on: ubuntu-latest
