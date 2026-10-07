@@ -9,7 +9,7 @@ db-urls = ["https://github.com/rustsec/advisory-db"]
 # dependencies are covered too; bans/licenses/sources keep the default graph above.
 # Every entry carries: reachable path, why accepted, removal condition, review date.
 ignore = [
-    { id = "RUSTSEC-2024-0370", reason = "proc-macro-error unmaintained, via glib-macros in the optional Linux tray path. Remove when glib-macros drops proc-macro-error. Review 2026-10" },
+    { id = "RUSTSEC-2024-0370", reason = "proc-macro-error unmaintained, via glib-macros and gtk3-macros in the optional Linux tray path. Remove when both drop proc-macro-error. Review 2026-10" },
     { id = "RUSTSEC-2024-0436", reason = "paste unmaintained, via lofty 0.24.0 (tag reading); RUSTSEC lists no safe upgrade. Remove when lofty drops paste. Review 2026-10" },
 ]
 yanked = "warn"
