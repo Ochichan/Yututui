@@ -59,7 +59,7 @@ impl OwnerRevisionGuard {
         if self
             .shared
             .generation
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |generation| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |generation| {
                 generation.checked_add(1)
             })
             .is_err()

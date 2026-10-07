@@ -370,7 +370,7 @@ fn validate_owner_export_path(
     let name = path
         .file_name()
         .and_then(|name| name.to_str())
-        .ok_or_else(&invalid)?;
+        .ok_or_else(invalid)?;
     if !path.is_absolute()
         || path.parent() != Some(directory)
         || !yututui::data_export::is_personal_export_file_name(name)

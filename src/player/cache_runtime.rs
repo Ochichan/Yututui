@@ -50,7 +50,7 @@ impl OwnerSessionAccounting {
 
     fn add_written(&self, delta: u64) -> u64 {
         self.written_bytes
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |current| {
+            .try_update(Ordering::SeqCst, Ordering::SeqCst, |current| {
                 Some(current.saturating_add(delta))
             })
             .unwrap_or_else(|current| current)

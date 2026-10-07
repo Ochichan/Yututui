@@ -424,7 +424,7 @@ impl QueueFile {
         #[cfg(test)]
         if self
             .append_failures
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |remaining| {
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |remaining| {
                 remaining.checked_sub(1)
             })
             .is_ok()
@@ -455,7 +455,7 @@ impl QueueFile {
         #[cfg(test)]
         if self
             .post_append_failures
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |remaining| {
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |remaining| {
                 remaining.checked_sub(1)
             })
             .is_ok()
@@ -648,7 +648,7 @@ impl QueueFile {
 #[cfg(test)]
 fn consume_failure(counter: &AtomicUsize) -> bool {
     counter
-        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |remaining| {
+        .try_update(Ordering::Relaxed, Ordering::Relaxed, |remaining| {
             remaining.checked_sub(1)
         })
         .is_ok()

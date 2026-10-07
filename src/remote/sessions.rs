@@ -457,7 +457,7 @@ impl RemoteSessionHub {
         // later session. Exhaustion maps onto the existing admission-safe `sessions_full` path.
         let id = self
             .next_id
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |next| {
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |next| {
                 next.checked_add(1)
             })
             .map_err(|_| RegisterError::SessionsFull)?;
@@ -712,11 +712,11 @@ impl RemoteSessionHandle {
 
     /// Enqueue one push event with the next per-session `seq`; `false` on budget trip.
     fn push_event(&self, topic: Topic, payload: &Arc<Vec<u8>>) -> bool {
-        let Ok(previous) =
-            self.seq
-                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |sequence| {
-                    sequence.checked_add(1)
-                })
+        let Ok(previous) = self
+            .seq
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |sequence| {
+                sequence.checked_add(1)
+            })
         else {
             return false;
         };
