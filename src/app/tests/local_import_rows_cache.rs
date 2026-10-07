@@ -506,6 +506,15 @@ fn recognized_path_cap_is_global_across_transfers_and_sessions() {
 #[test]
 fn unrelated_membership_churn_rescans_but_keeps_the_semantic_row_cache_key() {
     let data = TestImportData::new();
+    #[cfg(not(windows))]
+    fs::File::open(&data.transfers)
+        .and_then(|directory| {
+            directory.set_times(
+                fs::FileTimes::new()
+                    .set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(1)),
+            )
+        })
+        .expect("pin initial transfer directory timestamp before membership churn");
     let mut app = app_with_fingerprint_data(&data);
     app.switch_local_section(LocalSection::ImportSessions);
     app.local_mode.ui.filter_query = "unrelated-churn-missing".to_owned();
