@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::personal_state::DeviceId;
+use crate::personal_state::PERSONAL_STATE_LISTENING_SCHEMA_VERSION;
 
 use super::super::checkpoint::SignedCheckpoint;
 use super::super::crypto::{
@@ -20,6 +21,8 @@ const DEVICE_HEAD_SIGNATURE_DOMAIN: &[u8] = b"yututui-vault-device-head-signatur
 pub struct VaultManifestPayload {
     pub kind: String,
     pub schema_version: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub personal_state_schema_version: Option<u32>,
     pub dataset_id: String,
     pub generation: u64,
     pub signer_device_id: DeviceId,
@@ -43,6 +46,8 @@ pub struct SignedVaultManifest {
 pub struct DeviceHeadPayload {
     pub kind: String,
     pub schema_version: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub personal_state_schema_version: Option<u32>,
     pub dataset_id: String,
     pub membership_epoch: u64,
     pub signer_device_id: DeviceId,
@@ -56,6 +61,13 @@ pub struct DeviceHeadPayload {
 pub struct SignedDeviceHead {
     pub payload: DeviceHeadPayload,
     pub signature: String,
+}
+
+pub(crate) struct DeviceHeadTip {
+    pub last_sequence: u64,
+    pub last_batch_hash: String,
+    pub last_segment_key: ObjectKey,
+    pub personal_state_schema_version: Option<u32>,
 }
 
 impl SignedVaultManifest {
@@ -88,6 +100,7 @@ impl SignedVaultManifest {
         let payload = VaultManifestPayload {
             kind: MANIFEST_KIND.to_owned(),
             schema_version: VAULT_SCHEMA_VERSION,
+            personal_state_schema_version: checkpoint.payload.personal_state_schema_version,
             dataset_id: dataset_id.to_owned(),
             generation,
             signer_device_id,
@@ -154,9 +167,7 @@ impl SignedDeviceHead {
         membership: &VerifiedMembership,
         signer_device_id: DeviceId,
         device: &DeviceSecretMaterial,
-        last_sequence: u64,
-        last_batch_hash: String,
-        last_segment_key: ObjectKey,
+        tip: DeviceHeadTip,
     ) -> Result<Self, VaultError> {
         if signer_device_id.as_str() != device.device_id() {
             return Err(VaultError::InvalidDeviceIdentity);
@@ -164,12 +175,13 @@ impl SignedDeviceHead {
         let payload = DeviceHeadPayload {
             kind: DEVICE_HEAD_KIND.to_owned(),
             schema_version: VAULT_SCHEMA_VERSION,
+            personal_state_schema_version: tip.personal_state_schema_version,
             dataset_id: dataset_id.to_owned(),
             membership_epoch: membership.epoch,
             signer_device_id,
-            last_sequence,
-            last_batch_hash,
-            last_segment_key,
+            last_sequence: tip.last_sequence,
+            last_batch_hash: tip.last_batch_hash,
+            last_segment_key: tip.last_segment_key,
         };
         validate_head_payload(&payload, membership)?;
         let signature =
@@ -223,6 +235,7 @@ fn validate_manifest_payload(
     let membership = payload.membership.verify(membership_anchor)?;
     if payload.kind != MANIFEST_KIND
         || payload.schema_version != VAULT_SCHEMA_VERSION
+        || !valid_personal_state_marker(payload.personal_state_schema_version)
         || payload.generation == 0
         || payload.dataset_id != membership.dataset_id
         || payload.membership_head_hash != membership.head_hash
@@ -249,6 +262,7 @@ fn validate_head_payload(
 ) -> Result<(), VaultError> {
     if payload.kind != DEVICE_HEAD_KIND
         || payload.schema_version != VAULT_SCHEMA_VERSION
+        || !valid_personal_state_marker(payload.personal_state_schema_version)
         || payload.dataset_id != membership.dataset_id
         || payload.membership_epoch == 0
         || payload.membership_epoch > membership.epoch
@@ -267,6 +281,10 @@ fn validate_head_payload(
         return Err(VaultError::InvalidEncryptedObject);
     }
     Ok(())
+}
+
+fn valid_personal_state_marker(marker: Option<u32>) -> bool {
+    marker.is_none() || marker == Some(PERSONAL_STATE_LISTENING_SCHEMA_VERSION)
 }
 
 pub(crate) fn segment_bounds(key: &ObjectKey) -> Result<(u64, u64), VaultError> {

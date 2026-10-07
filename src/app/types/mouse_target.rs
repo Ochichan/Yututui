@@ -19,6 +19,7 @@ pub enum MouseTarget {
     /// inside are consumed without reaching the covered queue/player surface.
     WhyGemCard,
     StationCard,
+    Listening(ListeningAction),
     /// A visible synced-lyric row. The owning track ID and original LRC index make stale frame
     /// targets fail closed instead of seeking a newly loaded track.
     LyricsLine {

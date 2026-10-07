@@ -436,6 +436,72 @@ fn queue_play_success_commits_cursor_popup_and_load_exactly_once() {
 }
 
 #[test]
+fn accepted_replacing_load_snapshots_outgoing_listening_position_once() {
+    use crate::listening::{ListeningProjection, portable_track};
+    use crate::util::delivery::DeliveryReceipt;
+
+    let mut app = app_playing(3, 0);
+    app.config.listening_records_enabled = Some(true);
+    app.config.listening_local_scope = Some("track-transition-tests".to_owned());
+    let mut outgoing = app.queue.current().cloned().expect("outgoing track");
+    outgoing.duration = "30:00".to_owned();
+    outgoing.duration_secs = Some(1_800);
+    let outgoing_track = portable_track(&outgoing, app.config.listening_local_scope.as_deref());
+    app.personal_state
+        .listening
+        .rebind_current_track(outgoing_track.clone());
+    let outgoing_key = outgoing_track.key;
+    assert!(app.listening_records_enabled());
+    let _ = app.observe_listening_duration(Some(1_800.0));
+    let _ = app.observe_listening_seekable(Some(true));
+    let initial_save = app.observe_listening_position(120.0);
+    assert!(
+        initial_save
+            .iter()
+            .any(|cmd| matches!(cmd, Cmd::Persist(PersistCmd::Library))),
+        "initial listening save was rejected: {}",
+        app.status.text
+    );
+    assert!(app.observe_listening_position(145.0).is_empty());
+    assert!(matches!(
+        app.personal_state.listening.clone().snapshot_resume(true),
+        Some(crate::listening::PlaybackMemoryAction::SaveResume {
+            position_ms: 145_000,
+            ..
+        })
+    ));
+    let sequence_before: u64 = app.personal_state.ledger.version_vector.0.values().sum();
+    let (reply, _reply_rx) = tokio::sync::oneshot::channel();
+    let intent = take_player_intent(app.update(Msg::Remote(
+        crate::remote::proto::RemoteCommand::QueuePlay { position: 1 },
+        reply.into(),
+    )));
+
+    let effects = crate::runtime::player_delivery::settle_player_intent(
+        &mut app,
+        intent,
+        Ok(DeliveryReceipt::Deferred),
+    );
+
+    assert!(
+        effects
+            .iter()
+            .any(|cmd| matches!(cmd, Cmd::Persist(PersistCmd::Library))),
+        "accepted replacement omitted its listening persistence: {}",
+        app.status.text
+    );
+    let sequence_after: u64 = app.personal_state.ledger.version_vector.0.values().sum();
+    assert_eq!(sequence_after, sequence_before + 1);
+    let projection = ListeningProjection::from_ledger(&app.personal_state.ledger).unwrap();
+    assert_eq!(
+        projection
+            .automatic_resume(&outgoing_key)
+            .map(|point| point.position_ms),
+        Some(145_000)
+    );
+}
+
+#[test]
 fn queue_play_busy_and_closed_leave_cursor_popup_and_load_state_unchanged() {
     use crate::util::delivery::DeliveryError;
 

@@ -27,6 +27,8 @@ core	4	src/daemon/engine/transport.rs	TransportRecoveryState
 core	2	src/app/server_library/playlist_recovery.rs	ServerPlaylistRecoveryStage
 
 # Typed transition, plan, mode, and result projections.
+transition	2	src/listening/model.rs	ResumeCandidate
+transition	11	src/listening/model.rs	ListeningOperation
 transition	2	src/persist/writer_lease.rs	InitializedWriterState
 transition	2	src/player/recovery.rs	ResumeOrigin
 transition	3	src/player/recovery.rs	TransportRestorePlan

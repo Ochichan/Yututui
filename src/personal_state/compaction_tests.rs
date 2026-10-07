@@ -163,6 +163,146 @@ fn only_the_lowest_active_device_can_plan_compaction() {
 }
 
 #[test]
+fn listening_compaction_keeps_only_the_causal_frontier() {
+    let (mut state, secrets) = state_with_devices(&["device-a"]);
+    let device = DeviceId::new(secrets[0].device_id()).unwrap();
+    for recorded_at in 1..=60 {
+        state = super::super::append_listening(
+            &state,
+            Some(&device),
+            crate::listening::ListeningOperation::SetResume {
+                point: crate::listening::ResumePoint {
+                    track: track("resume-track"),
+                    position_ms: recorded_at as u64 * 1_000,
+                    provenance: crate::listening::ResumeProvenance {
+                        playback_session_id: "session".to_owned(),
+                        device_id: device.clone(),
+                    },
+                },
+            },
+            recorded_at,
+        )
+        .unwrap();
+    }
+    let before = crate::listening::ListeningProjection::from_ledger(&state).unwrap();
+    let plan = plan_engagement_compaction(&state, &device, NOW, false)
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(plan.pruned_engagement_operations, 0);
+    assert_eq!(plan.pruned_listening_operations, 59);
+    let checkpoint = plan.candidate.compaction_checkpoint.as_ref().unwrap();
+    assert_eq!(checkpoint.retained_listening_operations.len(), 1);
+    assert_eq!(
+        crate::listening::ListeningProjection::from_ledger(&plan.candidate).unwrap(),
+        before
+    );
+    plan.candidate.validate().unwrap();
+}
+
+#[test]
+fn listening_compaction_preserves_tombstone_causal_coverage_after_recreation() {
+    let (mut state, secrets) = state_with_devices(&["device-a"]);
+    let device = DeviceId::new(secrets[0].device_id()).unwrap();
+    let bookmark_id = crate::listening::BookmarkId::new("bookmark").unwrap();
+    let bookmark = |position_ms| crate::listening::BookmarkRecord {
+        bookmark_id: bookmark_id.clone(),
+        track: track("bookmark-track"),
+        position_ms,
+        label: "Chapter".to_owned(),
+    };
+    state = super::super::append_listening(
+        &state,
+        Some(&device),
+        crate::listening::ListeningOperation::UpsertBookmark {
+            bookmark: bookmark(1_000),
+        },
+        1,
+    )
+    .unwrap();
+    state = super::super::append_listening(
+        &state,
+        Some(&device),
+        crate::listening::ListeningOperation::DeleteBookmark {
+            bookmark_id: bookmark_id.clone(),
+        },
+        2,
+    )
+    .unwrap();
+    let tombstone_id = state.operations.last().unwrap().operation_id.clone();
+    state = super::super::append_listening(
+        &state,
+        Some(&device),
+        crate::listening::ListeningOperation::UpsertBookmark {
+            bookmark: bookmark(2_000),
+        },
+        3,
+    )
+    .unwrap();
+
+    let plan = plan_engagement_compaction(&state, &device, NOW, false)
+        .unwrap()
+        .unwrap();
+    assert_eq!(plan.pruned_listening_operations, 1);
+    assert!(
+        plan.candidate
+            .compaction_checkpoint
+            .as_ref()
+            .unwrap()
+            .retained_listening_operations
+            .contains(&tombstone_id)
+    );
+    assert!(
+        plan.candidate
+            .operations
+            .iter()
+            .any(|operation| operation.operation_id == tombstone_id)
+    );
+}
+
+#[test]
+fn passport_visit_compaction_preserves_clock_skew_and_known_metadata_aggregates() {
+    let (mut state, secrets) = state_with_devices(&["device-a"]);
+    let device = DeviceId::new(secrets[0].device_id()).unwrap();
+    let rows = [
+        ("Known", Some("KR"), 200, 200),
+        ("Clock correction", None, 100, 300),
+        ("Redundant", None, 150, 250),
+        ("Latest name", None, 160, 240),
+    ];
+    for (name, country_code, first, last) in rows {
+        state = super::super::append_listening(
+            &state,
+            Some(&device),
+            crate::listening::ListeningOperation::RecordPassportVisit {
+                visit: crate::listening::PassportVisit {
+                    station_uuid: "station".to_owned(),
+                    station_name: name.to_owned(),
+                    country_code: country_code.map(str::to_owned),
+                    first_listened_at_unix: first,
+                    last_listened_at_unix: last,
+                },
+            },
+            last,
+        )
+        .unwrap();
+    }
+    let before = crate::listening::ListeningProjection::from_ledger(&state).unwrap();
+    let plan = plan_engagement_compaction(&state, &device, NOW, false)
+        .unwrap()
+        .unwrap();
+    let after = crate::listening::ListeningProjection::from_ledger(&plan.candidate).unwrap();
+
+    assert_eq!(plan.pruned_listening_operations, 1);
+    assert_eq!(after, before);
+    let visit = &after.passport_visits["station"];
+    assert_eq!(visit.first_listened_at_unix, 100);
+    assert_eq!(visit.last_listened_at_unix, 300);
+    assert_eq!(visit.country_code.as_deref(), Some("KR"));
+    assert_eq!(visit.station_name, "Latest name");
+}
+
+#[test]
 fn retention_boundary_is_inclusive_and_projection_is_unchanged() {
     let (mut state, secrets) = state_with_devices(&["boundary-device"]);
     let device = DeviceId::new(secrets[0].device_id()).unwrap();
@@ -507,12 +647,13 @@ fn compaction_generation_overflow_fails_closed() {
         .unwrap()
         .unwrap()
         .candidate;
-    let (coverage, previous, retained) = {
+    let (coverage, previous, retained, retained_listening) = {
         let checkpoint = exhausted.compaction_checkpoint.as_ref().unwrap();
         (
             checkpoint.coverage.clone(),
             checkpoint.previous_checkpoint_hash.clone(),
             checkpoint.retained_engagement_operations.clone(),
+            checkpoint.retained_listening_operations.clone(),
         )
     };
     let exhausted_id = checkpoint_id_for(
@@ -521,6 +662,7 @@ fn compaction_generation_overflow_fails_closed() {
         &coverage,
         previous.as_deref(),
         &retained,
+        &retained_listening,
         &exhausted.operations,
     )
     .unwrap();
@@ -656,6 +798,7 @@ fn checkpoint(
     previous_checkpoint_hash: Option<&str>,
 ) -> CompactionCheckpoint {
     let retained_engagement_operations = BTreeSet::new();
+    let retained_listening_operations = BTreeSet::new();
     CompactionCheckpoint {
         checkpoint_id: checkpoint_id_for(
             dataset_id,
@@ -663,6 +806,7 @@ fn checkpoint(
             &coverage,
             previous_checkpoint_hash,
             &retained_engagement_operations,
+            &retained_listening_operations,
             &[],
         )
         .unwrap(),
@@ -670,6 +814,7 @@ fn checkpoint(
         coverage,
         previous_checkpoint_hash: previous_checkpoint_hash.map(str::to_owned),
         retained_engagement_operations,
+        retained_listening_operations,
         leader_authorization: None,
         acknowledged_by: BTreeSet::new(),
     }

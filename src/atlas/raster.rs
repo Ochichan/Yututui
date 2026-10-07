@@ -39,6 +39,7 @@ pub enum DotClass {
     Limb,
     Land,
     Coast,
+    VisitedLand,
     ActiveLand,
 }
 
@@ -155,6 +156,7 @@ pub struct DotGrid {
 pub struct RasterParams<'a> {
     pub land: &'a dyn LandLookup,
     pub active: Option<&'a dyn LandLookup>,
+    pub visited: Option<&'a dyn LandLookup>,
     pub grid: bool,
 }
 
@@ -290,6 +292,8 @@ pub fn rasterize(geom: &Geometry, cam: &Camera, p: &RasterParams<'_>) -> DotGrid
             let mut dot_class = if p.land.is_land(at) {
                 if p.active.is_some_and(|active| active.is_land(at)) {
                     DotClass::ActiveLand
+                } else if p.visited.is_some_and(|visited| visited.is_land(at)) {
+                    DotClass::VisitedLand
                 } else {
                     DotClass::Land
                 }
@@ -435,7 +439,8 @@ fn ink_priority(class: DotClass) -> u8 {
         DotClass::Limb => 2,
         DotClass::Land => 3,
         DotClass::Coast => 4,
-        DotClass::ActiveLand => 5,
+        DotClass::VisitedLand => 5,
+        DotClass::ActiveLand => 6,
         DotClass::Outside | DotClass::Ocean => 0,
     }
 }
@@ -446,6 +451,7 @@ fn ascii_char(class: DotClass) -> Option<char> {
         DotClass::Land => Some('#'),
         DotClass::Coast => Some('+'),
         DotClass::ActiveLand => Some('@'),
+        DotClass::VisitedLand => Some('*'),
         DotClass::Grid => Some('.'),
         DotClass::Limb => Some('-'),
         DotClass::Outside | DotClass::Ocean => None,
@@ -610,6 +616,7 @@ mod tests {
         let geom = Geometry::new(rect(40, 20), Renderer::Braille, 1.0);
         let land = |at: LatLon| at.lat > 0.0;
         let params = RasterParams {
+            visited: None,
             land: &land,
             active: None,
             grid: false,
@@ -646,11 +653,13 @@ mod tests {
         let camera = camera_at_centre();
         let normal = Geometry::new(rect(40, 20), Renderer::Braille, 1.0);
         let enabled = RasterParams {
+            visited: None,
             land: &ocean,
             active: None,
             grid: true,
         };
         let disabled = RasterParams {
+            visited: None,
             land: &ocean,
             active: None,
             grid: false,
@@ -760,6 +769,7 @@ mod tests {
     fn atlas_perf_budget() {
         let land = |at: LatLon| at.lat > -10.0 && at.lon.is_finite();
         let params = RasterParams {
+            visited: None,
             land: &land,
             active: None,
             grid: false,

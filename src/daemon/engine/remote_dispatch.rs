@@ -78,6 +78,7 @@ impl DaemonEngine {
                 effects.extend(ban_effects);
                 response
             }
+            RemoteCommand::Listening { action } => self.remote_listening(action).await,
             RemoteCommand::SeekBack => self.seek(-self.config.effective_seek_seconds()),
             RemoteCommand::SeekForward => self.seek(self.config.effective_seek_seconds()),
             RemoteCommand::SeekTo { ms } => self.seek_to(ms as f64 / 1000.0),

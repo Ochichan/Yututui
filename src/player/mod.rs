@@ -353,6 +353,11 @@ pub enum PlayerEvent {
     /// so a stale length never outlives its file (same contract as [`Self::CacheTime`]).
     Duration(Option<f64>),
     Paused(bool),
+    /// mpv's owner-observed seekability for the current file. `None` is deliberately unknown,
+    /// never treated as permission to write a bookmark or restore progress.
+    Seekable(Option<bool>),
+    /// Whether mpv has paused playback to wait for cache data.
+    Buffering(bool),
     Volume(f64),
     Metadata(Value),
     /// `demuxer-cache-time`: the timestamp of the newest demuxed data — for a live radio

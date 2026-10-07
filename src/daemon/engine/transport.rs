@@ -457,6 +457,12 @@ impl DaemonEngine {
         );
         self.send_active_player_batch("load_current", commands)?;
 
+        self.on_listening_track_loaded(
+            &song,
+            matches!(intent, LoadCurrentIntent::Ordinary),
+            advance_cause,
+        );
+
         self.playback.paused = recovery_paused.unwrap_or(false);
         self.playback.time_pos = recovery_position;
         self.playback.time_pos_at = None;

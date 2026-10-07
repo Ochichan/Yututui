@@ -30,6 +30,7 @@ use yututui_core::sleep_timer::{SLEEP_MAX_MINUTES, SleepStep, SleepTimer};
 
 mod crossfade;
 mod delivery;
+mod listening;
 mod media_session;
 mod open_subsonic_bridge;
 mod open_subsonic_runtime;
@@ -142,6 +143,7 @@ pub struct DaemonEngine {
     personal_state: crate::personal_state::PersonalStateV2,
     personal_state_revision_guard: crate::sync::OwnerRevisionGuard,
     personal_state_device_id: Option<crate::personal_state::DeviceId>,
+    listening: crate::listening::ListeningPlaybackState,
     personal_sync_in_progress: bool,
     #[cfg(test)]
     personal_state_paths: crate::personal_state::PersonalStatePaths,
@@ -340,6 +342,7 @@ impl DaemonEngine {
             personal_state_revision_guard: Default::default(),
             personal_state,
             personal_state_device_id: None,
+            listening: Default::default(),
             personal_sync_in_progress: false,
             #[cfg(test)]
             personal_state_paths: tests::personal_state_paths(),
@@ -484,12 +487,14 @@ impl DaemonEngine {
                 if t > 0.0 {
                     self.consecutive_play_errors = 0;
                 }
+                self.observe_listening_position(t);
                 self.advance_crossfade_if_due(t).await
             }
             PlayerEvent::Duration(d) => {
                 // Mirror of the TUI reducer (app/mod.rs `PlayerMsg::Duration`): `None`
                 // clears the stored length instead of preserving a stale one.
                 self.playback.duration = d.map(crate::playback_policy::norm_duration);
+                self.observe_listening_duration(self.playback.duration);
                 Vec::new()
             }
             PlayerEvent::Paused(paused) => {
@@ -499,6 +504,15 @@ impl DaemonEngine {
                     self.playback.time_pos_at = Some(Instant::now());
                 }
                 self.playback.paused = paused;
+                self.observe_listening_paused(paused);
+                Vec::new()
+            }
+            PlayerEvent::Seekable(seekable) => {
+                self.observe_listening_seekable(seekable);
+                Vec::new()
+            }
+            PlayerEvent::Buffering(buffering) => {
+                self.listening.observe_buffering(buffering);
                 Vec::new()
             }
             PlayerEvent::Volume(volume) => {
@@ -523,6 +537,7 @@ impl DaemonEngine {
             | PlayerEvent::CurrentAudioOutput(_)
             | PlayerEvent::AudioDeviceSelectionResult { .. } => Vec::new(),
             PlayerEvent::Eof => {
+                self.complete_listening_track();
                 self.record_outgoing(true);
                 self.advance_after_end().await
             }
@@ -1327,6 +1342,8 @@ impl DaemonEngine {
     }
 
     fn stop_playback(&mut self) {
+        self.snapshot_listening_progress();
+        self.clear_listening_track();
         self.source_recovery.supersede_transport();
         if let Some(player) = self.player.take() {
             record_player_delivery("stop", player.handle.send(PlayerCmd::Stop));

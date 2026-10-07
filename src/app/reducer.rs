@@ -28,6 +28,7 @@ impl App {
         status_before.clear();
         status_before.push_str(&self.status.text);
         let kind_before = self.status.kind;
+        let quitting_before = self.should_quit;
         let paused_before = self.playback.paused;
         let animations_were_on = self.animations().master;
         // Default this turn's status to the error styling; the few positive handlers override
@@ -36,6 +37,9 @@ impl App {
         // leftover `Info` color from a previous green toast.
         self.status.kind = StatusKind::Error;
         let mut cmds = self.dispatch(msg);
+        if !quitting_before && self.should_quit {
+            cmds.extend(self.snapshot_listening_progress());
+        }
         // A tuned station becomes `queue.current()` only once the player admits the batch,
         // which lands as its own message; centre the globe on it then, not at tune time.
         if self.radio_mode.atlas.follow_uuid.is_some() {
@@ -105,6 +109,7 @@ impl App {
         // after every non-animation owner turn so every mutation path (key, mouse, remote, AI,
         // mode switch, admitted player transition) shares the same stale-entry cleanup.
         self.reconcile_why_gem();
+        self.refresh_listening_dialog();
         self.sync_art_overlay_state();
         self.sync_art_geometry();
         self.status_text_prev = status_before; // return the buffer's capacity for next turn
@@ -235,11 +240,14 @@ impl App {
                     }
                     tracing::debug!(time_pos = t, "progress");
                 }
-                return self.begin_crossfade_if_due();
+                let mut commands = self.observe_listening_position(t);
+                commands.extend(self.begin_crossfade_if_due());
+                return commands;
             }
             PlayerMsg::Duration(d) => {
                 self.playback.duration = d.map(crate::playback_policy::norm_duration);
                 self.dirty = true;
+                return self.observe_listening_duration(self.playback.duration);
             }
             PlayerMsg::CacheTime(t) => {
                 let t = t.map(crate::playback_policy::norm_position);
@@ -289,6 +297,13 @@ impl App {
             PlayerMsg::Paused(p) => {
                 self.playback.paused = p;
                 self.dirty = true;
+                return self.observe_listening_paused(p);
+            }
+            PlayerMsg::Seekable(seekable) => {
+                return self.observe_listening_seekable(seekable);
+            }
+            PlayerMsg::Buffering(buffering) => {
+                self.observe_listening_buffering(buffering);
             }
             PlayerMsg::Volume(v) => {
                 // A non-finite report is ignored (leave the current level) rather than
@@ -324,7 +339,9 @@ impl App {
             PlayerMsg::Eof => {
                 tracing::info!("track ended (eof)");
                 // The just-finished track played to its end → a full-play signal, then advance.
-                return self.advance_with_outgoing(true, true);
+                let mut commands = self.complete_listening_track();
+                commands.extend(self.advance_with_outgoing(true, true));
+                return commands;
             }
             PlayerMsg::VideoOverlay { generation, event } => {
                 return self.on_video_overlay_event(generation, event);

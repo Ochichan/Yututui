@@ -27,6 +27,7 @@ pub(in crate::app) const ART_OVERLAY_TOOL_SETUP_BIT: u32 = 1 << 17;
 pub(in crate::app) const ART_OVERLAY_BEGINNER_BIT: u32 = 1 << 19;
 pub(in crate::app) const ART_OVERLAY_AUDIO_OUTPUT_BIT: u32 = 1 << 20;
 pub(in crate::app) const ART_OVERLAY_STATION_CARD_BIT: u32 = 1 << 21;
+pub(in crate::app) const ART_OVERLAY_LISTENING_BIT: u32 = 1 << 22;
 
 // INVARIANT(ART-MASK-001): every art-covering surface owns a unique u32 bit; check the risk
 // map before replacing, sharing, or widening any allocation.
@@ -53,6 +54,7 @@ pub(in crate::app) const ART_OVERLAY_BITS: &[(&str, u32)] = &[
     ("beginner", ART_OVERLAY_BEGINNER_BIT),
     ("audio_output", ART_OVERLAY_AUDIO_OUTPUT_BIT),
     ("station_card", ART_OVERLAY_STATION_CARD_BIT),
+    ("listening", ART_OVERLAY_LISTENING_BIT),
 ];
 
 const fn flag(on: bool, bit: u32) -> u32 {
@@ -746,6 +748,7 @@ impl App {
                 self.overlays.station_card.is_some(),
                 ART_OVERLAY_STATION_CARD_BIT,
             )
+            | flag(self.overlays.listening.is_some(), ART_OVERLAY_LISTENING_BIT)
     }
 
     /// Track overlay/screen transitions that can cover native terminal graphics. Ratatui's normal

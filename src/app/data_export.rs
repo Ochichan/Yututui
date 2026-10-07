@@ -153,7 +153,11 @@ impl App {
     /// fallback. Resolution failure is surfaced in place and no worker is started.
     pub(in crate::app) fn start_personal_export_to_downloads(&mut self) -> Vec<Cmd> {
         match personal_export_download_directory() {
-            Ok(directory) => self.start_personal_export(directory, 2, None),
+            Ok(directory) => self.start_personal_export(
+                directory,
+                crate::remote::proto::DEFAULT_EXPORT_SCHEMA,
+                None,
+            ),
             Err(error) => {
                 let error = crate::util::sanitize::sanitize_error_text(error.to_string());
                 if let Some(settings) = self.settings.as_mut() {

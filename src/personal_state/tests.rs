@@ -1275,6 +1275,13 @@ fn crash_recovery_returns_only_the_old_or_complete_new_snapshot() {
             &crate::station::StationStore::default(),
         )
         .unwrap();
+        let candidate = append_listening(
+            &candidate,
+            None,
+            crate::listening::ListeningOperation::ClearPassport,
+            1,
+        )
+        .unwrap();
         let new = PersonalStateCommit::prepare(candidate).unwrap();
         let new_revision = new.state().revision;
         assert!(new.commit_with_failure_at(&paths, point).is_err());
@@ -1287,6 +1294,15 @@ fn crash_recovery_returns_only_the_old_or_complete_new_snapshot() {
             new_revision
         };
         assert_eq!(recovered.revision, expected_revision, "at {point:?}");
+        assert_eq!(
+            recovered.schema_version,
+            if matches!(point, CommitPoint::Staged | CommitPoint::Manifest) {
+                PERSONAL_STATE_SCHEMA_VERSION
+            } else {
+                PERSONAL_STATE_LISTENING_SCHEMA_VERSION
+            },
+            "schema at {point:?}"
+        );
         assert_projection_files_match(&paths, &recovered);
         std::fs::remove_dir_all(root).unwrap();
     }

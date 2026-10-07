@@ -17,12 +17,12 @@ pub(crate) use compaction::operation_survives_checkpoint;
 pub use compaction::{
     EngagementCompactionPlan, engagement_compaction_leader, plan_engagement_compaction,
 };
-pub(crate) use coordinator::reconcile_runtime;
 pub use coordinator::{
     ExternalOperationInput, append_external_operation, append_external_operation_as,
-    append_external_operations, append_external_operations_as, append_operation_as,
-    external_operation_envelope_id, reconcile_runtime_as,
+    append_external_operations, append_external_operations_as, append_listening,
+    append_operation_as, external_operation_envelope_id, listening_device_id, reconcile_runtime_as,
 };
+pub(crate) use coordinator::{append_rebased_operation_as, reconcile_runtime};
 pub(crate) use import::validate_join_import_extension;
 pub use import::{ImportPlan, ImportSummary, plan_import, plan_join_import};
 pub use legacy::{LegacyProjection, legacy_state};
@@ -32,9 +32,10 @@ pub(crate) use model::refresh_device_registry;
 pub use model::{
     CausalStamp, CompactionCheckpoint, CompactionLeaderAuthorization, DeviceId,
     DevicePublicIdentity, DeviceRecord, DeviceRegistry, Dot, EngagementKind, Operation,
-    OperationEnvelope, OperationOrigin, PERSONAL_STATE_KIND, PERSONAL_STATE_SCHEMA_VERSION,
-    PersonalStateError, PersonalStateMetadata, PersonalStateV2, PlaylistEntryId, PlaylistId,
-    PortableTrack, PortableTrackKey, Rating, VersionVector,
+    OperationEnvelope, OperationOrigin, PERSONAL_STATE_KIND,
+    PERSONAL_STATE_LISTENING_SCHEMA_VERSION, PERSONAL_STATE_SCHEMA_VERSION, PersonalStateError,
+    PersonalStateMetadata, PersonalStateV2, PlaylistEntryId, PlaylistId, PortableTrack,
+    PortableTrackKey, Rating, VersionVector,
 };
 pub(crate) use reducer::runtime_fingerprint;
 pub use reducer::{MergeSummary, PersonalProjection, merge, project};

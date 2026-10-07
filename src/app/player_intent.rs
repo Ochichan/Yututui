@@ -90,6 +90,10 @@ pub enum PlayerCommit {
     Seek {
         optimistic_position: Option<f64>,
     },
+    ListeningSeek {
+        position_ms: u64,
+        change: Option<Box<crate::listening::ListeningOperation>>,
+    },
     Speed {
         speed: f64,
         announce: bool,
@@ -118,7 +122,10 @@ pub enum PlayerCommit {
 
 impl PlayerCommit {
     pub(in crate::app) fn is_seek(&self) -> bool {
-        matches!(self, Self::Seek { .. } | Self::RadioLiveSeek(_))
+        matches!(
+            self,
+            Self::Seek { .. } | Self::ListeningSeek { .. } | Self::RadioLiveSeek(_)
+        )
     }
 
     /// Admission preflight for plans whose commands and reducer projection were prepared from
@@ -143,6 +150,7 @@ impl PlayerCommit {
             | Self::Pause { .. }
             | Self::Volume { .. }
             | Self::Seek { .. }
+            | Self::ListeningSeek { .. }
             | Self::Speed { .. }
             | Self::EqPreset { .. }
             | Self::Normalize { .. }
@@ -263,6 +271,22 @@ impl App {
                 if let Some(position) = optimistic_position {
                     self.playback.time_pos = Some(position);
                     self.playback.time_pos_at = Some(Instant::now());
+                }
+            }
+            PlayerCommit::ListeningSeek {
+                position_ms,
+                change,
+            } => {
+                self.supersede_source_recovery();
+                self.personal_state.listening.cancel_pending_seek();
+                let position = position_ms as f64 / 1_000.0;
+                self.playback.time_pos = Some(position);
+                self.playback.time_pos_at = Some(Instant::now());
+                self.personal_state
+                    .listening
+                    .note_restored_position(position_ms);
+                if let Some(change) = change {
+                    return self.commit_listening_change(*change);
                 }
             }
             PlayerCommit::Speed {

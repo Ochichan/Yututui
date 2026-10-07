@@ -86,7 +86,7 @@ pub(super) fn command_parity_class(command: &RemoteCommand) -> CommandParityClas
         RemoteCommand::ExportPersonalData { .. }
         | RemoteCommand::SyncNow
         | RemoteCommand::SyncRevokeDevice { .. } => BothOwnerLoopIntercepted,
-        RemoteCommand::Quit => OwnerSpecific,
+        RemoteCommand::Quit | RemoteCommand::Listening { .. } => OwnerSpecific,
         RemoteCommand::Play { .. } | RemoteCommand::Enqueue { .. } => StandaloneRejected,
     }
 }

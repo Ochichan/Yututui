@@ -209,14 +209,17 @@ impl RadioStation {
             .filter(|s| !s.trim().is_empty())
             .collect::<Vec<_>>()
             .join(" / ");
-        Song::from_source(
+        let country_code = (!self.country_code.is_empty()).then_some(self.country_code.clone());
+        let mut song = Song::from_source(
             SearchSource::RadioBrowser,
             self.uuid,
             self.name,
             artist,
             String::new(),
             PlayableRef::RadioStream { url: self.url },
-        )
+        );
+        song.radio_country_code = country_code;
+        song
     }
 }
 

@@ -7,8 +7,9 @@ use super::legacy::{
 };
 use super::reducer::project_at;
 use super::{
-    CausalStamp, DeviceId, Dot, Operation, OperationEnvelope, OperationOrigin, PersonalStateError,
-    PersonalStateV2, PortableTrack, PortableTrackKey, VersionVector, merge, project,
+    CausalStamp, DeviceId, Dot, Operation, OperationEnvelope, OperationOrigin,
+    PERSONAL_STATE_LISTENING_SCHEMA_VERSION, PersonalStateError, PersonalStateV2, PortableTrack,
+    PortableTrackKey, VersionVector, merge, project,
 };
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -59,9 +60,20 @@ pub fn plan_import(
             )
         } else {
             let imported_projection = project(imported)?.legacy;
-            rewrite_foreign_projection(current, imported_projection, local_device_id)?
+            let (candidate, baseline_added, duplicate_operations) =
+                rewrite_foreign_projection(current, imported_projection, local_device_id)?;
+            let import_device = import_author(&candidate, local_device_id)?;
+            let scope = format!("foreign:{}", imported.identity()?);
+            let (candidate, listening_added) =
+                replay_listening_projection(candidate, imported, &import_device, &scope)?;
+            (
+                candidate,
+                baseline_added.saturating_add(listening_added),
+                duplicate_operations,
+            )
         };
     let changed = candidate.operations != current.operations
+        || candidate.schema_version != current.schema_version
         || candidate.device_registry != current.device_registry
         || candidate.version_vector != current.version_vector
         || candidate.compaction_checkpoint != current.compaction_checkpoint;
@@ -143,14 +155,21 @@ pub fn plan_join_import(
     candidate.projection_fingerprint = None;
     candidate.normalize()?;
 
+    let scope = format!("join:{}", existing_local.identity()?);
+    let (mut candidate, listening_added) =
+        replay_listening_projection(candidate, existing_local, local_device_id, &scope)?;
+
     let after = project_at(&candidate, now_unix)?.legacy;
-    if after == before {
+    if after == before
+        && listening_added == 0
+        && candidate.schema_version == authenticated_remote.schema_version
+    {
         return Ok(ImportPlan {
             candidate: authenticated_remote.clone(),
             summary: summarize(&before, &before, 0, 0, false),
         });
     }
-    if !legacy_is_deletion_free_extension(&before, &after) {
+    if after != before && !legacy_is_deletion_free_extension(&before, &after) {
         return Err(PersonalStateError::InvalidOperation(
             "join import would remove authenticated state",
         ));
@@ -158,7 +177,7 @@ pub fn plan_join_import(
 
     candidate.revision = authenticated_remote.next_revision()?;
     validate_join_import_extension(authenticated_remote, &candidate, local_device_id)?;
-    let summary = summarize(&before, &after, 1, 0, true);
+    let summary = summarize(&before, &after, 1 + listening_added, 0, true);
     Ok(ImportPlan { candidate, summary })
 }
 
@@ -206,7 +225,7 @@ pub(crate) fn validate_join_import_extension(
         ));
     }
 
-    let additions = candidate
+    let mut additions = candidate
         .operations
         .iter()
         .filter(|operation| !approved_by_id.contains_key(operation.operation_id.as_str()))
@@ -221,40 +240,63 @@ pub(crate) fn validate_join_import_extension(
         }
         return Ok(());
     }
-    if additions.len() != 1 || candidate.operations.len() != approved.operations.len() + 1 {
+    if candidate.operations.len() != approved.operations.len() + additions.len() {
         return Err(PersonalStateError::InvalidOperation(
-            "join import must contain at most one local baseline",
+            "join import contains conflicting operation identities",
         ));
     }
-
-    let addition = additions[0];
-    let sequence = approved
-        .version_vector
-        .observed(local_device_id)
-        .checked_add(1)
-        .ok_or(PersonalStateError::InvalidOperation(
-            "join import operation sequence exhausted",
-        ))?;
-    let Operation::LegacyBaseline { baseline } = &addition.operation else {
-        return Err(PersonalStateError::InvalidOperation(
-            "join import extension is not a baseline",
-        ));
-    };
-    let expected_operation_id =
-        join_import_operation_id(&approved.dataset_id, local_device_id, sequence, baseline)?;
-    if addition.operation_id != expected_operation_id
-        || addition.origin != OperationOrigin::Imported
-        || addition.stamp.dot.device_id != *local_device_id
-        || addition.stamp.dot.sequence != sequence
-        || addition.stamp.observed != approved.version_vector
-        || addition.stamp.recorded_at_unix != 0
-    {
-        return Err(PersonalStateError::InvalidOperation(
-            "join import baseline is not owned by the approved device",
-        ));
-    }
+    additions.sort_by_key(|operation| operation.stamp.dot.sequence);
     let mut expected_vector = approved.version_vector.clone();
-    expected_vector.observe(&addition.stamp.dot);
+    let mut baseline_seen = false;
+    for addition in additions {
+        let sequence = expected_vector
+            .observed(local_device_id)
+            .checked_add(1)
+            .ok_or(PersonalStateError::InvalidOperation(
+                "join import operation sequence exhausted",
+            ))?;
+        if addition.origin != OperationOrigin::Imported
+            || addition.stamp.dot.device_id != *local_device_id
+            || addition.stamp.dot.sequence != sequence
+            || addition.stamp.recorded_at_unix != 0
+            || addition
+                .stamp
+                .observed
+                .0
+                .iter()
+                .any(|(device, observed)| expected_vector.observed(device) < *observed)
+        {
+            return Err(PersonalStateError::InvalidOperation(
+                "join import operation is not owned by the approved device",
+            ));
+        }
+        match &addition.operation {
+            Operation::LegacyBaseline { baseline } if !baseline_seen => {
+                let expected_operation_id = join_import_operation_id(
+                    &approved.dataset_id,
+                    local_device_id,
+                    sequence,
+                    baseline,
+                )?;
+                if addition.operation_id != expected_operation_id
+                    || addition.stamp.observed != approved.version_vector
+                {
+                    return Err(PersonalStateError::InvalidOperation(
+                        "join import baseline is not deterministic",
+                    ));
+                }
+                baseline_seen = true;
+            }
+            Operation::Listening { .. }
+                if addition.operation_id.starts_with("imported-listening-") => {}
+            _ => {
+                return Err(PersonalStateError::InvalidOperation(
+                    "join import extension contains an unsupported operation",
+                ));
+            }
+        }
+        expected_vector.observe(&addition.stamp.dot);
+    }
     if candidate.version_vector != expected_vector {
         return Err(PersonalStateError::InvalidOperation(
             "join import version vector has an unexplained extension",
@@ -264,7 +306,7 @@ pub(crate) fn validate_join_import_extension(
     let now_unix = crate::signals::unix_now();
     let before = project_at(approved, now_unix)?.legacy;
     let after = project_at(candidate, now_unix)?.legacy;
-    if before == after || !legacy_is_deletion_free_extension(&before, &after) {
+    if before != after && !legacy_is_deletion_free_extension(&before, &after) {
         return Err(PersonalStateError::InvalidOperation(
             "join import is not a deletion-free extension",
         ));
@@ -475,6 +517,279 @@ fn import_author(
         }
         None => super::coordinator::local_device(current),
     }
+}
+
+fn replay_listening_projection(
+    mut candidate: PersonalStateV2,
+    source: &PersonalStateV2,
+    local_device_id: &DeviceId,
+    scope: &str,
+) -> Result<(PersonalStateV2, usize), PersonalStateError> {
+    if source.schema_version != PERSONAL_STATE_LISTENING_SCHEMA_VERSION {
+        return Ok((candidate, 0));
+    }
+
+    let projection = crate::listening::ListeningProjection::from_ledger(source)?;
+    let mut bookmark_ids = BTreeSet::new();
+    let mut deleted_bookmarks = BTreeSet::new();
+    let mut cleared_resumes = BTreeMap::new();
+    let mut visit_ids = BTreeSet::new();
+    let mut deleted_visits = BTreeSet::new();
+    let mut note_ids = BTreeSet::new();
+    let mut deleted_notes = BTreeSet::new();
+    let mut preset_ids = BTreeSet::new();
+    let mut deleted_presets = BTreeSet::new();
+    let mut clears_passport = false;
+    for envelope in &source.operations {
+        let Operation::Listening { change } = &envelope.operation else {
+            continue;
+        };
+        match change {
+            crate::listening::ListeningOperation::UpsertBookmark { bookmark } => {
+                bookmark_ids.insert(bookmark.bookmark_id.clone());
+            }
+            crate::listening::ListeningOperation::DeleteBookmark { bookmark_id } => {
+                bookmark_ids.insert(bookmark_id.clone());
+                deleted_bookmarks.insert(bookmark_id.clone());
+            }
+            crate::listening::ListeningOperation::ClearResume { clear } => {
+                cleared_resumes.insert(clear.track.key.clone(), clear.clone());
+            }
+            crate::listening::ListeningOperation::RecordPassportVisit { visit } => {
+                visit_ids.insert(visit.station_uuid.clone());
+            }
+            crate::listening::ListeningOperation::DeletePassportVisit { station_uuid } => {
+                visit_ids.insert(station_uuid.clone());
+                deleted_visits.insert(station_uuid.clone());
+            }
+            crate::listening::ListeningOperation::SetPassportNote { note } => {
+                note_ids.insert(note.station_uuid.clone());
+            }
+            crate::listening::ListeningOperation::DeletePassportNote { station_uuid } => {
+                note_ids.insert(station_uuid.clone());
+                deleted_notes.insert(station_uuid.clone());
+            }
+            crate::listening::ListeningOperation::ClearPassport => clears_passport = true,
+            crate::listening::ListeningOperation::UpsertDjPreset { preset } => {
+                preset_ids.insert(preset.preset_id.clone());
+            }
+            crate::listening::ListeningOperation::DeleteDjPreset { preset_id } => {
+                preset_ids.insert(preset_id.clone());
+                deleted_presets.insert(preset_id.clone());
+            }
+            crate::listening::ListeningOperation::SetResume { .. } => {}
+        }
+    }
+
+    let mut changes = Vec::<(crate::listening::ListeningOperation, bool)>::new();
+    if clears_passport {
+        changes.push((crate::listening::ListeningOperation::ClearPassport, false));
+    }
+    changes.extend(deleted_bookmarks.iter().cloned().map(|bookmark_id| {
+        (
+            crate::listening::ListeningOperation::DeleteBookmark { bookmark_id },
+            false,
+        )
+    }));
+    let mut visible_resume_clear_keys = BTreeSet::new();
+    for resume in projection.resumes.values() {
+        for candidate in &resume.candidates {
+            let crate::listening::ResumeCandidate::Clear(clear) = candidate else {
+                continue;
+            };
+            visible_resume_clear_keys.insert(clear.track.key.clone());
+            let mut clear = clear.clone();
+            clear.provenance.device_id = local_device_id.clone();
+            changes.push((
+                crate::listening::ListeningOperation::ClearResume { clear },
+                false,
+            ));
+        }
+    }
+    changes.extend(cleared_resumes.into_iter().filter_map(|(key, mut clear)| {
+        if visible_resume_clear_keys.contains(&key) {
+            return None;
+        }
+        clear.provenance.device_id = local_device_id.clone();
+        Some((
+            crate::listening::ListeningOperation::ClearResume { clear },
+            false,
+        ))
+    }));
+    changes.extend(deleted_visits.iter().cloned().map(|station_uuid| {
+        (
+            crate::listening::ListeningOperation::DeletePassportVisit { station_uuid },
+            false,
+        )
+    }));
+    changes.extend(deleted_notes.iter().cloned().map(|station_uuid| {
+        (
+            crate::listening::ListeningOperation::DeletePassportNote { station_uuid },
+            false,
+        )
+    }));
+    changes.extend(deleted_presets.iter().cloned().map(|preset_id| {
+        (
+            crate::listening::ListeningOperation::DeleteDjPreset { preset_id },
+            false,
+        )
+    }));
+    let has_tombstones = !changes.is_empty();
+    for bookmark_id in bookmark_ids {
+        match projection.bookmarks.get(&bookmark_id) {
+            Some(bookmarks) => changes.extend(bookmarks.iter().cloned().map(|bookmark| {
+                (
+                    crate::listening::ListeningOperation::UpsertBookmark { bookmark },
+                    has_tombstones,
+                )
+            })),
+            None if !deleted_bookmarks.contains(&bookmark_id) => changes.push((
+                crate::listening::ListeningOperation::DeleteBookmark { bookmark_id },
+                false,
+            )),
+            None => {}
+        }
+    }
+    for resume in projection.resumes.values() {
+        let has_visible_clear = resume
+            .candidates
+            .iter()
+            .any(|candidate| matches!(candidate, crate::listening::ResumeCandidate::Clear(_)));
+        for value in &resume.candidates {
+            let change = match value {
+                crate::listening::ResumeCandidate::Position(point) => {
+                    let mut point = point.clone();
+                    point.provenance.device_id = local_device_id.clone();
+                    crate::listening::ListeningOperation::SetResume { point }
+                }
+                crate::listening::ResumeCandidate::Clear(clear) => {
+                    let mut clear = clear.clone();
+                    clear.provenance.device_id = local_device_id.clone();
+                    crate::listening::ListeningOperation::ClearResume { clear }
+                }
+            };
+            if !matches!(
+                &change,
+                crate::listening::ListeningOperation::ClearResume { .. }
+            ) {
+                changes.push((change, has_tombstones && !has_visible_clear));
+            }
+        }
+    }
+    for station_uuid in visit_ids {
+        match projection.passport_visits.get(&station_uuid) {
+            Some(visit) => changes.push((
+                crate::listening::ListeningOperation::RecordPassportVisit {
+                    visit: visit.clone(),
+                },
+                has_tombstones,
+            )),
+            None if !clears_passport && !deleted_visits.contains(&station_uuid) => changes.push((
+                crate::listening::ListeningOperation::DeletePassportVisit { station_uuid },
+                false,
+            )),
+            None => {}
+        }
+    }
+    for station_uuid in note_ids {
+        match projection.passport_notes.get(&station_uuid) {
+            Some(notes) => changes.extend(notes.iter().cloned().map(|note| {
+                (
+                    crate::listening::ListeningOperation::SetPassportNote { note },
+                    has_tombstones,
+                )
+            })),
+            None if !clears_passport && !deleted_notes.contains(&station_uuid) => changes.push((
+                crate::listening::ListeningOperation::DeletePassportNote { station_uuid },
+                false,
+            )),
+            None => {}
+        }
+    }
+    for preset_id in preset_ids {
+        match projection.dj_presets.get(&preset_id) {
+            Some(presets) => changes.extend(presets.iter().cloned().map(|preset| {
+                (
+                    crate::listening::ListeningOperation::UpsertDjPreset { preset },
+                    has_tombstones,
+                )
+            })),
+            None if !deleted_presets.contains(&preset_id) => changes.push((
+                crate::listening::ListeningOperation::DeleteDjPreset { preset_id },
+                false,
+            )),
+            None => {}
+        }
+    }
+
+    candidate.schema_version = PERSONAL_STATE_LISTENING_SCHEMA_VERSION;
+    let base_observed = candidate.version_vector.clone();
+    let mut last_tombstone_dot = None;
+    let mut added = 0usize;
+    for (index, (change, observes_tombstones)) in changes.into_iter().enumerate() {
+        let material = serde_json::to_string(&(scope, local_device_id, index, &change))?;
+        let operation_id = format!("imported-listening-{}", stable_hash(&material));
+        let is_tombstone = matches!(
+            &change,
+            crate::listening::ListeningOperation::DeleteBookmark { .. }
+                | crate::listening::ListeningOperation::ClearResume { .. }
+                | crate::listening::ListeningOperation::DeletePassportVisit { .. }
+                | crate::listening::ListeningOperation::DeletePassportNote { .. }
+                | crate::listening::ListeningOperation::ClearPassport
+                | crate::listening::ListeningOperation::DeleteDjPreset { .. }
+        );
+        if let Some(existing) = candidate
+            .operations
+            .iter()
+            .find(|operation| operation.operation_id == operation_id)
+        {
+            if existing.origin != OperationOrigin::Imported
+                || existing.operation
+                    != (Operation::Listening {
+                        change: change.clone(),
+                    })
+            {
+                return Err(PersonalStateError::ConflictingOperationId);
+            }
+            if is_tombstone {
+                last_tombstone_dot = Some(existing.stamp.dot.clone());
+            }
+            continue;
+        }
+        let sequence = candidate
+            .version_vector
+            .observed(local_device_id)
+            .checked_add(1)
+            .ok_or(PersonalStateError::InvalidOperation(
+                "import operation sequence exhausted",
+            ))?;
+        let dot = Dot {
+            device_id: local_device_id.clone(),
+            sequence,
+        };
+        let mut observed = base_observed.clone();
+        if observes_tombstones && let Some(tombstone_dot) = &last_tombstone_dot {
+            observed.observe(tombstone_dot);
+        }
+        candidate.operations.push(OperationEnvelope {
+            operation_id,
+            stamp: CausalStamp {
+                dot: dot.clone(),
+                observed,
+                recorded_at_unix: 0,
+            },
+            origin: OperationOrigin::Imported,
+            operation: Operation::Listening { change },
+        });
+        candidate.version_vector.observe(&dot);
+        if is_tombstone {
+            last_tombstone_dot = Some(dot);
+        }
+        added = added.saturating_add(1);
+    }
+    candidate.projection_fingerprint = None;
+    candidate.normalize()?;
+    Ok((candidate, added))
 }
 
 fn merge_baselines(mut local: LegacyProjection, imported: LegacyProjection) -> LegacyProjection {

@@ -51,6 +51,7 @@ impl App {
                 target_cursor: None,
             },
             outgoing,
+            listening_reason: crate::listening::ListeningLoadReason::Deliberate,
             skipped: Vec::new(),
             status_after_commit: None,
             video_follow_up: None,
@@ -67,6 +68,11 @@ impl App {
         let expected_queue_rev = self.queue.rev();
         let expected_cursor = self.queue.cursor_pos();
         let expected_video_id = self.queue.current().map(|song| song.video_id.clone());
+        let listening_reason = if post_commit.recommendation_queued.is_some() {
+            crate::listening::ListeningLoadReason::Automatic
+        } else {
+            crate::listening::ListeningLoadReason::Deliberate
+        };
         if mutation.is_empty() {
             return self.track_transition_intent(TrackTransitionPlan {
                 expected_queue_rev,
@@ -78,6 +84,7 @@ impl App {
                     target_cursor: None,
                 },
                 outgoing,
+                listening_reason,
                 skipped: Vec::new(),
                 status_after_commit: None,
                 video_follow_up: None,
@@ -121,6 +128,7 @@ impl App {
             recorder: None,
             kind,
             outgoing,
+            listening_reason,
             skipped,
             status_after_commit: None,
             video_follow_up: None,

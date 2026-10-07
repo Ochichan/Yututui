@@ -9,6 +9,7 @@ pub mod color_picker;
 pub mod context_menu;
 pub mod help;
 pub mod library;
+pub mod listening;
 pub mod local;
 pub mod local_find;
 pub mod mini;

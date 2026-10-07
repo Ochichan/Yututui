@@ -24,6 +24,7 @@ pub const PRE_GLOBAL_CONTEXTS: &[KeyContext] = &[
     KeyContext::LocalDeck,
     KeyContext::Station,
     KeyContext::StationCard,
+    KeyContext::Listening,
 ];
 
 /// The resolved keybindings: chord → action (for dispatch) and action → chord (for

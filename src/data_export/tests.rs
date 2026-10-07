@@ -142,6 +142,9 @@ fn completed_export_file_name_shape_is_strict() {
     assert!(is_personal_export_file_name(
         "yututui-personal-data-v2-1783704534-0123456789abcdef.json"
     ));
+    assert!(is_personal_export_file_name(
+        "yututui-personal-data-v3-1783704534-0123456789abcdef.json"
+    ));
     for invalid in [
         "yututui-personal-data-v1-1783704534-0123456789ABCDEf.json",
         "yututui-personal-data-v1-now-0123456789abcdef.json",
@@ -198,6 +201,36 @@ fn v2_export_round_trips_and_rejects_private_metadata_claims() {
     unsafe_state.metadata.credentials_included = true;
     let bytes = serde_json::to_vec(&unsafe_state).unwrap();
     assert!(decode_personal_state_export(&bytes).is_err());
+}
+
+#[test]
+fn v3_export_round_trips_listening_operations() {
+    let state = crate::personal_state::legacy_state(
+        &Library::default(),
+        &Playlists::default(),
+        &Signals::default(),
+        &StationStore::default(),
+    )
+    .unwrap();
+    let state = crate::personal_state::append_listening(
+        &state,
+        None,
+        crate::listening::ListeningOperation::ClearPassport,
+        1,
+    )
+    .unwrap();
+    let bytes = serde_json::to_vec(&state).unwrap();
+
+    assert_eq!(decode_personal_state_export(&bytes).unwrap(), state);
+    let directory = test_directory("v3-listening");
+    let path = export_personal_state_snapshot(&directory, &state).unwrap();
+    assert!(
+        path.file_name()
+            .unwrap()
+            .to_string_lossy()
+            .starts_with("yututui-personal-data-v3-")
+    );
+    fs::remove_dir_all(directory).unwrap();
 }
 
 #[test]
@@ -463,5 +496,30 @@ fn v2_export_uses_explicit_enrolled_device_for_multi_device_state() {
         serde_json::from_slice(&fs::read(exported).unwrap()).unwrap();
     assert_eq!(decoded.device_registry, state.device_registry);
 
+    fs::remove_dir_all(directory).expect("cleanup");
+}
+
+#[test]
+fn explicit_v2_export_rejects_a_schema_three_ledger() {
+    let directory = test_directory("schema-three-as-v2");
+    let (state, local_device) = multi_device_personal_state();
+    let state = crate::personal_state::append_listening(
+        &state,
+        Some(&local_device),
+        crate::listening::ListeningOperation::ClearPassport,
+        1,
+    )
+    .unwrap();
+    let result = export_v2_from_sources(
+        &directory,
+        &state,
+        Some(&local_device),
+        &Library::default(),
+        &Playlists::default(),
+        &Signals::default(),
+        &StationStore::default(),
+    );
+
+    assert!(matches!(result, Err(ExportError::SourceStore { .. })));
     fs::remove_dir_all(directory).expect("cleanup");
 }

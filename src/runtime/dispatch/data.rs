@@ -102,8 +102,15 @@ impl RuntimeHandles {
                             drop(sources);
                             crate::data_export::export_snapshot(&directory, &snapshot)
                         } else {
-                            crate::data_export::export_v2_from_sources(
+                            let schema = match schema {
+                                0 => crate::data_export::ExportSchema::Current,
+                                2 => crate::data_export::ExportSchema::V2,
+                                3 => crate::data_export::ExportSchema::V3,
+                                _ => unreachable!("remote export schema was validated"),
+                            };
+                            crate::data_export::export_personal_state_from_sources(
                                 &directory,
+                                schema,
                                 &sources.personal_state,
                                 sources.personal_state_device_id.as_ref(),
                                 &sources.library,

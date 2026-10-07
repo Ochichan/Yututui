@@ -364,6 +364,12 @@ impl App {
     }
 
     fn route_modal_key_contexts(&mut self, k: KeyEvent, chord: Chord) -> Option<Vec<Cmd>> {
+        if self.overlays.listening.is_some() {
+            if matches!(self.keymap.global_action(chord), Some(Action::Quit)) {
+                return Some(self.quit_app());
+            }
+            return Some(self.listening_key(k, chord));
+        }
         if self.overlays.station_card.is_some() {
             if matches!(self.keymap.global_action(chord), Some(Action::Quit)) {
                 return Some(self.quit_app());
@@ -517,6 +523,9 @@ impl App {
             && let Some(action) = self.keymap.global_action(chord)
         {
             match action {
+                Action::OpenBookmarks => return Some(self.open_listening(ListeningTab::Bookmarks)),
+                Action::OpenDjPresets => return Some(self.open_listening(ListeningTab::Presets)),
+                Action::OpenPassport => return Some(self.open_listening(ListeningTab::Passport)),
                 Action::ToggleHelp => {
                     self.overlays.help_visible = true;
                     self.bridges.help_scroll.reset();
@@ -666,6 +675,14 @@ impl App {
     /// Whether a focused text field is currently capturing typed characters (so command
     /// keys and the `?` help shortcut must not fire — they'd be typed instead).
     pub(in crate::app) fn in_text_entry(&self) -> bool {
+        if self
+            .overlays
+            .listening
+            .as_ref()
+            .is_some_and(|dialog| dialog.editing.is_some())
+        {
+            return true;
+        }
         if self.overlays.station_card.is_some() {
             return true;
         }

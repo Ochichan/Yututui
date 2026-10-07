@@ -41,6 +41,8 @@ struct CompactionAuthorizationMaterial<'a> {
     coverage: &'a VersionVector,
     previous_checkpoint_hash: Option<&'a str>,
     retained_engagement_operations: &'a BTreeSet<String>,
+    #[serde(skip_serializing_if = "BTreeSet::is_empty")]
+    retained_listening_operations: &'a BTreeSet<String>,
     membership_epoch: u64,
     membership_head_hash: &'a str,
     leader_device_id: &'a DeviceId,
@@ -56,6 +58,8 @@ struct CompactionGenerationMaterial<'a> {
     coverage: &'a VersionVector,
     previous_checkpoint_hash: Option<&'a str>,
     retained_engagement_operations: &'a BTreeSet<String>,
+    #[serde(skip_serializing_if = "BTreeSet::is_empty")]
+    retained_listening_operations: &'a BTreeSet<String>,
     leader_authorization: &'a Option<CompactionLeaderAuthorization>,
 }
 
@@ -155,6 +159,7 @@ fn authorization_material<'a>(
         coverage: &compaction.coverage,
         previous_checkpoint_hash: compaction.previous_checkpoint_hash.as_deref(),
         retained_engagement_operations: &compaction.retained_engagement_operations,
+        retained_listening_operations: &compaction.retained_listening_operations,
         membership_epoch: authorization.membership_epoch,
         membership_head_hash: &authorization.membership_head_hash,
         leader_device_id: &authorization.leader_device_id,
@@ -408,6 +413,7 @@ fn compaction_generation_hash(
         coverage: &compaction.coverage,
         previous_checkpoint_hash: compaction.previous_checkpoint_hash.as_deref(),
         retained_engagement_operations: &compaction.retained_engagement_operations,
+        retained_listening_operations: &compaction.retained_listening_operations,
         leader_authorization: &compaction.leader_authorization,
     };
     let bytes = serde_json::to_vec(&material).map_err(|_| VaultError::SerializationFailed)?;
@@ -508,6 +514,7 @@ mod tests {
             ])),
             previous_checkpoint_hash: None,
             retained_engagement_operations: BTreeSet::new(),
+            retained_listening_operations: BTreeSet::new(),
             leader_authorization: None,
             acknowledged_by: BTreeSet::new(),
         };

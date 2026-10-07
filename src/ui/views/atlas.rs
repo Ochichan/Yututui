@@ -35,6 +35,7 @@ pub struct RasterKey {
     lon_q: i32,
     scale_q: i32,
     active_country: Option<[u8; 2]>,
+    visited_countries: Vec<[u8; 2]>,
     grid: bool,
 }
 
@@ -63,6 +64,13 @@ fn raster_key(app: &App, rect: CellRect, renderer: Renderer) -> RasterKey {
         lon_q: (atlas.camera.centre.lon * 100.0).round() as i32,
         scale_q: (atlas.camera.scale * 1000.0).round() as i32,
         active_country: atlas.active_country,
+        visited_countries: atlas
+            .passport_map
+            .borrow()
+            .countries
+            .iter()
+            .copied()
+            .collect(),
         grid: atlas.grid,
     }
 }
@@ -100,6 +108,10 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
 
 fn render_globe(frame: &mut Frame, app: &App, area: Rect) {
     let atlas = &app.radio_mode.atlas;
+    atlas
+        .passport_map
+        .borrow_mut()
+        .update(&app.personal_state.ledger);
     let focused = atlas.focus == AtlasFocus::Globe;
     let title = format!(" {} ", t!("Atlas", "아틀라스", "アトラス"));
     let block = Block::default()
@@ -115,6 +127,20 @@ fn render_globe(frame: &mut Frame, app: &App, area: Rect) {
         )));
     let inner = block.inner(area);
     frame.render_widget(block, area);
+    let passport_count = atlas.passport_map.borrow().countries.len();
+    let passport_label = format!(
+        " {} {passport_count} ",
+        t!("Passport", "청취 여권", "パスポート")
+    );
+    let passport_width = crate::ui::buttons::text_width(&passport_label);
+    if area.width >= passport_width.saturating_add(12) {
+        let target = Rect::new(area.right() - passport_width - 1, area.y, passport_width, 1);
+        frame.render_widget(
+            Paragraph::new(passport_label).style(app.theme.style(R::HelpAction)),
+            target,
+        );
+        app.register_mouse_button(target, MouseTarget::Atlas(AtlasTarget::Passport));
+    }
     if inner.width < 4 || inner.height < 3 {
         return;
     }
@@ -140,8 +166,13 @@ fn render_globe(frame: &mut Frame, app: &App, area: Rect) {
         let stale = cache.as_ref().is_none_or(|c| c.key != key);
         if stale {
             let land = land_mask();
+            let passport = atlas.passport_map.borrow();
             let params = RasterParams {
                 land,
+                visited: passport
+                    .mask
+                    .as_ref()
+                    .map(|mask| mask as &dyn crate::atlas::LandLookup),
                 active: atlas
                     .active_mask
                     .as_ref()
@@ -157,6 +188,7 @@ fn render_globe(frame: &mut Frame, app: &App, area: Rect) {
         for cell in cells {
             let color = app.theme.color(match cell.class {
                 DotClass::ActiveLand => R::Accent,
+                DotClass::VisitedLand => R::HelpAction,
                 DotClass::Coast => R::TextPrimary,
                 DotClass::Land => R::TextMuted,
                 DotClass::Limb => R::BorderMuted,

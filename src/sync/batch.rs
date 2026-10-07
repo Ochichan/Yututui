@@ -4,8 +4,9 @@ use ed25519_dalek::SigningKey;
 use serde::{Deserialize, Serialize};
 
 use crate::personal_state::{
-    DeviceId, Operation, OperationEnvelope, OperationOrigin, PersonalStateV2, VersionVector,
-    refresh_device_registry,
+    DeviceId, Operation, OperationEnvelope, OperationOrigin,
+    PERSONAL_STATE_LISTENING_SCHEMA_VERSION, PERSONAL_STATE_SCHEMA_VERSION, PersonalStateV2,
+    VersionVector, refresh_device_registry,
 };
 
 use super::crypto::{
@@ -25,6 +26,8 @@ const BATCH_HASH_DOMAIN: &[u8] = b"yututui-vault-operation-batch-hash-v1";
 pub struct OperationBatchPayload {
     pub kind: String,
     pub schema_version: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub personal_state_schema_version: Option<u32>,
     pub dataset_id: String,
     pub membership_epoch: u64,
     pub signer_device_id: DeviceId,
@@ -128,6 +131,7 @@ impl SignedOperationBatch {
         let payload = OperationBatchPayload {
             kind: BATCH_KIND.to_owned(),
             schema_version: super::VAULT_SCHEMA_VERSION,
+            personal_state_schema_version: batch_personal_state_schema(current_state, &operations)?,
             dataset_id: membership.dataset_id.clone(),
             membership_epoch: membership.epoch,
             signer_device_id,
@@ -254,6 +258,10 @@ pub fn apply_operation_batch(
     }
 
     let mut candidate = state.clone();
+    if batch.payload.personal_state_schema_version == Some(PERSONAL_STATE_LISTENING_SCHEMA_VERSION)
+    {
+        candidate.schema_version = PERSONAL_STATE_LISTENING_SCHEMA_VERSION;
+    }
     merge_operations(&mut candidate, &batch.payload.operations)?;
     candidate.projection_fingerprint = None;
     candidate
@@ -344,6 +352,12 @@ fn validate_payload(
 ) -> Result<(), VaultError> {
     if payload.kind != BATCH_KIND
         || payload.schema_version != super::VAULT_SCHEMA_VERSION
+        || !valid_personal_state_marker(payload.personal_state_schema_version)
+        || (payload.personal_state_schema_version.is_none()
+            && payload
+                .operations
+                .iter()
+                .any(|operation| matches!(operation.operation, Operation::Listening { .. })))
         || payload.dataset_id != membership.dataset_id
         || payload.membership_epoch == 0
         || payload.membership_epoch > membership.epoch
@@ -407,6 +421,26 @@ fn validate_payload(
         }
     }
     validate_serialized_size(payload)
+}
+
+fn batch_personal_state_schema(
+    state: &PersonalStateV2,
+    operations: &[OperationEnvelope],
+) -> Result<Option<u32>, VaultError> {
+    match state.schema_version {
+        PERSONAL_STATE_SCHEMA_VERSION => Ok(operations
+            .iter()
+            .any(|operation| matches!(operation.operation, Operation::Listening { .. }))
+            .then_some(PERSONAL_STATE_LISTENING_SCHEMA_VERSION)),
+        PERSONAL_STATE_LISTENING_SCHEMA_VERSION => {
+            Ok(Some(PERSONAL_STATE_LISTENING_SCHEMA_VERSION))
+        }
+        _ => Err(VaultError::InvalidEncryptedObject),
+    }
+}
+
+fn valid_personal_state_marker(marker: Option<u32>) -> bool {
+    marker.is_none() || marker == Some(PERSONAL_STATE_LISTENING_SCHEMA_VERSION)
 }
 
 fn validate_state_causal_authorization(
@@ -588,6 +622,110 @@ mod tests {
     }
 
     #[test]
+    fn schema_two_wire_is_unchanged_and_listening_requires_signed_schema_three() {
+        let (_, _, membership, signing_key, device, add_device) = fixture();
+        let state = PersonalStateV2::empty("dataset-a".to_owned()).unwrap();
+        let legacy = SignedOperationBatch::create(
+            &membership,
+            &state,
+            device.device_id.clone(),
+            &signing_key,
+            &BatchAnchor::empty(device.device_id.clone()),
+            vec![add_device.clone()],
+        )
+        .unwrap();
+        assert_eq!(legacy.payload.personal_state_schema_version, None);
+        assert!(
+            !serde_json::to_string(&legacy)
+                .unwrap()
+                .contains("personal_state_schema_version")
+        );
+
+        let listening = OperationEnvelope {
+            operation_id: "clear-passport".to_owned(),
+            stamp: CausalStamp {
+                dot: Dot {
+                    device_id: device.device_id.clone(),
+                    sequence: 2,
+                },
+                observed: VersionVector(BTreeMap::from([(device.device_id.clone(), 1)])),
+                recorded_at_unix: 1,
+            },
+            origin: OperationOrigin::Local,
+            operation: Operation::Listening {
+                change: crate::listening::ListeningOperation::ClearPassport,
+            },
+        };
+        let batch = SignedOperationBatch::create(
+            &membership,
+            &state,
+            device.device_id.clone(),
+            &signing_key,
+            &BatchAnchor::empty(device.device_id.clone()),
+            vec![add_device, listening],
+        )
+        .unwrap();
+        assert_eq!(
+            batch.payload.personal_state_schema_version,
+            Some(PERSONAL_STATE_LISTENING_SCHEMA_VERSION)
+        );
+
+        let mut spoofed = batch.clone();
+        spoofed.payload.personal_state_schema_version = None;
+        spoofed.signature =
+            sign_serializable(BATCH_SIGNATURE_DOMAIN, &signing_key, &spoofed.payload).unwrap();
+        assert_eq!(
+            spoofed.verify(&membership),
+            Err(VaultError::InvalidEncryptedObject)
+        );
+
+        let mut applied = state;
+        let mut anchor = BatchAnchor::empty(device.device_id);
+        apply_operation_batch(&mut applied, &mut anchor, &membership, &batch).unwrap();
+        assert_eq!(
+            applied.schema_version,
+            PERSONAL_STATE_LISTENING_SCHEMA_VERSION
+        );
+    }
+
+    #[test]
+    fn schema_two_payload_matches_the_frozen_signed_json_shape() {
+        let device_id = DeviceId::new("device-a").unwrap();
+        let payload = OperationBatchPayload {
+            kind: BATCH_KIND.to_owned(),
+            schema_version: 1,
+            personal_state_schema_version: None,
+            dataset_id: "dataset-a".to_owned(),
+            membership_epoch: 1,
+            signer_device_id: device_id.clone(),
+            first_sequence: 1,
+            last_sequence: 1,
+            previous_batch_hash: None,
+            operations: vec![OperationEnvelope {
+                operation_id: "device-a:1".to_owned(),
+                stamp: CausalStamp {
+                    dot: Dot {
+                        device_id,
+                        sequence: 1,
+                    },
+                    observed: VersionVector::default(),
+                    recorded_at_unix: 0,
+                },
+                origin: OperationOrigin::Local,
+                operation: Operation::SetAvoidArtist {
+                    artist_key: "artist".to_owned(),
+                    avoid: true,
+                },
+            }],
+        };
+
+        assert_eq!(
+            serde_json::to_string(&payload).unwrap(),
+            r#"{"kind":"yututui_vault_operation_batch","schema_version":1,"dataset_id":"dataset-a","membership_epoch":1,"signer_device_id":"device-a","first_sequence":1,"last_sequence":1,"operations":[{"operation_id":"device-a:1","stamp":{"dot":{"device_id":"device-a","sequence":1},"observed":{},"recorded_at_unix":0},"origin":{"kind":"local"},"operation":{"type":"set_avoid_artist","artist_key":"artist","avoid":true}}]}"#
+        );
+    }
+
+    #[test]
     fn tamper_gap_and_post_revoke_sequence_are_rejected() {
         let (_, _, mut membership, signing_key, device, operation) = fixture();
         let batch = SignedOperationBatch::create(
@@ -612,6 +750,7 @@ mod tests {
         let gap_payload = OperationBatchPayload {
             kind: BATCH_KIND.to_owned(),
             schema_version: super::super::VAULT_SCHEMA_VERSION,
+            personal_state_schema_version: None,
             dataset_id: membership.dataset_id.clone(),
             membership_epoch: membership.epoch,
             signer_device_id: device.device_id.clone(),
@@ -649,6 +788,7 @@ mod tests {
         let payload = OperationBatchPayload {
             kind: BATCH_KIND.to_owned(),
             schema_version: super::super::VAULT_SCHEMA_VERSION,
+            personal_state_schema_version: None,
             dataset_id: membership.dataset_id.clone(),
             membership_epoch: membership.epoch,
             signer_device_id: device.device_id,
@@ -869,6 +1009,7 @@ mod tests {
         let poisoned_payload = OperationBatchPayload {
             kind: BATCH_KIND.to_owned(),
             schema_version: super::super::VAULT_SCHEMA_VERSION,
+            personal_state_schema_version: None,
             dataset_id: membership.dataset_id.clone(),
             membership_epoch: membership.epoch,
             signer_device_id: device.device_id.clone(),
@@ -998,6 +1139,7 @@ mod tests {
         let payload = OperationBatchPayload {
             kind: BATCH_KIND.to_owned(),
             schema_version: super::super::VAULT_SCHEMA_VERSION,
+            personal_state_schema_version: None,
             dataset_id: membership.dataset_id.clone(),
             membership_epoch: 1,
             signer_device_id: second_device.device_id,

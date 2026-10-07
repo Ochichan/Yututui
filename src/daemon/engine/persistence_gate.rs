@@ -6,7 +6,14 @@ use crate::remote::proto::{RemoteCommand, RemoteResponse};
 /// Only operations that do not change durable daemon state may continue after coherent
 /// persistence ownership has been lost. Unknown future commands default to rejection.
 fn may_continue_read_only(command: &RemoteCommand) -> bool {
-    matches!(command, RemoteCommand::Status | RemoteCommand::Quit)
+    matches!(
+        command,
+        RemoteCommand::Status
+            | RemoteCommand::Quit
+            | RemoteCommand::Listening {
+                action: crate::remote::proto::ListeningRemoteAction::List
+            }
+    )
 }
 
 pub(super) fn current_recovery_status() -> Result<(), StartupRecoveryError> {
@@ -148,7 +155,7 @@ impl DaemonEngine {
         self.save_personal_state(context, StoreKind::Library);
     }
 
-    fn save_personal_state(&mut self, context: &str, failure_kind: StoreKind) {
+    pub(super) fn save_personal_state(&mut self, context: &str, failure_kind: StoreKind) {
         if self.should_skip_remote_save() {
             return;
         }

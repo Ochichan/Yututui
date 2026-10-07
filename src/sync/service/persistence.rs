@@ -9,14 +9,19 @@ mod activation;
 #[cfg(test)]
 #[path = "persistence/tests.rs"]
 mod activation_tests;
+#[cfg(test)]
+#[path = "persistence/listening_tests.rs"]
+mod listening_tests;
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+#[cfg(test)]
+use crate::personal_state::append_operation_as;
 use crate::personal_state::{
     DeviceId, Operation, OperationEnvelope, OperationOrigin, PersonalStateCommit,
-    PersonalStatePaths, PersonalStateV2, append_operation_as, load_ledger, merge,
+    PersonalStatePaths, PersonalStateV2, append_rebased_operation_as, load_ledger, merge,
 };
 
 use super::super::{EnrollmentState, PrivateStore, SyncPaths};
@@ -870,22 +875,50 @@ pub(crate) fn rebase_local_operations(
     if current.version_vector != expected_vector {
         return Err(SyncServiceError::LocalStateChanged);
     }
+    if durable.version_vector.observed(local_device)
+        > observed.version_vector.observed(local_device)
+        && additions
+            .iter()
+            .any(|addition| matches!(addition.operation, Operation::Listening { .. }))
+    {
+        return Err(SyncServiceError::LocalStateChanged);
+    }
 
     let mut rebased = durable.clone();
+    let schema_advanced = current.schema_version > rebased.schema_version;
+    rebased.schema_version = rebased.schema_version.max(current.schema_version);
     let mut appended = false;
+    let observed_local_sequence = observed.version_vector.observed(local_device);
+    let mut remapped_local_sequences = BTreeMap::<u64, u64>::new();
     for addition in additions {
         if durable_by_id.get(addition.operation_id.as_str()).copied() == Some(addition) {
+            remapped_local_sequences
+                .insert(addition.stamp.dot.sequence, addition.stamp.dot.sequence);
             continue;
         }
-        rebased = append_operation_as(
+        let mut preserved_observed = addition.stamp.observed.clone();
+        let local_dependency = preserved_observed.observed(local_device);
+        if local_dependency > observed_local_sequence {
+            let remapped = remapped_local_sequences
+                .get(&local_dependency)
+                .copied()
+                .ok_or(SyncServiceError::LocalStateChanged)?;
+            preserved_observed.0.insert(local_device.clone(), remapped);
+        }
+        rebased = append_rebased_operation_as(
             &rebased,
             local_device,
             addition.operation.clone(),
             addition.stamp.recorded_at_unix,
+            preserved_observed,
         )?;
+        remapped_local_sequences.insert(
+            addition.stamp.dot.sequence,
+            rebased.version_vector.observed(local_device),
+        );
         appended = true;
     }
-    if appended {
+    if appended || schema_advanced {
         rebased.revision = PersonalStateV2::revision_after(durable.revision.max(current.revision))?;
         rebased.projection_fingerprint = None;
         rebased.normalize()?;

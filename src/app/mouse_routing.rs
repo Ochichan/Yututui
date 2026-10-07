@@ -11,6 +11,7 @@ impl App {
             || self.overlays.about_visible
             || self.overlays.why_gem_video_id.is_some()
             || self.overlays.station_card.is_some()
+            || self.overlays.listening.is_some()
             || self.overlays.key_conflict.is_some()
             || self.overlays.pending_settings_confirm.is_some()
             || self.overlays.spotify_picker.is_some()
@@ -120,6 +121,12 @@ impl App {
                 self.close_why_gem();
             }
             return Vec::new();
+        }
+        if self.overlays.listening.is_some() {
+            return match self.mouse_target_at(col, row) {
+                Some(MouseTarget::Listening(action)) => self.listening_mouse(action),
+                _ => Vec::new(),
+            };
         }
         if self.overlays.station_card.is_some() {
             if !matches!(
@@ -545,6 +552,16 @@ impl App {
             MouseTarget::Onboarding(action) => self.activate_onboarding(action),
             MouseTarget::WhyGemCard => Vec::new(),
             MouseTarget::StationCard => self.open_station_card(),
+            MouseTarget::Listening(action) => self.listening_mouse(action),
+            MouseTarget::Global(Action::OpenBookmarks) => {
+                self.open_listening(ListeningTab::Bookmarks)
+            }
+            MouseTarget::Global(Action::OpenDjPresets) => {
+                self.open_listening(ListeningTab::Presets)
+            }
+            MouseTarget::Global(Action::OpenPassport) => {
+                self.open_listening(ListeningTab::Passport)
+            }
             MouseTarget::Global(Action::ToggleHelp) => {
                 self.overlays.help_visible = true;
                 self.overlays.mouse_help_visible = false;

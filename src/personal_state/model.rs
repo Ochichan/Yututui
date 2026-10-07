@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 
 pub const PERSONAL_STATE_KIND: &str = "yututui_personal_state";
 pub const PERSONAL_STATE_SCHEMA_VERSION: u32 = 2;
+pub const PERSONAL_STATE_LISTENING_SCHEMA_VERSION: u32 = 3;
 pub(crate) const MAX_OPERATIONS: usize = 250_000;
 pub(crate) const MAX_DEVICES: usize = 256;
 pub(crate) const MAX_TEXT_CHARS: usize = 1_024;
@@ -338,6 +339,9 @@ pub enum Operation {
     LegacyBaseline {
         baseline: Box<crate::personal_state::LegacyProjection>,
     },
+    Listening {
+        change: crate::listening::ListeningOperation,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -409,6 +413,8 @@ pub struct CompactionCheckpoint {
     /// checkpoint lets merge discard only the covered events that were actually compacted.
     #[serde(default)]
     pub retained_engagement_operations: BTreeSet<String>,
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub retained_listening_operations: BTreeSet<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub leader_authorization: Option<CompactionLeaderAuthorization>,
     #[serde(default)]
@@ -515,7 +521,10 @@ impl PersonalStateV2 {
         if self.kind != PERSONAL_STATE_KIND {
             return Err(PersonalStateError::UnsupportedKind);
         }
-        if self.schema_version != PERSONAL_STATE_SCHEMA_VERSION {
+        if !matches!(
+            self.schema_version,
+            PERSONAL_STATE_SCHEMA_VERSION | PERSONAL_STATE_LISTENING_SCHEMA_VERSION
+        ) {
             return Err(PersonalStateError::UnsupportedSchema(self.schema_version));
         }
         validate_id("dataset id", &self.dataset_id, 128)?;
@@ -645,7 +654,15 @@ impl PersonalStateV2 {
                 return Err(PersonalStateError::ConflictingOperationId);
             }
             validate_origin(&envelope.origin)?;
+            if self.schema_version == PERSONAL_STATE_SCHEMA_VERSION
+                && matches!(envelope.operation, Operation::Listening { .. })
+            {
+                return Err(PersonalStateError::InvalidOperation(
+                    "listening operations require personal-state schema 3",
+                ));
+            }
             validate_operation(&envelope.operation)?;
+            validate_listening_author(envelope)?;
             observed.observe(&envelope.stamp.dot);
         }
         if observed
@@ -797,7 +814,25 @@ fn validate_operation(operation: &Operation) -> Result<(), PersonalStateError> {
             validate_id("device id", device_id.as_str(), MAX_TRACK_ID_CHARS)
         }
         Operation::LegacyBaseline { baseline } => baseline.validate(),
+        Operation::Listening { change } => change.validate(),
     }
+}
+
+fn validate_listening_author(envelope: &OperationEnvelope) -> Result<(), PersonalStateError> {
+    let Operation::Listening { change } = &envelope.operation else {
+        return Ok(());
+    };
+    let provenance = match change {
+        crate::listening::ListeningOperation::SetResume { point } => Some(&point.provenance),
+        crate::listening::ListeningOperation::ClearResume { clear } => Some(&clear.provenance),
+        _ => None,
+    };
+    if provenance.is_some_and(|provenance| provenance.device_id != envelope.stamp.dot.device_id) {
+        return Err(PersonalStateError::InvalidOperation(
+            "resume provenance does not match its causal device",
+        ));
+    }
+    Ok(())
 }
 
 pub(crate) fn derive_device_registry(

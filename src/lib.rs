@@ -26,6 +26,7 @@ pub mod i18n;
 pub mod ids;
 pub mod keymap;
 pub mod library;
+pub mod listening;
 pub mod local;
 pub mod logging;
 pub mod lyrics;

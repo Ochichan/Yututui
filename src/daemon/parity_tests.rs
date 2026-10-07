@@ -16,6 +16,7 @@
 
 mod crossfade;
 mod harness;
+mod listening;
 mod personal_sync;
 mod rating_recommendation;
 mod sleep_timer;

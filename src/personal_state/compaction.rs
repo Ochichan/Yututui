@@ -11,7 +11,7 @@ use serde::Serialize;
 use super::legacy::{ENGAGEMENT_EVENTS_MAX, sha256_hex};
 use super::reducer::{project_at, stamp_order};
 use super::{
-    CompactionCheckpoint, DeviceId, Operation, OperationEnvelope, PersonalStateError,
+    CausalStamp, CompactionCheckpoint, DeviceId, Operation, OperationEnvelope, PersonalStateError,
     PersonalStateV2, VersionVector,
 };
 
@@ -23,6 +23,7 @@ pub(crate) const RAW_EVENT_RETENTION_SECS: i64 = 365 * 24 * 60 * 60;
 pub struct EngagementCompactionPlan {
     pub candidate: PersonalStateV2,
     pub pruned_engagement_operations: usize,
+    pub pruned_listening_operations: usize,
 }
 
 /// The lowest active device id is the sole compaction leader.
@@ -73,7 +74,16 @@ pub fn plan_engagement_compaction(
                 && !retained.contains(operation.operation_id.as_str())
         })
         .count();
-    if pruned_engagement_operations == 0 {
+    let retained_listening_operations = retained_listening_operation_ids(&state.operations);
+    let pruned_listening_operations = state
+        .operations
+        .iter()
+        .filter(|operation| {
+            matches!(operation.operation, Operation::Listening { .. })
+                && !retained_listening_operations.contains(&operation.operation_id)
+        })
+        .count();
+    if pruned_engagement_operations == 0 && pruned_listening_operations == 0 {
         return Ok(None);
     }
     let _ = state.next_revision()?;
@@ -98,6 +108,7 @@ pub fn plan_engagement_compaction(
         &coverage,
         previous_checkpoint_hash.as_deref(),
         &retained,
+        &retained_listening_operations,
         &state.operations,
     )?;
     let checkpoint = CompactionCheckpoint {
@@ -106,6 +117,7 @@ pub fn plan_engagement_compaction(
         coverage,
         previous_checkpoint_hash,
         retained_engagement_operations: retained.clone(),
+        retained_listening_operations: retained_listening_operations.clone(),
         leader_authorization: None,
         // Acknowledgements are sync-protocol objects signed by each device. Portable state must
         // never manufacture or union them.
@@ -113,22 +125,35 @@ pub fn plan_engagement_compaction(
     };
 
     let before = project_at(state, now_unix)?;
+    let listening_before = crate::listening::ListeningProjection::from_ledger(state)?;
     let mut candidate = state.clone();
-    candidate.operations.retain(|operation| {
-        !matches!(operation.operation, Operation::RecordEngagement { .. })
-            || retained.contains(operation.operation_id.as_str())
-    });
+    candidate
+        .operations
+        .retain(|operation| match operation.operation {
+            Operation::RecordEngagement { .. } => {
+                retained.contains(operation.operation_id.as_str())
+            }
+            Operation::Listening { .. } => {
+                retained_listening_operations.contains(&operation.operation_id)
+            }
+            _ => true,
+        });
     candidate.compaction_checkpoint = Some(checkpoint);
     candidate.projection_fingerprint = None;
     candidate.normalize()?;
     let after = project_at(&candidate, now_unix)?;
-    if before.fingerprint != after.fingerprint || before.legacy != after.legacy {
+    let listening_after = crate::listening::ListeningProjection::from_ledger(&candidate)?;
+    if before.fingerprint != after.fingerprint
+        || before.legacy != after.legacy
+        || listening_before != listening_after
+    {
         return Err(PersonalStateError::ProjectionMismatch);
     }
 
     Ok(Some(EngagementCompactionPlan {
         candidate,
         pruned_engagement_operations,
+        pruned_listening_operations,
     }))
 }
 
@@ -162,10 +187,194 @@ pub(crate) fn operation_survives_checkpoint(
         return true;
     };
     !matches!(operation.operation, Operation::RecordEngagement { .. })
+        && !matches!(operation.operation, Operation::Listening { .. })
         || !checkpoint.coverage.covers(&operation.stamp.dot)
-        || checkpoint
-            .retained_engagement_operations
-            .contains(&operation.operation_id)
+        || match operation.operation {
+            Operation::RecordEngagement { .. } => checkpoint
+                .retained_engagement_operations
+                .contains(&operation.operation_id),
+            Operation::Listening { .. } => checkpoint
+                .retained_listening_operations
+                .contains(&operation.operation_id),
+            _ => true,
+        }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+enum ListeningRegisterKey {
+    Bookmark(String),
+    Resume(super::PortableTrackKey),
+    PassportVisit(String),
+    PassportNote(String),
+    PassportClear,
+    DjPreset(String),
+}
+
+type PassportVisitEnvelope<'a> = (&'a OperationEnvelope, &'a crate::listening::PassportVisit);
+
+fn retained_listening_operation_ids(operations: &[OperationEnvelope]) -> BTreeSet<String> {
+    let mut groups = BTreeMap::<ListeningRegisterKey, Vec<&OperationEnvelope>>::new();
+    let mut passport_clears = Vec::new();
+    let mut retained = BTreeSet::new();
+    for operation in operations {
+        let Operation::Listening { change } = &operation.operation else {
+            continue;
+        };
+        if is_listening_tombstone(change) {
+            retained.insert(operation.operation_id.clone());
+        }
+        let key = match change {
+            crate::listening::ListeningOperation::UpsertBookmark { bookmark } => {
+                ListeningRegisterKey::Bookmark(bookmark.bookmark_id.as_str().to_owned())
+            }
+            crate::listening::ListeningOperation::DeleteBookmark { bookmark_id } => {
+                ListeningRegisterKey::Bookmark(bookmark_id.as_str().to_owned())
+            }
+            crate::listening::ListeningOperation::SetResume { point } => {
+                ListeningRegisterKey::Resume(point.track.key.clone())
+            }
+            crate::listening::ListeningOperation::ClearResume { clear } => {
+                ListeningRegisterKey::Resume(clear.track.key.clone())
+            }
+            crate::listening::ListeningOperation::RecordPassportVisit { visit } => {
+                ListeningRegisterKey::PassportVisit(visit.station_uuid.clone())
+            }
+            crate::listening::ListeningOperation::DeletePassportVisit { station_uuid } => {
+                ListeningRegisterKey::PassportVisit(station_uuid.clone())
+            }
+            crate::listening::ListeningOperation::SetPassportNote { note } => {
+                ListeningRegisterKey::PassportNote(note.station_uuid.clone())
+            }
+            crate::listening::ListeningOperation::DeletePassportNote { station_uuid } => {
+                ListeningRegisterKey::PassportNote(station_uuid.clone())
+            }
+            crate::listening::ListeningOperation::ClearPassport => {
+                passport_clears.push(operation);
+                ListeningRegisterKey::PassportClear
+            }
+            crate::listening::ListeningOperation::UpsertDjPreset { preset } => {
+                ListeningRegisterKey::DjPreset(preset.preset_id.as_str().to_owned())
+            }
+            crate::listening::ListeningOperation::DeleteDjPreset { preset_id } => {
+                ListeningRegisterKey::DjPreset(preset_id.as_str().to_owned())
+            }
+        };
+        groups.entry(key).or_default().push(operation);
+    }
+    for (key, operations) in &mut groups {
+        if matches!(
+            key,
+            ListeningRegisterKey::PassportVisit(_) | ListeningRegisterKey::PassportNote(_)
+        ) {
+            operations.extend(passport_clears.iter().copied());
+        }
+    }
+
+    for operations in groups.into_values() {
+        let mut frontier = Vec::<&OperationEnvelope>::new();
+        for operation in operations {
+            if frontier
+                .iter()
+                .any(|current| current.stamp.happens_after(&operation.stamp))
+            {
+                continue;
+            }
+            frontier.retain(|current| !operation.stamp.happens_after(&current.stamp));
+            frontier.push(operation);
+        }
+        retained.extend(
+            frontier
+                .into_iter()
+                .map(|operation| operation.operation_id.clone()),
+        );
+    }
+    retain_passport_visit_aggregates(operations, &mut retained);
+    retained
+}
+
+fn retain_passport_visit_aggregates(
+    operations: &[OperationEnvelope],
+    retained: &mut BTreeSet<String>,
+) {
+    let mut global_deletes = Vec::new();
+    let mut station_deletes = BTreeMap::<String, Vec<&CausalStamp>>::new();
+    let mut visits = BTreeMap::<String, Vec<PassportVisitEnvelope<'_>>>::new();
+    for operation in operations {
+        let Operation::Listening { change } = &operation.operation else {
+            continue;
+        };
+        match change {
+            crate::listening::ListeningOperation::ClearPassport => {
+                global_deletes.push(&operation.stamp);
+            }
+            crate::listening::ListeningOperation::DeletePassportVisit { station_uuid } => {
+                station_deletes
+                    .entry(station_uuid.clone())
+                    .or_default()
+                    .push(&operation.stamp);
+            }
+            crate::listening::ListeningOperation::RecordPassportVisit { visit } => {
+                visits
+                    .entry(visit.station_uuid.clone())
+                    .or_default()
+                    .push((operation, visit));
+            }
+            _ => {}
+        }
+    }
+    for (station_uuid, mut station_visits) in visits {
+        let station_specific = station_deletes
+            .get(&station_uuid)
+            .map(Vec::as_slice)
+            .unwrap_or_default();
+        station_visits.retain(|(operation, _)| {
+            global_deletes
+                .iter()
+                .chain(station_specific.iter())
+                .all(|deleted| operation.stamp.happens_after(deleted))
+        });
+        if station_visits.is_empty() {
+            continue;
+        }
+        station_visits.sort_by(|(left, _), (right, _)| {
+            left.stamp
+                .dot
+                .cmp(&right.stamp.dot)
+                .then(left.operation_id.cmp(&right.operation_id))
+        });
+        let first = station_visits
+            .iter()
+            .min_by_key(|(_, visit)| visit.first_listened_at_unix)
+            .map(|(operation, _)| operation);
+        let last = station_visits
+            .iter()
+            .max_by_key(|(_, visit)| visit.last_listened_at_unix)
+            .map(|(operation, _)| operation);
+        let name = station_visits.last().map(|(operation, _)| operation);
+        let country = station_visits
+            .iter()
+            .rev()
+            .find(|(_, visit)| visit.country_code.is_some())
+            .map(|(operation, _)| operation);
+        retained.extend(
+            [first, last, name, country]
+                .into_iter()
+                .flatten()
+                .map(|operation| operation.operation_id.clone()),
+        );
+    }
+}
+
+fn is_listening_tombstone(change: &crate::listening::ListeningOperation) -> bool {
+    matches!(
+        change,
+        crate::listening::ListeningOperation::DeleteBookmark { .. }
+            | crate::listening::ListeningOperation::ClearResume { .. }
+            | crate::listening::ListeningOperation::DeletePassportVisit { .. }
+            | crate::listening::ListeningOperation::DeletePassportNote { .. }
+            | crate::listening::ListeningOperation::ClearPassport
+            | crate::listening::ListeningOperation::DeleteDjPreset { .. }
+    )
 }
 
 pub(crate) fn retained_engagement_operation_ids(
@@ -221,6 +430,7 @@ pub(crate) fn validate_checkpoint(
     checkpoint: &CompactionCheckpoint,
 ) -> Result<(), PersonalStateError> {
     if checkpoint.retained_engagement_operations.len() > ENGAGEMENT_EVENTS_MAX
+        || checkpoint.retained_listening_operations.len() > super::model::MAX_OPERATIONS
         || checkpoint
             .coverage
             .0
@@ -242,6 +452,7 @@ pub(crate) fn validate_checkpoint(
         &checkpoint.coverage,
         checkpoint.previous_checkpoint_hash.as_deref(),
         &checkpoint.retained_engagement_operations,
+        &checkpoint.retained_listening_operations,
         &state.operations,
     )?;
     if checkpoint.checkpoint_id != expected {
@@ -269,6 +480,20 @@ pub(crate) fn validate_checkpoint(
             ));
         }
     }
+    for operation_id in &checkpoint.retained_listening_operations {
+        let Some(operation) = operations.get(operation_id.as_str()) else {
+            return Err(PersonalStateError::InvalidOperation(
+                "compaction retained listening operation is missing",
+            ));
+        };
+        if !matches!(operation.operation, Operation::Listening { .. })
+            || !checkpoint.coverage.covers(&operation.stamp.dot)
+        {
+            return Err(PersonalStateError::InvalidOperation(
+                "compaction retained listening operation is invalid",
+            ));
+        }
+    }
     if state.operations.iter().any(|operation| {
         matches!(operation.operation, Operation::RecordEngagement { .. })
             && checkpoint.coverage.covers(&operation.stamp.dot)
@@ -278,6 +503,17 @@ pub(crate) fn validate_checkpoint(
     }) {
         return Err(PersonalStateError::InvalidOperation(
             "compacted engagement operation was resurrected",
+        ));
+    }
+    if state.operations.iter().any(|operation| {
+        matches!(operation.operation, Operation::Listening { .. })
+            && checkpoint.coverage.covers(&operation.stamp.dot)
+            && !checkpoint
+                .retained_listening_operations
+                .contains(&operation.operation_id)
+    }) {
+        return Err(PersonalStateError::InvalidOperation(
+            "compacted listening operation was resurrected",
         ));
     }
     Ok(())
@@ -317,6 +553,7 @@ fn checkpoint_content_eq(left: &CompactionCheckpoint, right: &CompactionCheckpoi
         && left.coverage == right.coverage
         && left.previous_checkpoint_hash == right.previous_checkpoint_hash
         && left.retained_engagement_operations == right.retained_engagement_operations
+        && left.retained_listening_operations == right.retained_listening_operations
         && left.leader_authorization == right.leader_authorization
 }
 
@@ -333,6 +570,8 @@ struct CheckpointHashMaterial<'a> {
     coverage: &'a VersionVector,
     previous_checkpoint_hash: Option<&'a str>,
     retained_engagement_operations: &'a BTreeSet<String>,
+    #[serde(skip_serializing_if = "BTreeSet::is_empty")]
+    retained_listening_operations: &'a BTreeSet<String>,
     // Commit to every surviving covered operation, not only engagement ids. Otherwise an older
     // state could replace a pruned engagement dot with a rating or membership operation.
     retained_covered_operations: Vec<&'a OperationEnvelope>,
@@ -344,6 +583,7 @@ pub(crate) fn checkpoint_id_for(
     coverage: &VersionVector,
     previous_checkpoint_hash: Option<&str>,
     retained_engagement_operations: &BTreeSet<String>,
+    retained_listening_operations: &BTreeSet<String>,
     operations: &[OperationEnvelope],
 ) -> Result<String, PersonalStateError> {
     let mut retained_covered_operations = operations
@@ -352,6 +592,8 @@ pub(crate) fn checkpoint_id_for(
             coverage.covers(&operation.stamp.dot)
                 && (!matches!(operation.operation, Operation::RecordEngagement { .. })
                     || retained_engagement_operations.contains(&operation.operation_id))
+                && (!matches!(operation.operation, Operation::Listening { .. })
+                    || retained_listening_operations.contains(&operation.operation_id))
         })
         .collect::<Vec<_>>();
     retained_covered_operations.sort_by(|left, right| {
@@ -368,6 +610,7 @@ pub(crate) fn checkpoint_id_for(
         coverage,
         previous_checkpoint_hash,
         retained_engagement_operations,
+        retained_listening_operations,
         retained_covered_operations,
     };
     Ok(sha256_hex(&serde_json::to_vec(&material)?))

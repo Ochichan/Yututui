@@ -392,6 +392,12 @@ impl From<RuntimeEvent> for Msg {
                 crate::player::PlayerEvent::Paused(paused) => {
                     Msg::Player(PlayerMsg::Paused(paused))
                 }
+                crate::player::PlayerEvent::Seekable(seekable) => {
+                    Msg::Player(PlayerMsg::Seekable(seekable))
+                }
+                crate::player::PlayerEvent::Buffering(buffering) => {
+                    Msg::Player(PlayerMsg::Buffering(buffering))
+                }
                 crate::player::PlayerEvent::Volume(volume) => {
                     Msg::Player(PlayerMsg::Volume(volume))
                 }

@@ -4,7 +4,9 @@
 //! `main`. The verb (with short aliases) maps to an [`Invocation`]; `-q`/`--json` are
 //! client-side display flags.
 
-use super::proto::{BanTarget, RemoteCommand, RemoteSettingChange, ToggleState, Topic};
+use super::proto::{
+    BanTarget, ListeningRemoteAction, RemoteCommand, RemoteSettingChange, ToggleState, Topic,
+};
 
 /// Work requested by a parsed `ytt -r` command line.
 #[derive(Debug, Clone, PartialEq)]
@@ -61,6 +63,7 @@ Commands:
                           Toggle (or set) autoplay streaming
   sleep [minutes|off]     Arm the sleep timer (no argument = the preset) or turn it off
   ban <track|artist>      Ban the current autoplay-streaming track or artist for this session
+  listening <action>      Enable/list/add/jump/delete listening records or load a DJ preset
   resume-session          Load and play the saved session
   status, st              Print the current track / state
   info                    Print non-secret owner metadata
@@ -218,6 +221,41 @@ pub fn parse(args: &[String]) -> Result<Parsed, ParseError> {
                 }
             };
             Invocation::Command(RemoteCommand::Ban { target })
+        }
+        "listening" => {
+            let action = match rest.as_slice() {
+                ["enable"] => ListeningRemoteAction::Enable,
+                ["list"] => ListeningRemoteAction::List,
+                ["bookmark-add", label @ ..] if !label.is_empty() => {
+                    ListeningRemoteAction::BookmarkAdd {
+                        label: label.join(" "),
+                    }
+                }
+                ["bookmark-jump", bookmark_id] => ListeningRemoteAction::BookmarkJump {
+                    bookmark_id: (*bookmark_id).to_owned(),
+                },
+                ["bookmark-delete", bookmark_id] => ListeningRemoteAction::BookmarkDelete {
+                    bookmark_id: (*bookmark_id).to_owned(),
+                },
+                ["restart"] => ListeningRemoteAction::Restart,
+                ["preset-save", name @ ..] if !name.is_empty() => {
+                    ListeningRemoteAction::PresetSave {
+                        name: name.join(" "),
+                    }
+                }
+                ["preset-load", preset_id] => ListeningRemoteAction::PresetLoad {
+                    preset_id: (*preset_id).to_owned(),
+                },
+                ["preset-delete", preset_id] => ListeningRemoteAction::PresetDelete {
+                    preset_id: (*preset_id).to_owned(),
+                },
+                _ => {
+                    return Err(ParseError::Invalid(format!(
+                        "{verb}: expected enable|list|bookmark-add <label>|bookmark-jump <id>|bookmark-delete <id>|restart|preset-save <name>|preset-load <id>|preset-delete <id>"
+                    )));
+                }
+            };
+            Invocation::Command(RemoteCommand::Listening { action })
         }
         "resume-session" | "load-session" => Invocation::Command(RemoteCommand::ResumeSession),
         "status" | "st" => Invocation::Command(RemoteCommand::Status),
@@ -476,6 +514,37 @@ mod tests {
                 .collect::<Vec<_>>();
             assert!(matches!(parse(&owned), Err(ParseError::Invalid(_))));
         }
+    }
+
+    #[test]
+    fn listening_commands_keep_stable_record_ids() {
+        assert_eq!(
+            cmd(&["listening", "enable"]),
+            RemoteCommand::Listening {
+                action: ListeningRemoteAction::Enable
+            }
+        );
+        assert_eq!(
+            cmd(&["listening", "bookmark-add", "Chapter", "two"]),
+            RemoteCommand::Listening {
+                action: ListeningRemoteAction::BookmarkAdd {
+                    label: "Chapter two".to_owned()
+                }
+            }
+        );
+        assert_eq!(
+            cmd(&["listening", "bookmark-jump", "bookmark-1"]),
+            RemoteCommand::Listening {
+                action: ListeningRemoteAction::BookmarkJump {
+                    bookmark_id: "bookmark-1".to_owned()
+                }
+            }
+        );
+        let invalid = ["listening", "preset-load"]
+            .into_iter()
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        assert!(matches!(parse(&invalid), Err(ParseError::Invalid(_))));
     }
 
     #[test]

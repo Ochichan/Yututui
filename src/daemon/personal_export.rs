@@ -128,8 +128,15 @@ impl PersonalExport {
                 drop((personal_state, config, library, playlists, signals, station));
                 crate::data_export::export_snapshot(destination.as_path(), &snapshot)
             } else {
-                crate::data_export::export_v2_from_sources(
+                let schema = match schema {
+                    0 => crate::data_export::ExportSchema::Current,
+                    2 => crate::data_export::ExportSchema::V2,
+                    3 => crate::data_export::ExportSchema::V3,
+                    _ => unreachable!("remote export schema was validated"),
+                };
+                crate::data_export::export_personal_state_from_sources(
                     destination.as_path(),
+                    schema,
                     &personal_state,
                     personal_state_device_id.as_ref(),
                     &library,

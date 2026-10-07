@@ -35,7 +35,7 @@ pub use pack::PackedCand;
 pub use score::{GateVerdict, classify_pool};
 pub use taste::{
     SeedBias, SeedPolarity, SessionTaste, TasteCounts, TasteEdit, TasteError, TasteOutcome,
-    project_taste,
+    TasteSnapshot, project_taste,
 };
 
 pub use crate::playback_policy::AutoplayRefill;
