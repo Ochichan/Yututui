@@ -320,7 +320,7 @@ fn fingerprint_import_directory(
     }
 
     #[cfg(windows)]
-    let (membership_changed, generation_reliable) = {
+    let membership_changed = {
         if metadata_changed {
             cache.directory_change_time = None;
         }
@@ -331,21 +331,19 @@ fn fingerprint_import_directory(
         ) {
             Ok(change_time) => {
                 let previous = cache.directory_change_time.replace(change_time);
-                (previous != Some(change_time), true)
+                previous != Some(change_time)
             }
             Err(_) => {
                 cache.directory_change_time = None;
-                (true, false)
+                true
             }
         }
     };
     #[cfg(not(windows))]
     // Portable directory metadata does not expose a trustworthy membership generation.
     // In particular, callers can rewrite a same-sized artifact and restore its mtime, and
-    // filesystem-specific change fields are not available on every non-Windows target. Keep
-    // using metadata changes as a rescan hint, but fail closed for cache reuse whenever the
-    // import directory exists. Windows uses the explicit directory change-time query above.
-    let (membership_changed, generation_reliable) = (metadata_changed, false);
+    // filesystem-specific change fields are not available on every non-Windows target.
+    let membership_changed = metadata_changed;
 
     let mut fingerprint = if force_scan
         || path_changed
@@ -369,7 +367,9 @@ fn fingerprint_import_directory(
             probe,
         )
     };
-    fingerprint.reliable &= generation_reliable;
+    // Directory timestamps, including Windows ChangeTime, can repeat within one clock tick.
+    // Keep them as rescan hints, but never authorize row-cache reuse for an existing directory.
+    fingerprint.reliable = false;
     fingerprint
 }
 

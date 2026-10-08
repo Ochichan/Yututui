@@ -185,7 +185,8 @@ jobs:
           want="0.8.5"
           have="$(cargo llvm-cov --version 2>/dev/null | awk '{print $2}')" || have=""
           [ "$have" = "$want" ] || cargo install --locked cargo-llvm-cov --version "$want"
-          bash scripts/coverage-core.sh
+          # Unoptimized mappings avoid LLVM hash mismatches across coverage test binaries.
+          bash scripts/coverage-core.sh --profile dev
 
   windows-optional:
     name: Windows (optional light)

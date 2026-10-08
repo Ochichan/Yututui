@@ -28,44 +28,42 @@ async fn with_fake_ytdlp() -> FakeYtdlpGuard {
             &bin,
             r#"#!/bin/sh
 case " $* " in
-  *" --version "*) echo '2026.07.07'; exit 0 ;;
+  *" --version "*) printf '%s\n' '2026.07.07'; exit 0 ;;
 esac
 args="$*"
-if printf '%s' "$args" | grep -q 'watch?v=aaa111bbb22'; then
-  cat <<'JSON'
-{"title":"Metadata Song","channel":"Meta Artist","duration":242,"live_status":"not_live","media_type":"video","description":"official audio"}
-JSON
-elif printf '%s' "$args" | grep -q 'playlist?list=PLfakeList'; then
-  if printf '%s' "$args" | grep -q -- '--playlist-items 0'; then
-    cat <<'JSON'
-{"title":"Fake Playlist","channel":"Curator","playlist_count":3}
-JSON
-  else
-    cat <<'JSON'
-{"entries":[
+case "$args" in
+  *"watch?v=aaa111bbb22"*)
+    printf '%s\n' '{"title":"Metadata Song","channel":"Meta Artist","duration":242,"live_status":"not_live","media_type":"video","description":"official audio"}'
+    ;;
+  *"playlist?list=PLfakeList"*)
+    case "$args" in
+      *"--playlist-items 0"*)
+        printf '%s\n' '{"title":"Fake Playlist","channel":"Curator","playlist_count":3}'
+        ;;
+      *)
+        printf '%s\n' '{"entries":[
   {"id":"aaa111bbb22","title":"Playlist Song","channel":"Playlist Artist","duration":181},
   {"id":"PLnot-a-video-playlist-id","title":"Playlist row"},
   {"id":"bbb222ccc33","title":"Second Playlist Song","uploader":"Uploader Artist","duration":0}
-]}
-JSON
-  fi
-elif printf '%s' "$args" | grep -q 'youtube.com/results'; then
-  cat <<'JSON'
-{"entries":[
+]}'
+        ;;
+    esac
+    ;;
+  *"youtube.com/results"*)
+    printf '%s\n' '{"entries":[
   {"id":"PLfakeList","url":"https://www.youtube.com/playlist?list=PLfakeList","title":"Fake Playlist","uploader":"Curator","playlist_count":3},
   {"id":"aaa111bbb22","url":"https://www.youtube.com/watch?v=aaa111bbb22","title":"Plain Video"}
-]}
-JSON
-else
-  cat <<'JSON'
-{"entries":[
+]}'
+    ;;
+  *)
+    printf '%s\n' '{"entries":[
   {"id":"aaa111bbb22","title":"Search Song","uploader":"Search Artist","duration":123},
   {"id":"aaa111bbb22","title":"Duplicate Song","uploader":"Search Artist","duration":123},
   {"id":"bbb222ccc33","title":"Second Song","channel":"Second Artist","duration":245},
   {"id":"UCnotavideoid","title":"Channel Row"}
-]}
-JSON
-fi
+]}'
+    ;;
+esac
 "#,
         )
         .expect("write fake yt-dlp");
@@ -74,6 +72,67 @@ fi
         .expect("chmod fake yt-dlp");
     *TEST_YTDLP_PROGRAM.lock().unwrap_or_else(|e| e.into_inner()) = Some(bin);
     FakeYtdlpGuard { _guard: guard }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn fake_ytdlp_does_not_require_programs_on_path() {
+    let _guard = with_fake_ytdlp().await;
+    let program = TEST_YTDLP_PROGRAM
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
+        .expect("fake yt-dlp program");
+    let run = |args: &[&str]| {
+        let output = std::process::Command::new(&program)
+            .args(args)
+            .env("PATH", "")
+            .output()
+            .expect("run fixture with empty child PATH");
+        assert!(
+            output.status.success(),
+            "fixture failed for {args:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        output.stdout
+    };
+    assert_eq!(run(&["--version"]), b"2026.07.07\n");
+    let cases: [(&[&str], &str, serde_json::Value); 5] = [
+        (
+            &["https://www.youtube.com/watch?v=aaa111bbb22"],
+            "/title",
+            serde_json::json!("Metadata Song"),
+        ),
+        (
+            &[
+                "https://www.youtube.com/playlist?list=PLfakeList",
+                "--playlist-items",
+                "0",
+            ],
+            "/playlist_count",
+            serde_json::json!(3),
+        ),
+        (
+            &["https://www.youtube.com/playlist?list=PLfakeList"],
+            "/entries/0/title",
+            serde_json::json!("Playlist Song"),
+        ),
+        (
+            &["https://www.youtube.com/results?search_query=lofi"],
+            "/entries/0/title",
+            serde_json::json!("Fake Playlist"),
+        ),
+        (
+            &["ytsearch4:lofi"],
+            "/entries/0/title",
+            serde_json::json!("Search Song"),
+        ),
+    ];
+    for (args, pointer, expected) in cases {
+        let value: serde_json::Value =
+            serde_json::from_slice(&run(args)).expect("fixture emits JSON with empty PATH");
+        assert_eq!(value.pointer(pointer), Some(&expected), "{args:?}");
+    }
 }
 
 #[tokio::test]

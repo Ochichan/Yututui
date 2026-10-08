@@ -253,6 +253,10 @@ mpris-server = { version = "0.10", features = ["tokio"] }
 ratatui-image = { path = "crates/ratatui-image" }
 crossterm = { path = "crates/crossterm" }
 
+# Keep the large test crate's macOS unwind tables below the linker limit.
+[profile.test.package.yututui]
+opt-level = 1
+
 [profile.release]
 opt-level = "s"      # optimise for size; revisit "z"/3 after benchmarking
 lto = "fat"          # cross-crate dead-code stripping
