@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::{fs, io};
 
 static NEXT_TEST_DIRECTORY: AtomicU64 = AtomicU64::new(0);
-const EXISTING_DIRECTORY_GENERATION_RELIABLE: bool = cfg!(windows);
+const EXISTING_DIRECTORY_GENERATION_RELIABLE: bool = false;
 
 struct TestImportData {
     root: PathBuf,
@@ -506,6 +506,25 @@ fn recognized_path_cap_is_global_across_transfers_and_sessions() {
 #[test]
 fn unrelated_membership_churn_rescans_but_keeps_the_semantic_row_cache_key() {
     let data = TestImportData::new();
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt as _;
+        use windows_sys::Win32::Storage::FileSystem::{
+            FILE_FLAG_BACKUP_SEMANTICS, FILE_WRITE_ATTRIBUTES,
+        };
+
+        fs::OpenOptions::new()
+            .access_mode(FILE_WRITE_ATTRIBUTES)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+            .open(&data.transfers)
+            .and_then(|directory| {
+                directory.set_times(
+                    fs::FileTimes::new()
+                        .set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(1)),
+                )
+            })
+            .expect("pin initial transfer directory timestamp before membership churn");
+    }
     #[cfg(not(windows))]
     fs::File::open(&data.transfers)
         .and_then(|directory| {
@@ -648,14 +667,11 @@ fn restored_mtime_status_rewrite_invalidates_from_platform_change_identity() {
         .push(LocalDrill::ImportSession(session_id));
     let before = app.local_rows_snapshot();
     assert!(app.local_row_text_at(&before, 0).contains("review Review"));
-    #[cfg(not(windows))]
-    {
-        let observed = fingerprint(&mut app.local_mode.import_files_fingerprint_cache.borrow_mut());
-        assert!(
-            !observed.1,
-            "an existing non-Windows import directory must never authorize row-cache reuse"
-        );
-    }
+    let observed = fingerprint(&mut app.local_mode.import_files_fingerprint_cache.borrow_mut());
+    assert!(
+        !observed.1,
+        "an existing import directory must never authorize row-cache reuse"
+    );
 
     let original_modified = fs::metadata(&artifact.fingerprint_path)
         .and_then(|metadata| metadata.modified())
