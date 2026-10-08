@@ -71,15 +71,17 @@ jobs:
       github.event.pull_request.head.repo.full_name == github.repository
     needs: release-build
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
       - name: Download platform artifacts
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
-        with:
-          pattern: yututui-*
-          merge-multiple: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/download-release-artifacts.py platforms --dest .
       - name: Verify artifact set and package contents
         shell: bash
         run: |

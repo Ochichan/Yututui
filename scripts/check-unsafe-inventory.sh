@@ -8,9 +8,17 @@ matches=$(mktemp)
 unexpected=$(mktemp)
 trap 'rm -f "$matches" "$unexpected"' EXIT
 
-if ! rg -n --with-filename "$pattern" src crates/ratatui-image/src > "$matches"; then
-  echo "unsafe inventory ok"
-  exit 0
+if rg -n --with-filename "$pattern" src crates/ratatui-image/src > "$matches"; then
+  :
+else
+  search_status=$?
+  if [ "$search_status" -eq 1 ]; then
+    echo "unsafe inventory ok"
+    exit 0
+  fi
+
+  echo "error: unsafe inventory search failed (rg exit status $search_status)" >&2
+  exit "$search_status"
 fi
 
 is_allowed() {

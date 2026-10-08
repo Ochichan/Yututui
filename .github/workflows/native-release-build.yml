@@ -21,6 +21,10 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
+      - name: Install quality dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ripgrep
       - name: Install Rust
         uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable branch
         with:
@@ -37,7 +41,11 @@ jobs:
       - name: Vendored ratatui-image patch invariants
         run: scripts/check-ratatui-image-patch.sh
       - name: Unsafe inventory
-        run: scripts/check-unsafe-inventory.sh
+        run: |
+          scripts/test-unsafe-inventory.sh
+          scripts/check-unsafe-inventory.sh
+      - name: Artifact download regression tests
+        run: python3 scripts/test-download-release-artifacts.py
       - name: Vendored ratatui-image Clippy
         run: >-
           cargo clippy
@@ -374,8 +382,8 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          choco install mpv -y --no-progress
-          # choco's mpvio.install drops mpv.exe in its package tools dir and appends that
+          choco install mpvio.portable --version 0.41.0 -y --no-progress
+          # choco's mpvio.portable drops mpv.exe in its package tools dir and appends that
           # dir to the *machine* PATH — which later steps in this job do not inherit (there
           # is no refreshenv between steps). Surface it via $GITHUB_PATH so the daemon
           # smoke's `Get-Command mpv` resolves in the next step.
