@@ -3072,7 +3072,7 @@ mod tests {
         command
             .args(["--ignored", "--exact", "tests::cleanup_wait_helper_process"])
             .env("TUI_PERF_CLEANUP_HELPER", "1")
-            .stdin(std::process::Stdio::null())
+            .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .process_group(0);
@@ -3085,31 +3085,54 @@ mod tests {
 
     struct TestWaiterGuard {
         stop: mpsc::Sender<()>,
+        completed: mpsc::Receiver<()>,
         waiter: Option<std::thread::JoinHandle<std::io::Result<std::process::ExitStatus>>>,
     }
 
     impl TestWaiterGuard {
         fn new(mut child: Child) -> Self {
             let (stop, requests) = mpsc::channel();
+            let (completion, completed) = mpsc::channel();
             let waiter = std::thread::spawn(move || {
-                loop {
-                    if let Some(status) = child.try_wait()? {
-                        return Ok(status);
+                let result = (|| {
+                    loop {
+                        if let Some(status) = child.try_wait()? {
+                            return Ok(status);
+                        }
+                        if requests.try_recv().is_ok() {
+                            let _ = child.kill();
+                            return child.wait();
+                        }
+                        std::thread::sleep(std::time::Duration::from_millis(10));
                     }
-                    if requests.try_recv().is_ok() {
-                        let _ = child.kill();
-                        return child.wait();
-                    }
-                    std::thread::sleep(std::time::Duration::from_millis(10));
-                }
+                })();
+                let _ = completion.send(());
+                result
             });
             Self {
                 stop,
+                completed,
                 waiter: Some(waiter),
             }
         }
 
-        fn join(mut self) -> std::io::Result<std::process::ExitStatus> {
+        fn join(self) -> std::io::Result<std::process::ExitStatus> {
+            self.join_with_timeout(std::time::Duration::from_secs(5))
+        }
+
+        fn join_with_timeout(
+            mut self,
+            timeout: std::time::Duration,
+        ) -> std::io::Result<std::process::ExitStatus> {
+            match self.completed.recv_timeout(timeout) {
+                Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected) => {}
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::TimedOut,
+                        "timed out waiting for cleaned-up test child",
+                    ));
+                }
+            }
             self.waiter
                 .take()
                 .expect("test waiter is present")
@@ -3125,6 +3148,44 @@ mod tests {
                 let _ = waiter.join();
             }
         }
+    }
+
+    fn spawn_cleanup_wait_helper_for_guard_test() -> Child {
+        std::process::Command::new(std::env::current_exe().expect("test executable"))
+            .args(["--ignored", "--exact", "tests::cleanup_wait_helper_process"])
+            .env("TUI_PERF_CLEANUP_HELPER", "1")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("spawn cleanup wait helper")
+    }
+
+    #[test]
+    fn cleanup_wait_helper_releases_on_stdin_eof() {
+        let mut child = spawn_cleanup_wait_helper_for_guard_test();
+        drop(child.stdin.take().expect("cleanup helper stdin pipe"));
+        let status = TestWaiterGuard::new(child)
+            .join()
+            .expect("wait for helper after stdin EOF");
+        assert!(status.success(), "stdin EOF must release cleanup helper");
+    }
+
+    #[test]
+    fn waiter_timeout_kills_and_reaps_the_retained_child() {
+        let child = spawn_cleanup_wait_helper_for_guard_test();
+        let pid = child.id();
+        let error = TestWaiterGuard::new(child)
+            .join_with_timeout(std::time::Duration::ZERO)
+            .expect_err("live helper must exceed a zero completion deadline");
+        assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
+
+        let mut system = sysinfo::System::new();
+        system.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
+        assert!(
+            system.process(sysinfo::Pid::from_u32(pid)).is_none(),
+            "timed-out waiter guard must kill and reap its retained child"
+        );
     }
 
     #[cfg(unix)]
@@ -3449,7 +3510,7 @@ mod tests {
                 &ipc_arg,
             ])
             .env("TUI_PERF_CLEANUP_HELPER", "1")
-            .stdin(std::process::Stdio::null())
+            .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .spawn()
@@ -3479,7 +3540,7 @@ mod tests {
             .args(helper_args)
             .arg("ytt-owner-helper")
             .env("TUI_PERF_CLEANUP_HELPER", "1")
-            .stdin(std::process::Stdio::null())
+            .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .spawn()
@@ -3498,7 +3559,7 @@ mod tests {
             .args(helper_args)
             .arg(&ipc_arg)
             .env("TUI_PERF_CLEANUP_HELPER", "1")
-            .stdin(std::process::Stdio::null())
+            .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .spawn()
@@ -3552,7 +3613,7 @@ mod tests {
             ])
             .env("TUI_PERF_CLEANUP_HELPER", "1")
             .env("TUI_PERF_LATE_CHILD_PID_FILE", &late_pid_file)
-            .stdin(std::process::Stdio::null())
+            .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .process_group(0);
@@ -3615,7 +3676,7 @@ mod tests {
         command
             .args(["--ignored", "--exact", "tests::cleanup_wait_helper_process"])
             .env("TUI_PERF_CLEANUP_HELPER", "1")
-            .stdin(std::process::Stdio::null())
+            .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null());
         let child = command.spawn().expect("spawn sentinel cleanup child");
@@ -3726,7 +3787,7 @@ mod tests {
         owner_command
             .args(["--ignored", "--exact", "tests::cleanup_wait_helper_process"])
             .env("TUI_PERF_CLEANUP_HELPER", "1")
-            .stdin(std::process::Stdio::null())
+            .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .process_group(0);
@@ -3810,7 +3871,7 @@ mod tests {
             .env("TUI_PERF_CLEANUP_HELPER", "1")
             .env("TUI_PERF_LATE_CHILD_PID_FILE", &late_pid_file)
             .env("TUI_PERF_LATE_CHILD_DELAY_MS", "0")
-            .stdin(std::process::Stdio::null())
+            .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .process_group(0);
@@ -3891,7 +3952,16 @@ while True:
                     .spawn()
                     .expect("spawn late setsid child");
             }
-            std::thread::sleep(std::time::Duration::from_secs(30));
+            use std::io::Read as _;
+            loop {
+                match std::io::stdin().read(&mut [0_u8]) {
+                    Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                    result => {
+                        result.expect("wait for parent input or EOF");
+                        break;
+                    }
+                }
+            }
         }
     }
 
