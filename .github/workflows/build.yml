@@ -43,6 +43,8 @@ jobs:
       attestations: write
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
       - name: Verify tag matches Cargo version
         run: |
           tag="${GITHUB_REF_NAME#v}"
@@ -146,6 +148,8 @@ jobs:
       actions: read
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
       - name: Download checksums
         env:
           GH_TOKEN: ${{ github.token }}
@@ -188,6 +192,8 @@ jobs:
       actions: read
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
       - name: Download checksums
         env:
           GH_TOKEN: ${{ github.token }}
@@ -223,6 +229,8 @@ jobs:
       AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
       - name: Render PKGBUILD
         run: |
           sed "s/__VERSION__/${GITHUB_REF_NAME#v}/g" packaging/aur/PKGBUILD.tmpl > PKGBUILD
