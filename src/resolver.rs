@@ -1073,10 +1073,10 @@ mod cookie_notice_tests {
 
     #[tokio::test]
     async fn rejected_cookies_are_reported_once_per_resolver() {
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
         let mut handle = spawn_with(
             move |event| {
-                let _ = tx.send(match event {
+                let _ = tx.try_send(match event {
                     ResolverEvent::Resolved { .. } => "resolved",
                     ResolverEvent::Failed { .. } => "failed",
                     ResolverEvent::CookiesRejected => "cookies",

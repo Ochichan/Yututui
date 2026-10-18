@@ -55,6 +55,8 @@ pub enum StreamingMsg {
         /// The model's self-reported confidence in [0,1], if it returned one.
         conf: Option<f32>,
     },
+    /// yt-dlp reported the configured YouTube cookies as expired or rotated while resolving.
+    CookiesRejected,
 }
 
 impl From<StreamingMsg> for Msg {

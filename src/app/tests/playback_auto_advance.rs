@@ -601,7 +601,7 @@ fn non_extraction_error_never_triggers_a_heal() {
 fn rejected_youtube_cookies_raise_an_error_status() {
     let _guard = crate::i18n::lock_for_test();
     let mut app = app_playing(1, 0);
-    app.update(Msg::YoutubeCookiesRejected);
+    app.update(StreamingMsg::CookiesRejected);
     assert_eq!(app.status.kind, StatusKind::Error);
     assert!(app.status.text.contains("cookies have expired"));
 }

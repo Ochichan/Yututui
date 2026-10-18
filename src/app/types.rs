@@ -282,8 +282,6 @@ pub enum Msg {
     ResolveFailed {
         video_id: String,
     },
-    /// yt-dlp reported the configured YouTube cookies as expired or rotated.
-    YoutubeCookiesRejected,
     /// An event from the transfer actor: Spotify auth, playlist listings, job progress.
     Transfer(crate::transfer::actor::TransferEvent),
     Atlas(crate::app::atlas::AtlasMsg),

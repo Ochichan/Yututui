@@ -530,7 +530,7 @@ impl From<RuntimeEvent> for Msg {
                 }
             }
             RuntimeEvent::Resolver(crate::resolver::ResolverEvent::CookiesRejected) => {
-                Msg::YoutubeCookiesRejected
+                Msg::Streaming(StreamingMsg::CookiesRejected)
             }
             RuntimeEvent::Scrobble(event) => Msg::Scrobble(event),
             RuntimeEvent::Signal(crate::player::lifetime::SignalEvent::Quit) => Msg::Quit,
