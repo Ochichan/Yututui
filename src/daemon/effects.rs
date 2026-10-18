@@ -69,6 +69,34 @@ impl DaemonEffectTasks {
         });
     }
 
+    fn schedule_resolve_retry<F>(
+        &mut self,
+        event_tx: &DaemonEventSender,
+        shutdown: &ShutdownLatch,
+        video_id: String,
+        resolve: F,
+    ) where
+        F: Future<Output = crate::resolver::ResolveOutcome> + Send + 'static,
+    {
+        let tx = event_tx.clone();
+        let completion_shutdown = shutdown.clone();
+        self.spawn_cancellable(shutdown.clone(), async move {
+            let outcome = resolve.await;
+            if !completion_shutdown.is_triggered() {
+                deliver_terminal(
+                    &tx,
+                    &completion_shutdown,
+                    DaemonEvent::ResolveRetry {
+                        video_id,
+                        stream_url: outcome.stream_url,
+                        cookies_rejected: outcome.cookies_rejected,
+                    },
+                )
+                .await;
+            }
+        });
+    }
+
     fn schedule_transport_retry(
         &mut self,
         event_tx: &DaemonEventSender,
@@ -299,6 +327,13 @@ pub(super) fn dispatch_engine_effects(
                 generation,
                 retry_after,
             } => tasks.schedule_transport_retry(event_tx, shutdown, generation, retry_after),
+            engine::EngineEffect::ResolveRetry {
+                video_id,
+                watch_url,
+                cookies,
+            } => tasks.schedule_resolve_retry(event_tx, shutdown, video_id, async move {
+                crate::resolver::resolve_url(&watch_url, cookies.as_deref()).await
+            }),
         }
     }
     terminal

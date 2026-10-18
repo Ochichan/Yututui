@@ -38,6 +38,13 @@ pub(super) enum DaemonEvent {
         video_id: String,
         updated: bool,
     },
+    /// A load-retry resolve finished (see [`super::engine::EngineEffect::ResolveRetry`]);
+    /// `None` means yt-dlp found no stream.
+    ResolveRetry {
+        video_id: String,
+        stream_url: Option<String>,
+        cookies_rejected: bool,
+    },
     /// Bounded, generation-tagged retry after an automatic player restart/replay failed.
     TransportRecoveryRetry {
         generation: u64,
@@ -75,9 +82,11 @@ impl DaemonEvent {
             DaemonEvent::Lyrics(_) => EventPolicy::MustDeliver {
                 lane: Lane::WorkResult,
             },
-            DaemonEvent::YtdlpHeal { .. } => EventPolicy::MustDeliver {
-                lane: Lane::WorkResult,
-            },
+            DaemonEvent::YtdlpHeal { .. } | DaemonEvent::ResolveRetry { .. } => {
+                EventPolicy::MustDeliver {
+                    lane: Lane::WorkResult,
+                }
+            }
             DaemonEvent::TransportRecoveryRetry { .. } => EventPolicy::MustDeliver {
                 lane: Lane::Control,
             },
@@ -107,6 +116,7 @@ impl DaemonEvent {
             DaemonEvent::OpenSubsonicReady => "open_subsonic_ready",
             DaemonEvent::Lyrics(_) => "lyrics",
             DaemonEvent::YtdlpHeal { .. } => "ytdlp_heal",
+            DaemonEvent::ResolveRetry { .. } => "resolve_retry",
             DaemonEvent::TransportRecoveryRetry { .. } => "transport_recovery_retry",
             DaemonEvent::PersonalExportFinished(_) => "personal_export_finished",
             DaemonEvent::PersonalSyncFinished(_) => "personal_sync_finished",

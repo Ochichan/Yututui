@@ -297,6 +297,8 @@ fn respect_user_ytdlp_config(env_val: Option<&str>) -> bool {
 pub(crate) fn classify_ytdlp_failure(stderr: &str) -> Option<&'static str> {
     let stderr = stderr.to_ascii_lowercase();
     for (needle, class) in [
+        // Ahead of the bot check: yt-dlp's age gate reads "Sign in to confirm your age".
+        ("confirm your age", "sign-in required"),
         (
             "sign in to confirm",
             "YouTube bot check — sign-in cookies may be needed",
@@ -309,7 +311,6 @@ pub(crate) fn classify_ytdlp_failure(stderr: &str) -> Option<&'static str> {
         ("login required", "sign-in required"),
         ("private video", "sign-in required"),
         ("members-only", "sign-in required"),
-        ("confirm your age", "sign-in required"),
         ("not available in your country", "geo-blocked"),
         ("geo restrict", "geo-blocked"),
         (
@@ -771,16 +772,19 @@ pub(crate) fn append_ytdlp_cookie_args(cmd: &mut tokio::process::Command, cookie
     }
 }
 
-/// Player client used when minting YouTube stream URLs under cookie auth.
+/// Player clients used when minting YouTube stream URLs under cookie auth.
 ///
-/// Cookie-authenticated yt-dlp defaults (notably `TVHTML5`) often return googlevideo
-/// URLs that ffmpeg/mpv then open with HTTP 403 — so playlist streaming skips while
-/// the same track still downloads (yt-dlp fetches the bytes itself). `web_safari`
-/// keeps authenticated catalog access and yields CDN URLs mpv can open.
-pub const YOUTUBE_STREAM_PLAYER_CLIENT: &str = "web_safari";
+/// Cookie-authenticated yt-dlp defaults include `TVHTML5` clients whose googlevideo URLs
+/// ffmpeg/mpv then open with HTTP 403, so playlist streaming skips while the same track
+/// still downloads (yt-dlp fetches the bytes itself). Keep yt-dlp's own authenticated
+/// default chain and exclude only the TV clients, rather than pinning one client: a single
+/// pin breaks every stream when YouTube stops serving it formats (`web_safari` returned
+/// storyboard images only as of yt-dlp 2026.08.19). The `-client` exclusion syntax ignores
+/// names a yt-dlp build does not know.
+pub const YOUTUBE_STREAM_PLAYER_CLIENTS: &str = "default,-tv,-tv_downgraded,-tv_simply";
 
 pub fn youtube_stream_extractor_args() -> String {
-    format!("youtube:player_client={YOUTUBE_STREAM_PLAYER_CLIENT}")
+    format!("youtube:player_client={YOUTUBE_STREAM_PLAYER_CLIENTS}")
 }
 
 /// Pin the stream player client on a direct yt-dlp invocation (prefetch resolver).
@@ -1126,6 +1130,10 @@ mod tests {
                 "sign-in required",
             ),
             (
+                "ERROR: [youtube] abc: Sign in to confirm your age. Use --cookies for the authentication.",
+                "sign-in required",
+            ),
+            (
                 "ERROR: This video is not available in your country",
                 "geo-blocked",
             ),
@@ -1227,7 +1235,7 @@ mod tests {
     }
 
     #[test]
-    fn mpv_ytdl_raw_options_pin_web_safari_only_with_cookies() {
+    fn mpv_ytdl_raw_options_exclude_tv_clients_only_with_cookies() {
         let with_cookies = mpv_ytdl_raw_option_args(Some(Path::new("/tmp/cookies.txt")));
         assert!(
             with_cookies
@@ -1237,9 +1245,10 @@ mod tests {
         );
         assert!(
             with_cookies.iter().any(|a| {
-                a.contains("extractor-args=") && a.contains("player_client=web_safari")
+                a.contains("extractor-args=")
+                    && a.contains("player_client=default,-tv,-tv_downgraded,-tv_simply")
             }),
-            "cookie auth must pin web_safari to avoid TVHTML5 CDN 403s: {with_cookies:?}"
+            "cookie auth must exclude TVHTML5 clients to avoid CDN 403s: {with_cookies:?}"
         );
 
         let anonymous = mpv_ytdl_raw_option_args(None);

@@ -31,6 +31,7 @@ use yututui_core::sleep_timer::{SLEEP_MAX_MINUTES, SleepStep, SleepTimer};
 mod crossfade;
 mod delivery;
 mod listening;
+mod load_retry;
 mod media_session;
 mod open_subsonic_bridge;
 mod open_subsonic_runtime;
@@ -41,6 +42,7 @@ mod remote_dispatch;
 mod streaming;
 mod taste_remote;
 mod transport;
+use self::load_retry::LoadRetry;
 use self::streaming::PendingStreamingRequest;
 #[cfg(test)]
 use self::streaming::StreamingRequestStage;
@@ -117,6 +119,14 @@ pub enum EngineEffect {
         generation: u64,
         retry_after: Duration,
     },
+    /// Resolve a direct stream URL for a track whose watch-URL load failed with a bare
+    /// `loading failed`, or once per session to check the cookies. The serve loop answers with
+    /// [`DaemonEngine::handle_resolve_retry`].
+    ResolveRetry {
+        video_id: String,
+        watch_url: String,
+        cookies: Option<std::path::PathBuf>,
+    },
 }
 
 pub struct DaemonEngine {
@@ -183,6 +193,10 @@ pub struct DaemonEngine {
     heal_pending: Option<String>,
     heal_attempted: HashSet<String>,
     heal_last_check: Option<Instant>,
+    /// An update heal landed after a newer load or stop superseded it. The live mpv keeps its
+    /// spawn-time `ytdl_path`, so the next load respawns it to pick up the new binary.
+    heal_repin_pending: bool,
+    load_retry: LoadRetry,
     last_mode: LastMode,
     inactive_normal_queue: Option<Arc<QueueSnapshot>>,
     inactive_radio_queue: Option<Arc<QueueSnapshot>>,
@@ -370,6 +384,8 @@ impl DaemonEngine {
             heal_pending: None,
             heal_attempted: HashSet::new(),
             heal_last_check: None,
+            heal_repin_pending: false,
+            load_retry: LoadRetry::default(),
             last_mode: LastMode::Normal,
             inactive_normal_queue: None,
             inactive_radio_queue: None,
@@ -486,9 +502,16 @@ impl DaemonEngine {
                 self.playback.time_pos_at = Some(Instant::now());
                 if t > 0.0 {
                     self.consecutive_play_errors = 0;
+                    if let Some(song) = self.queue.current() {
+                        self.load_retry.attempted.remove(&song.video_id);
+                    }
                 }
                 self.observe_listening_position(t);
-                self.advance_crossfade_if_due(t).await
+                let mut effects = self.advance_crossfade_if_due(t).await;
+                if t > 0.0 {
+                    effects.extend(self.begin_cookie_check());
+                }
+                effects
             }
             PlayerEvent::Duration(d) => {
                 // Mirror of the TUI reducer (app/mod.rs `PlayerMsg::Duration`): `None`
@@ -1252,6 +1275,9 @@ impl DaemonEngine {
         if self.try_source_recovery(&error) {
             return Vec::new();
         }
+        if let Some(effect) = self.begin_load_retry(&error) {
+            return vec![effect];
+        }
         let failure_class = crate::tools::classify_playback_failure(&error);
         // Self-heal (mirrors the TUI reducer): an extraction-shaped failure on a
         // yt-dlp-resolved track is the stale-yt-dlp signature — update in the
@@ -1314,11 +1340,13 @@ impl DaemonEngine {
         updated: bool,
     ) -> Vec<EngineEffect> {
         if self.heal_pending.as_deref() != Some(video_id.as_str()) {
-            return Vec::new(); // stale: playback moved on
+            self.heal_repin_pending |= updated; // stale: playback moved on
+            return Vec::new();
         }
         self.heal_pending = None;
         let still_current = self.queue.current().is_some_and(|s| s.video_id == video_id);
         if !still_current {
+            self.heal_repin_pending |= updated;
             return Vec::new();
         }
         if updated {
@@ -1342,6 +1370,8 @@ impl DaemonEngine {
     }
 
     fn stop_playback(&mut self) {
+        self.load_retry.pending = None;
+        self.heal_pending = None;
         self.snapshot_listening_progress();
         self.clear_listening_track();
         self.source_recovery.supersede_transport();
@@ -1366,7 +1396,13 @@ impl DaemonEngine {
         self.playback.position_epoch = self.playback.position_epoch.wrapping_add(1);
     }
 
+    /// Every caller is about to load a track, so this is where a pending heal re-pin respawns
+    /// mpv. The old mpv goes first: the IPC socket path is per process, and dropping an `Mpv`
+    /// unlinks it.
     async fn ensure_player(&mut self) -> Result<(), EngineError> {
+        if std::mem::take(&mut self.heal_repin_pending) {
+            self.player = None;
+        }
         if self.player.is_some() {
             return Ok(());
         }

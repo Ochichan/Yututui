@@ -534,6 +534,21 @@ async fn run_owner_loop(
                 };
                 dispatch_effects!(effects);
             }
+            DaemonEvent::ResolveRetry {
+                video_id,
+                stream_url,
+                cookies_rejected,
+            } => {
+                let Some(effects) = await_owner_handler(
+                    &shutdown,
+                    engine.handle_resolve_retry(video_id, stream_url, cookies_rejected),
+                )
+                .await
+                else {
+                    break 'owner;
+                };
+                dispatch_effects!(effects);
+            }
             DaemonEvent::TransportRecoveryRetry { generation } => {
                 let Some(effects) =
                     await_owner_handler(&shutdown, engine.attempt_transport_recovery(generation))

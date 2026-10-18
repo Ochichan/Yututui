@@ -703,6 +703,12 @@ impl Song {
         }
     }
 
+    /// Whether resolving this song runs yt-dlp's YouTube extractor, the only one that reports
+    /// rejected YouTube cookies.
+    pub fn resolves_through_youtube(&self) -> bool {
+        !self.is_local() && matches!(self.playable, Some(PlayableRef::YoutubeVideo { .. }) | None)
+    }
+
     /// Direct streams/radio URLs do not benefit from yt-dlp pre-resolution. YouTube and
     /// yt-dlp-backed sources do, so the skip-ahead resolver can ask only for those.
     pub fn prefetch_target(&self) -> Option<String> {
