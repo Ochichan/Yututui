@@ -297,6 +297,8 @@ fn respect_user_ytdlp_config(env_val: Option<&str>) -> bool {
 pub(crate) fn classify_ytdlp_failure(stderr: &str) -> Option<&'static str> {
     let stderr = stderr.to_ascii_lowercase();
     for (needle, class) in [
+        // Ahead of the bot check: yt-dlp's age gate reads "Sign in to confirm your age".
+        ("confirm your age", "sign-in required"),
         (
             "sign in to confirm",
             "YouTube bot check — sign-in cookies may be needed",
@@ -309,7 +311,6 @@ pub(crate) fn classify_ytdlp_failure(stderr: &str) -> Option<&'static str> {
         ("login required", "sign-in required"),
         ("private video", "sign-in required"),
         ("members-only", "sign-in required"),
-        ("confirm your age", "sign-in required"),
         ("not available in your country", "geo-blocked"),
         ("geo restrict", "geo-blocked"),
         (
@@ -1126,6 +1127,10 @@ mod tests {
             ),
             (
                 "ERROR: login required to watch this video",
+                "sign-in required",
+            ),
+            (
+                "ERROR: [youtube] abc: Sign in to confirm your age. Use --cookies for the authentication.",
                 "sign-in required",
             ),
             (
