@@ -380,6 +380,29 @@ fn next_track_prefetch_doubles_as_the_cookie_check() {
 }
 
 #[test]
+fn a_non_youtube_resolve_leaves_the_cookie_check_armed() {
+    let cloud = Song::from_source(
+        crate::search_source::SearchSource::SoundCloud,
+        "track-1",
+        "Cloud",
+        "Artist",
+        "2:00",
+        crate::api::PlayableRef::YtdlpUrl {
+            source: crate::search_source::SearchSource::SoundCloud,
+            url: "https://soundcloud.com/a/t".to_owned(),
+        },
+    );
+    let mut app = App::new(100);
+    app.heal.cookie_check_pending = true;
+    app.queue.set(vec![cloud], 0);
+    let song = app.queue.current().cloned();
+    let mut cmds = app.load_song(song);
+    admit_player_transition(&mut app, &mut cmds);
+    assert!(resolve_cmd(&cmds, "sc:track-1").is_none());
+    assert!(app.heal.cookie_check_pending);
+}
+
+#[test]
 fn skip_uses_prefetched_url_when_available() {
     let mut app = app_playing(3, 0); // playing id0, prefetch requested for id1
     app.update(StreamingMsg::Resolved {

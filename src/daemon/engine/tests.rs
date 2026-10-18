@@ -948,6 +948,7 @@ async fn heal_result_after_a_replay_or_stop_is_dropped() {
         .handle_player_event(PlayerEvent::Error(EXTRACTION_ERR.to_owned()))
         .await;
     engine.stop_playback();
+    assert!(engine.heal_pending.is_none());
     engine.handle_heal_result("a".to_owned(), true).await;
     assert!(
         engine.player.is_none(),
