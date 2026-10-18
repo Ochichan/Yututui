@@ -1237,6 +1237,16 @@ impl App {
                 return self.handle_ytdlp_heal_result(video_id, updated);
             }
             Msg::ResolveFailed { video_id } => return self.handle_resolve_failed(video_id),
+            Msg::YoutubeCookiesRejected => {
+                self.status.kind = StatusKind::Error;
+                self.status.text = t!(
+                    "⚠ YouTube cookies have expired — export fresh cookies from your browser",
+                    "⚠ YouTube 쿠키가 만료됨 — 브라우저에서 쿠키를 다시 내보내세요",
+                    "⚠ YouTubeのCookieが期限切れ — ブラウザから再エクスポートしてください"
+                )
+                .to_owned();
+                self.dirty = true;
+            }
             Msg::Search(SearchMsg::Results {
                 request_id,
                 query,

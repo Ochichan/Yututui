@@ -986,7 +986,11 @@ async fn generic_initial_load_failure_retries_once_through_a_direct_url() {
     );
 
     let effects = engine
-        .handle_resolve_retry("a".to_owned(), Some("https://cdn.example/a.m4a".to_owned()))
+        .handle_resolve_retry(
+            "a".to_owned(),
+            Some("https://cdn.example/a.m4a".to_owned()),
+            false,
+        )
         .await;
     assert!(effects.is_empty());
     assert_eq!(drain_load_urls(&mut rx), vec!["https://cdn.example/a.m4a"]);
@@ -1018,7 +1022,9 @@ async fn generic_initial_load_failure_retries_once_through_a_direct_url() {
 async fn failed_retry_resolve_takes_the_plain_error_path() {
     let mut engine = engine_with_queue(&["a"]);
     engine.handle_player_event(generic_load_failure()).await;
-    let effects = engine.handle_resolve_retry("a".to_owned(), None).await;
+    let effects = engine
+        .handle_resolve_retry("a".to_owned(), None, false)
+        .await;
     assert!(effects.is_empty());
     assert_eq!(engine.consecutive_play_errors, 1);
     assert!(engine.last_error.is_some());
@@ -1037,6 +1043,7 @@ async fn retry_result_after_a_stop_or_newer_load_is_dropped() {
         .handle_resolve_retry(
             "a".to_owned(),
             Some("https://cdn.example/late.m4a".to_owned()),
+            false,
         )
         .await;
     assert!(effects.is_empty());
@@ -1052,6 +1059,7 @@ async fn retry_result_after_a_stop_or_newer_load_is_dropped() {
         .handle_resolve_retry(
             "a".to_owned(),
             Some("https://cdn.example/late.m4a".to_owned()),
+            false,
         )
         .await;
     assert!(
@@ -1087,5 +1095,18 @@ async fn pending_update_heal_blocks_a_load_retry() {
         !effects
             .iter()
             .any(|e| matches!(e, EngineEffect::ResolveRetry { .. }))
+    );
+}
+
+#[tokio::test]
+async fn rejected_cookies_survive_the_retry_error_path_as_the_last_error() {
+    let mut engine = engine_with_queue(&["a"]);
+    engine.handle_player_event(generic_load_failure()).await;
+    engine
+        .handle_resolve_retry("a".to_owned(), None, true)
+        .await;
+    assert_eq!(
+        engine.last_error.as_deref(),
+        Some(crate::resolver::REJECTED_COOKIES_NOTICE)
     );
 }

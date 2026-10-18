@@ -80,18 +80,15 @@ impl RuntimeEvent {
             RuntimeEvent::Lyrics(crate::lyrics::LyricsEvent::Result { video_id, .. }) => {
                 Some(RuntimeTelemetrySlot::StaleLyrics(video_id.clone()))
             }
-            RuntimeEvent::Resolver(event) => {
-                let (video_id, purpose) = match event {
-                    crate::resolver::ResolverEvent::Resolved {
-                        video_id, purpose, ..
-                    }
-                    | crate::resolver::ResolverEvent::Failed { video_id, purpose } => {
-                        (video_id, purpose)
-                    }
-                };
-                (*purpose == crate::resolver::ResolvePurpose::Prefetch)
-                    .then(|| RuntimeTelemetrySlot::StaleResolver(video_id.as_str().to_owned()))
-            }
+            RuntimeEvent::Resolver(event) => match event {
+                crate::resolver::ResolverEvent::Resolved {
+                    video_id, purpose, ..
+                }
+                | crate::resolver::ResolverEvent::Failed { video_id, purpose } => (*purpose
+                    == crate::resolver::ResolvePurpose::Prefetch)
+                    .then(|| RuntimeTelemetrySlot::StaleResolver(video_id.as_str().to_owned())),
+                crate::resolver::ResolverEvent::CookiesRejected => None,
+            },
             RuntimeEvent::Video { generation, event } => video_slot(*generation, event),
             _ => static_policy_slot(self.policy()),
         }

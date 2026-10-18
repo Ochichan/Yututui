@@ -43,6 +43,7 @@ pub(super) enum DaemonEvent {
     ResolveRetry {
         video_id: String,
         stream_url: Option<String>,
+        cookies_rejected: bool,
     },
     /// Bounded, generation-tagged retry after an automatic player restart/replay failed.
     TransportRecoveryRetry {

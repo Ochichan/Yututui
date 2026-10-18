@@ -60,7 +60,8 @@ pub(super) fn app_msg_policy(msg: &Msg) -> EventPolicy {
         Msg::Streaming(StreamingMsg::Resolved {
             self_heal: true, ..
         })
-        | Msg::ResolveFailed { .. } => EventPolicy::MustDeliver {
+        | Msg::ResolveFailed { .. }
+        | Msg::YoutubeCookiesRejected => EventPolicy::MustDeliver {
             lane: Lane::WorkResult,
         },
         Msg::Streaming(_) => EventPolicy::DropIfStale {

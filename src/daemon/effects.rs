@@ -76,19 +76,20 @@ impl DaemonEffectTasks {
         video_id: String,
         resolve: F,
     ) where
-        F: Future<Output = Option<String>> + Send + 'static,
+        F: Future<Output = crate::resolver::ResolveOutcome> + Send + 'static,
     {
         let tx = event_tx.clone();
         let completion_shutdown = shutdown.clone();
         self.spawn_cancellable(shutdown.clone(), async move {
-            let stream_url = resolve.await;
+            let outcome = resolve.await;
             if !completion_shutdown.is_triggered() {
                 deliver_terminal(
                     &tx,
                     &completion_shutdown,
                     DaemonEvent::ResolveRetry {
                         video_id,
-                        stream_url,
+                        stream_url: outcome.stream_url,
+                        cookies_rejected: outcome.cookies_rejected,
                     },
                 )
                 .await;

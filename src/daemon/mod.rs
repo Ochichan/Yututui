@@ -537,10 +537,11 @@ async fn run_owner_loop(
             DaemonEvent::ResolveRetry {
                 video_id,
                 stream_url,
+                cookies_rejected,
             } => {
                 let Some(effects) = await_owner_handler(
                     &shutdown,
-                    engine.handle_resolve_retry(video_id, stream_url),
+                    engine.handle_resolve_retry(video_id, stream_url, cookies_rejected),
                 )
                 .await
                 else {

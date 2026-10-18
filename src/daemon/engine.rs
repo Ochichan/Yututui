@@ -1402,8 +1402,23 @@ impl DaemonEngine {
     }
 
     /// Finish a load retry: reload the same track from the resolved direct URL, or take the
-    /// plain error path when resolution failed.
+    /// plain error path when resolution failed. Rejected cookies are reported either way,
+    /// because yt-dlp often still resolves through anonymous clients.
     pub async fn handle_resolve_retry(
+        &mut self,
+        video_id: String,
+        stream_url: Option<String>,
+        cookies_rejected: bool,
+    ) -> Vec<EngineEffect> {
+        let effects = self.finish_resolve_retry(video_id, stream_url).await;
+        if cookies_rejected {
+            tracing::warn!("yt-dlp reports the YouTube cookies are no longer valid");
+            self.last_error = Some(crate::resolver::REJECTED_COOKIES_NOTICE.to_owned());
+        }
+        effects
+    }
+
+    async fn finish_resolve_retry(
         &mut self,
         video_id: String,
         stream_url: Option<String>,
