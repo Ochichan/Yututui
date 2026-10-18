@@ -425,6 +425,10 @@ pub struct YtdlpHeal {
     /// result. The resolver reports it once per session, ahead of either a failed resolve
     /// or the anonymous-client fallback that still returns a URL.
     pub cookies_rejected_unshown: bool,
+    /// The resolver holds a cookies file and none of its resolves has run yet. yt-dlp reports
+    /// rejected cookies only while resolving, so the first YouTube load resolves once even when
+    /// there is no next track to prefetch.
+    pub cookie_check_pending: bool,
     /// Tracks that already got their one update-heal retry this session — no retry loops.
     pub attempted: HashSet<String>,
     /// Tracks whose failed watch-URL load already got its direct-URL retry. A track leaves the

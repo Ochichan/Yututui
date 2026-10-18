@@ -128,12 +128,28 @@ impl App {
                     video_id,
                     watch_url,
                 });
+                self.heal.cookie_check_pending = false;
             }
+        }
+        if self.heal.cookie_check_pending
+            && let Some(watch_url) = song.prefetch_target()
+        {
+            self.heal.cookie_check_pending = false;
+            effects.push(Cmd::Resolve {
+                video_id: song.video_id.clone(),
+                watch_url,
+            });
         }
         effects.extend(self.maybe_autoplay_extend());
         effects.extend(self.request_romanization_for_songs(std::slice::from_ref(&song)));
         self.dirty = true;
         effects
+    }
+
+    /// Call when the resolver was spawned with a cookies file, so the first YouTube load checks
+    /// the cookies even without a next track to prefetch.
+    pub fn arm_cookie_check(&mut self) {
+        self.heal.cookie_check_pending = true;
     }
 
     pub(in crate::app) fn commit_playback_cleared(&mut self) -> Vec<Cmd> {
