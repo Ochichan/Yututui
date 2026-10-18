@@ -429,13 +429,24 @@ impl App {
             return Vec::new();
         }
         self.consecutive_play_errors = self.consecutive_play_errors.saturating_add(1);
+        self.status.kind = StatusKind::Error;
+        self.dirty = true;
+        if self.consecutive_play_errors > MAX_CONSECUTIVE_PLAY_ERRORS {
+            self.status.text = playback_error::breaker_status_for_failure(if load_retry {
+                crate::tools::PlaybackFailureClass::Unknown
+            } else {
+                crate::tools::PlaybackFailureClass::Extraction
+            });
+            return Vec::new();
+        }
         let mut cmds = if self.queue.peek_next().is_some() {
             self.advance(false)
         } else {
             Vec::new()
         };
-        self.status.kind = StatusKind::Error;
-        self.status.text = if load_retry {
+        self.status.text = if std::mem::take(&mut self.heal.cookies_rejected_unshown) {
+            Self::cookies_rejected_status()
+        } else if load_retry {
             t!(
                 "⚠ Couldn't load the stream — skipped",
                 "⚠ 스트림을 불러오지 못함 — 건너뜀",
@@ -450,8 +461,15 @@ impl App {
         }
         .to_owned();
         Self::attach_track_commit_status(&mut cmds, StatusKind::Error, self.status.text.clone());
-        self.dirty = true;
         cmds
+    }
+
+    fn cookies_rejected_status() -> &'static str {
+        t!(
+            "⚠ YouTube cookies have expired — export fresh cookies from your browser",
+            "⚠ YouTube 쿠키가 만료됨 — 브라우저에서 쿠키를 다시 내보내세요",
+            "⚠ YouTubeのCookieが期限切れ — ブラウザから再エクスポートしてください"
+        )
     }
 
     fn handle_search_results(
@@ -647,13 +665,9 @@ impl App {
     fn handle_streaming(&mut self, sm: StreamingMsg) -> Vec<Cmd> {
         match sm {
             StreamingMsg::CookiesRejected => {
+                self.heal.cookies_rejected_unshown = true;
                 self.status.kind = StatusKind::Error;
-                self.status.text = t!(
-                    "⚠ YouTube cookies have expired — export fresh cookies from your browser",
-                    "⚠ YouTube 쿠키가 만료됨 — 브라우저에서 쿠키를 다시 내보내세요",
-                    "⚠ YouTubeのCookieが期限切れ — ブラウザから再エクスポートしてください"
-                )
-                .to_owned();
+                self.status.text = Self::cookies_rejected_status().to_owned();
                 self.dirty = true;
             }
             StreamingMsg::Resolved {

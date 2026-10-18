@@ -605,3 +605,52 @@ fn rejected_youtube_cookies_raise_an_error_status() {
     assert_eq!(app.status.kind, StatusKind::Error);
     assert!(app.status.text.contains("cookies have expired"));
 }
+
+#[test]
+fn failed_load_retries_stop_at_the_skip_breaker() {
+    let _guard = crate::i18n::lock_for_test();
+    let failures = MAX_CONSECUTIVE_PLAY_ERRORS as usize + 1;
+    let mut app = app_playing(failures + 2, 0);
+    for attempt in 1..=failures {
+        let video_id = app.queue.current().unwrap().video_id.clone();
+        app.prefetch.last_load_prefetched = false;
+        app.update(PlayerMsg::Error(
+            crate::player::recovery::GENERIC_LOADING_FAILURE.to_owned(),
+        ));
+        assert_eq!(
+            app.heal.pending_video_id.as_deref(),
+            Some(video_id.as_str())
+        );
+        let mut cmds = app.update(Msg::ResolveFailed { video_id });
+        if attempt < failures {
+            admit_player_transition(&mut app, &mut cmds);
+            assert_loads_video(&cmds, &format!("id{attempt}"));
+        } else {
+            assert_no_load(&cmds);
+            assert_eq!(
+                app.queue.current().unwrap().video_id,
+                format!("id{}", attempt - 1)
+            );
+            assert!(app.status.text.contains("Several tracks failed"));
+        }
+    }
+}
+
+#[test]
+fn rejected_cookies_name_the_cause_when_the_load_retry_fails() {
+    let _guard = crate::i18n::lock_for_test();
+    let mut app = app_playing(3, 0);
+    app.prefetch.last_load_prefetched = false;
+    app.update(PlayerMsg::Error(
+        crate::player::recovery::GENERIC_LOADING_FAILURE.to_owned(),
+    ));
+    // The resolver reports the rejection before the failed resolve it came from.
+    app.update(StreamingMsg::CookiesRejected);
+    let mut cmds = app.update(Msg::ResolveFailed {
+        video_id: "id0".to_owned(),
+    });
+    admit_player_transition(&mut app, &mut cmds);
+    assert_loads_video(&cmds, "id1");
+    assert!(app.status.text.contains("cookies have expired"));
+    assert!(!app.heal.cookies_rejected_unshown);
+}

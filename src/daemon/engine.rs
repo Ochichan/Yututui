@@ -1410,8 +1410,8 @@ impl DaemonEngine {
         stream_url: Option<String>,
         cookies_rejected: bool,
     ) -> Vec<EngineEffect> {
-        let effects = self.finish_resolve_retry(video_id, stream_url).await;
-        if cookies_rejected {
+        let (effects, load_failed) = self.finish_resolve_retry(video_id, stream_url).await;
+        if cookies_rejected && !load_failed {
             tracing::warn!("yt-dlp reports the YouTube cookies are no longer valid");
             self.last_error = Some(crate::resolver::REJECTED_COOKIES_NOTICE.to_owned());
         }
@@ -1422,18 +1422,19 @@ impl DaemonEngine {
         &mut self,
         video_id: String,
         stream_url: Option<String>,
-    ) -> Vec<EngineEffect> {
+    ) -> (Vec<EngineEffect>, bool) {
         if self.load_retry.pending.as_deref() != Some(video_id.as_str()) {
-            return Vec::new(); // stale: an ordinary load superseded the retry
+            return (Vec::new(), false); // stale: an ordinary load superseded the retry
         }
         self.load_retry.pending = None;
         if self.queue.current().is_none_or(|s| s.video_id != video_id) {
-            return Vec::new();
+            return (Vec::new(), false);
         }
         let Some(stream_url) = stream_url else {
-            return self
+            let effects = self
                 .handle_playback_error("mpv could not load this stream".to_owned())
                 .await;
+            return (effects, false);
         };
         self.load_retry.direct = Some((video_id, stream_url));
         let loaded = self.load_current().await;
@@ -1441,8 +1442,9 @@ impl DaemonEngine {
         if let Err(e) = loaded {
             self.last_error = Some(e.to_string());
             self.stop_playback();
+            return (Vec::new(), true);
         }
-        Vec::new()
+        (Vec::new(), false)
     }
 
     /// Every load supersedes an in-flight retry. The resolved direct URL replaces the watch URL

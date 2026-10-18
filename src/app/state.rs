@@ -421,6 +421,9 @@ pub struct YtdlpHeal {
     /// Whether the pending heal is a plain load retry rather than an update heal, so a failed
     /// resolve does not blame a yt-dlp update that never ran.
     pub pending_is_load_retry: bool,
+    /// yt-dlp reported the cookies as rejected and no failed heal has shown that yet. The
+    /// resolver reports it once per session, so the next failure status must carry it.
+    pub cookies_rejected_unshown: bool,
     /// Tracks that already got their one update-heal retry this session — no retry loops.
     pub attempted: HashSet<String>,
     /// Tracks whose failed watch-URL load already got its direct-URL retry. A track leaves the
