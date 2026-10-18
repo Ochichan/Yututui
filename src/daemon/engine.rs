@@ -85,6 +85,19 @@ pub(crate) struct EngineState {
     pub signals: Signals,
 }
 
+/// Direct-URL retry bookkeeping for watch-URL loads (mirrors the TUI's
+/// `YtdlpHeal::load_retry_attempted`).
+#[derive(Default)]
+struct LoadRetry {
+    /// Track whose resolve is in flight. Every load clears it, so a late result cannot restart
+    /// a track the user already replaced or replayed.
+    pending: Option<String>,
+    /// Tracks that already used their retry; a track leaves the set once it plays.
+    attempted: HashSet<String>,
+    /// Resolved direct URL that replaces the watch URL for the next load of this track only.
+    direct: Option<(String, String)>,
+}
+
 #[derive(Debug)]
 pub enum EngineEffect {
     StreamingFallback {
@@ -116,6 +129,13 @@ pub enum EngineEffect {
     TransportRecoveryRetry {
         generation: u64,
         retry_after: Duration,
+    },
+    /// Resolve a direct stream URL for a track whose watch-URL load failed with a bare
+    /// `loading failed`. The serve loop answers with [`DaemonEngine::handle_resolve_retry`].
+    ResolveRetry {
+        video_id: String,
+        watch_url: String,
+        cookies: Option<std::path::PathBuf>,
     },
 }
 
@@ -183,6 +203,7 @@ pub struct DaemonEngine {
     heal_pending: Option<String>,
     heal_attempted: HashSet<String>,
     heal_last_check: Option<Instant>,
+    load_retry: LoadRetry,
     last_mode: LastMode,
     inactive_normal_queue: Option<Arc<QueueSnapshot>>,
     inactive_radio_queue: Option<Arc<QueueSnapshot>>,
@@ -370,6 +391,7 @@ impl DaemonEngine {
             heal_pending: None,
             heal_attempted: HashSet::new(),
             heal_last_check: None,
+            load_retry: LoadRetry::default(),
             last_mode: LastMode::Normal,
             inactive_normal_queue: None,
             inactive_radio_queue: None,
@@ -486,6 +508,9 @@ impl DaemonEngine {
                 self.playback.time_pos_at = Some(Instant::now());
                 if t > 0.0 {
                     self.consecutive_play_errors = 0;
+                    if let Some(song) = self.queue.current() {
+                        self.load_retry.attempted.remove(&song.video_id);
+                    }
                 }
                 self.observe_listening_position(t);
                 self.advance_crossfade_if_due(t).await
@@ -1252,6 +1277,9 @@ impl DaemonEngine {
         if self.try_source_recovery(&error) {
             return Vec::new();
         }
+        if let Some(effect) = self.begin_load_retry(&error) {
+            return vec![effect];
+        }
         let failure_class = crate::tools::classify_playback_failure(&error);
         // Self-heal (mirrors the TUI reducer): an extraction-shaped failure on a
         // yt-dlp-resolved track is the stale-yt-dlp signature — update in the
@@ -1336,12 +1364,95 @@ impl DaemonEngine {
         .await
     }
 
+    /// Mirrors the TUI's load retry: a watch-URL load that mpv reports only as `loading failed`
+    /// is usually its ytdl_hook getting no playable format from one YouTube response, which a
+    /// fresh resolver extraction often does not repeat. Midtrack failures belong to source
+    /// recovery, and the update heal's in-flight latch excludes this retry.
+    fn begin_load_retry(&mut self, error: &str) -> Option<EngineEffect> {
+        let initial_load = self
+            .playback
+            .time_pos
+            .is_none_or(|position| !position.is_finite() || position <= 0.0);
+        if !initial_load
+            || crate::player::recovery::classify_source_failure(error)
+                != Some(crate::player::recovery::RecoverableSourceFailure::GenericLoadingFailure)
+            || self.heal_pending.is_some()
+            || self.load_retry.pending.is_some()
+        {
+            return None;
+        }
+        let song = self.queue.current()?;
+        if song.is_radio_station() || self.load_retry.attempted.contains(&song.video_id) {
+            return None;
+        }
+        let watch_url = song.prefetch_target()?;
+        let video_id = song.video_id.clone();
+        if self.load_retry.attempted.len() >= crate::playback_policy::HEAL_ATTEMPTED_MAX {
+            self.load_retry.attempted.clear();
+        }
+        self.load_retry.attempted.insert(video_id.clone());
+        self.load_retry.pending = Some(video_id.clone());
+        Some(EngineEffect::ResolveRetry {
+            video_id,
+            watch_url,
+            cookies: self
+                .config
+                .cookies_file_for_external_tools(data_dir().as_deref()),
+        })
+    }
+
+    /// Finish a load retry: reload the same track from the resolved direct URL, or take the
+    /// plain error path when resolution failed.
+    pub async fn handle_resolve_retry(
+        &mut self,
+        video_id: String,
+        stream_url: Option<String>,
+    ) -> Vec<EngineEffect> {
+        if self.load_retry.pending.as_deref() != Some(video_id.as_str()) {
+            return Vec::new(); // stale: an ordinary load superseded the retry
+        }
+        self.load_retry.pending = None;
+        if self.queue.current().is_none_or(|s| s.video_id != video_id) {
+            return Vec::new();
+        }
+        let Some(stream_url) = stream_url else {
+            return self
+                .handle_playback_error("mpv could not load this stream".to_owned())
+                .await;
+        };
+        self.load_retry.direct = Some((video_id, stream_url));
+        let loaded = self.load_current().await;
+        self.load_retry.direct = None;
+        if let Err(e) = loaded {
+            self.last_error = Some(e.to_string());
+            self.stop_playback();
+        }
+        Vec::new()
+    }
+
+    /// Every load supersedes an in-flight retry. The resolved direct URL replaces the watch URL
+    /// only for the retried track's load.
+    fn load_retry_target(
+        &mut self,
+        video_id: &str,
+        target: crate::playback_target::PlaybackDestination,
+    ) -> crate::playback_target::PlaybackDestination {
+        self.load_retry.pending = None;
+        match self.load_retry.direct.take() {
+            Some((retry_id, url)) if retry_id == video_id => {
+                crate::playback_target::PlaybackDestination::direct(url)
+            }
+            _ => target,
+        }
+    }
+
     async fn load_current(&mut self) -> Result<(), EngineError> {
         self.ensure_player().await?;
         self.load_current_loaded()
     }
 
     fn stop_playback(&mut self) {
+        self.load_retry.pending = None;
         self.snapshot_listening_progress();
         self.clear_listening_track();
         self.source_recovery.supersede_transport();

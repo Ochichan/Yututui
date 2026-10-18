@@ -526,7 +526,10 @@ async fn run_resolver_actor<R, Fut>(
 }
 
 /// Resolve a watch URL to a direct audio stream URL via `yt-dlp -g`.
-async fn resolve_url(watch_url: &str, cookies: Option<&std::path::Path>) -> Option<String> {
+pub(crate) async fn resolve_url(
+    watch_url: &str,
+    cookies: Option<&std::path::Path>,
+) -> Option<String> {
     // Looked up per invocation (not captured at actor spawn) so a managed yt-dlp
     // installed mid-session — including by the playback self-heal — applies to the
     // very next resolve.

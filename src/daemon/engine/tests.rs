@@ -114,6 +114,7 @@ pub(in crate::daemon) fn engine_with_queue(ids: &[&str]) -> DaemonEngine {
         heal_pending: None,
         heal_attempted: HashSet::new(),
         heal_last_check: None,
+        load_retry: LoadRetry::default(),
         last_mode: LastMode::Normal,
         inactive_normal_queue: None,
         inactive_radio_queue: None,
@@ -946,4 +947,145 @@ async fn non_extraction_error_skips_without_healing() {
         assert!(last_error.contains("ytt doctor --verbose"));
         assert!(last_error.contains("PO token"));
     }
+}
+
+fn generic_load_failure() -> PlayerEvent {
+    PlayerEvent::Error(crate::player::recovery::GENERIC_LOADING_FAILURE.to_owned())
+}
+
+fn drain_load_urls(rx: &mut tokio::sync::mpsc::Receiver<PlayerCmd>) -> Vec<String> {
+    let mut urls = Vec::new();
+    while let Ok(cmd) = rx.try_recv() {
+        if let PlayerCmd::Load(load) = cmd {
+            urls.push(load.url().to_owned());
+        }
+    }
+    urls
+}
+
+#[tokio::test]
+async fn generic_initial_load_failure_retries_once_through_a_direct_url() {
+    let mut engine = engine_with_queue(&["a", "b"]);
+    let mut rx = install_accepting_player(&mut engine);
+    let effects = engine.handle_player_event(generic_load_failure()).await;
+    assert!(
+        matches!(
+            &effects[..],
+            [EngineEffect::ResolveRetry { video_id, watch_url, .. }]
+                if video_id == "a" && watch_url.contains("a")
+        ),
+        "resolves a direct URL instead of skipping"
+    );
+    assert_eq!(
+        engine.queue.current().map(|s| s.video_id.as_str()),
+        Some("a")
+    );
+    assert_eq!(
+        engine.consecutive_play_errors, 0,
+        "the retry is not a strike"
+    );
+
+    let effects = engine
+        .handle_resolve_retry("a".to_owned(), Some("https://cdn.example/a.m4a".to_owned()))
+        .await;
+    assert!(effects.is_empty());
+    assert_eq!(drain_load_urls(&mut rx), vec!["https://cdn.example/a.m4a"]);
+    assert!(
+        engine.load_retry.direct.is_none(),
+        "the override is one-shot"
+    );
+
+    // The direct URL failing too takes the plain path: no second retry, skip to `b`.
+    let effects = engine.handle_player_event(generic_load_failure()).await;
+    assert!(
+        !effects
+            .iter()
+            .any(|e| matches!(e, EngineEffect::ResolveRetry { .. }))
+    );
+    assert_eq!(
+        engine.queue.current().map(|s| s.video_id.as_str()),
+        Some("b")
+    );
+    let urls = drain_load_urls(&mut rx);
+    assert_eq!(urls.len(), 1);
+    assert!(
+        !urls[0].starts_with("https://cdn.example/"),
+        "b loads its own watch URL"
+    );
+}
+
+#[tokio::test]
+async fn failed_retry_resolve_takes_the_plain_error_path() {
+    let mut engine = engine_with_queue(&["a"]);
+    engine.handle_player_event(generic_load_failure()).await;
+    let effects = engine.handle_resolve_retry("a".to_owned(), None).await;
+    assert!(effects.is_empty());
+    assert_eq!(engine.consecutive_play_errors, 1);
+    assert!(engine.last_error.is_some());
+    assert!(engine.load_retry.pending.is_none());
+}
+
+#[tokio::test]
+async fn retry_result_after_a_stop_or_newer_load_is_dropped() {
+    let mut engine = engine_with_queue(&["a", "b"]);
+    let mut rx = install_accepting_player(&mut engine);
+    engine.handle_player_event(generic_load_failure()).await;
+    // The user replays the same track before the resolve lands.
+    engine.load_current_loaded().expect("replay admitted");
+    drain_load_urls(&mut rx);
+    let effects = engine
+        .handle_resolve_retry(
+            "a".to_owned(),
+            Some("https://cdn.example/late.m4a".to_owned()),
+        )
+        .await;
+    assert!(effects.is_empty());
+    assert!(
+        drain_load_urls(&mut rx).is_empty(),
+        "a late result never restarts the track"
+    );
+
+    let mut engine = engine_with_queue(&["a"]);
+    engine.handle_player_event(generic_load_failure()).await;
+    engine.stop_playback();
+    engine
+        .handle_resolve_retry(
+            "a".to_owned(),
+            Some("https://cdn.example/late.m4a".to_owned()),
+        )
+        .await;
+    assert!(
+        engine.player.is_none(),
+        "a stop is not undone by a late result"
+    );
+}
+
+#[tokio::test]
+async fn load_retry_guard_resets_once_the_track_plays_and_skips_midtrack_failures() {
+    let mut engine = engine_with_queue(&["a"]);
+    engine.load_retry.attempted.insert("a".to_owned());
+    engine.handle_player_event(PlayerEvent::TimePos(1.0)).await;
+    assert!(engine.load_retry.attempted.is_empty());
+
+    engine.playback.time_pos = Some(30.0);
+    engine.loaded_video_id = None; // keep source recovery out of the way
+    let effects = engine.handle_player_event(generic_load_failure()).await;
+    assert!(
+        !effects
+            .iter()
+            .any(|e| matches!(e, EngineEffect::ResolveRetry { .. })),
+        "midtrack failures belong to source recovery"
+    );
+}
+
+#[tokio::test]
+async fn pending_update_heal_blocks_a_load_retry() {
+    let mut engine = engine_with_queue(&["a"]);
+    engine.heal_pending = Some("a".to_owned());
+    let effects = engine.handle_player_event(generic_load_failure()).await;
+    assert!(
+        !effects
+            .iter()
+            .any(|e| matches!(e, EngineEffect::ResolveRetry { .. }))
+    );
 }
