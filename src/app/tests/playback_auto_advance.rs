@@ -654,3 +654,40 @@ fn rejected_cookies_name_the_cause_when_the_load_retry_fails() {
     assert!(app.status.text.contains("cookies have expired"));
     assert!(!app.heal.cookies_rejected_unshown);
 }
+
+#[test]
+fn rejected_cookies_stay_visible_when_the_retry_starts_playback() {
+    let _guard = crate::i18n::lock_for_test();
+    let mut app = app_playing(3, 0);
+    app.prefetch.last_load_prefetched = false;
+    app.update(PlayerMsg::Error(
+        crate::player::recovery::GENERIC_LOADING_FAILURE.to_owned(),
+    ));
+    // The resolver reports the rejection before the anonymous-client URL.
+    app.update(StreamingMsg::CookiesRejected);
+    let cmds = app.update(StreamingMsg::Resolved {
+        video_id: "id0".to_owned(),
+        stream_url: "https://cdn.example/id0".to_owned(),
+        self_heal: true,
+    });
+    assert!(
+        reject_player_transition(&mut app, cmds, crate::util::delivery::DeliveryError::Busy)
+            .is_empty()
+    );
+    assert!(
+        app.heal.cookies_rejected_unshown,
+        "a rejected reload must be able to attach the notice again"
+    );
+
+    let mut cmds = app.update(StreamingMsg::Resolved {
+        video_id: "id0".to_owned(),
+        stream_url: "https://cdn.example/id0".to_owned(),
+        self_heal: true,
+    });
+    admit_player_transition(&mut app, &mut cmds);
+    assert_eq!(load_url(&cmds), Some("https://cdn.example/id0"));
+    assert_eq!(current(&app), "id0");
+    assert_eq!(app.status.kind, StatusKind::Error);
+    assert!(app.status.text.contains("cookies have expired"));
+    assert!(!app.heal.cookies_rejected_unshown);
+}

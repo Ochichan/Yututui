@@ -691,7 +691,19 @@ impl App {
                 // (bypassing the session mpv's stale spawn-time ytdl_hook).
                 if healing {
                     if self.queue.current().is_some_and(|s| s.video_id == video_id) {
-                        return self.reload_healed_track(video_id);
+                        let mut cmds = self.reload_healed_track(video_id);
+                        // CookiesRejected is emitted before this anonymous-client fallback.
+                        // The admitted reload clears status text, so pin the expiry notice
+                        // onto the commit. Leave the flag set until admission succeeds: a
+                        // rejected batch replaces the status and must attach it again.
+                        if self.heal.cookies_rejected_unshown {
+                            Self::attach_track_commit_status(
+                                &mut cmds,
+                                StatusKind::Error,
+                                Self::cookies_rejected_status().to_owned(),
+                            );
+                        }
+                        return cmds;
                     }
                     // The user moved on while resolution was in flight. No player command is
                     // needed, so this stale background result can retire immediately.
