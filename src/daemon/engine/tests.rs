@@ -1039,6 +1039,44 @@ async fn first_youtube_playback_checks_the_cookies_once() {
 }
 
 #[tokio::test]
+async fn a_non_youtube_load_retry_leaves_the_cookie_check_armed() {
+    let mut engine = engine_with_queue(&[]);
+    let cloud = Song::from_source(
+        crate::search_source::SearchSource::SoundCloud,
+        "track-1",
+        "Cloud",
+        "Artist",
+        "2:00",
+        crate::api::PlayableRef::YtdlpUrl {
+            source: crate::search_source::SearchSource::SoundCloud,
+            url: "https://soundcloud.com/a/t".to_owned(),
+        },
+    );
+    engine.queue.set(vec![cloud, song("a")], 0);
+    assert!(
+        engine
+            .begin_load_retry(crate::player::recovery::GENERIC_LOADING_FAILURE)
+            .is_some()
+    );
+    assert!(!engine.load_retry.cookies_checked);
+
+    let cookies = crate::paths::test_base().join("daemon-cookie-check-cloud.txt");
+    std::fs::create_dir_all(crate::paths::test_base()).unwrap();
+    std::fs::write(&cookies, "# Netscape HTTP Cookie File\n").unwrap();
+    engine.config.cookies_file = Some(cookies);
+    engine.load_retry.pending = None;
+    engine.queue.next(false);
+    let effects = engine.handle_player_event(PlayerEvent::TimePos(1.0)).await;
+    assert!(
+        matches!(
+            &effects[..],
+            [EngineEffect::ResolveRetry { video_id, cookies: Some(_), .. }] if video_id == "a"
+        ),
+        "{effects:?}"
+    );
+}
+
+#[tokio::test]
 async fn a_newer_load_frees_the_heal_latch_for_the_next_failure() {
     let mut engine = engine_with_queue(&["a", "b"]);
     let _rx = install_accepting_player(&mut engine);

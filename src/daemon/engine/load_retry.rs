@@ -11,7 +11,7 @@ pub(super) struct LoadRetry {
     pub(super) attempted: HashSet<String>,
     /// Resolved direct URL that replaces the watch URL for the next load of this track only.
     pub(super) direct: Option<(String, String)>,
-    /// A resolve with the session's cookies has been sent. yt-dlp reports rejected cookies only
+    /// A YouTube resolve with the session's cookies has been sent. yt-dlp reports rejected cookies only
     /// while resolving, so without a load retry the first YouTube track that plays sends one
     /// resolve; with no retry pending, its result yields only the cookie verdict.
     pub(super) cookies_checked: bool,
@@ -41,12 +41,13 @@ impl DaemonEngine {
         }
         let watch_url = song.prefetch_target()?;
         let video_id = song.video_id.clone();
+        let checks_cookies = song.resolves_through_youtube();
         if self.load_retry.attempted.len() >= crate::playback_policy::HEAL_ATTEMPTED_MAX {
             self.load_retry.attempted.clear();
         }
         self.load_retry.attempted.insert(video_id.clone());
         self.load_retry.pending = Some(video_id.clone());
-        self.load_retry.cookies_checked = true;
+        self.load_retry.cookies_checked |= checks_cookies;
         Some(EngineEffect::ResolveRetry {
             video_id,
             watch_url,

@@ -1397,7 +1397,8 @@ impl DaemonEngine {
     }
 
     /// Every caller is about to load a track, so this is where a pending heal re-pin respawns
-    /// mpv.
+    /// mpv. The old mpv goes first: the IPC socket path is per process, and dropping an `Mpv`
+    /// unlinks it.
     async fn ensure_player(&mut self) -> Result<(), EngineError> {
         if std::mem::take(&mut self.heal_repin_pending) {
             self.player = None;
