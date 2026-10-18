@@ -128,13 +128,13 @@ impl App {
                     video_id,
                     watch_url,
                 });
-                if resolves_through_youtube(next) {
+                if next.resolves_through_youtube() {
                     self.heal.cookie_check_pending = false;
                 }
             }
         }
         if self.heal.cookie_check_pending
-            && resolves_through_youtube(&song)
+            && song.resolves_through_youtube()
             && let Some(watch_url) = song.prefetch_target()
         {
             self.heal.cookie_check_pending = false;
@@ -214,12 +214,4 @@ impl App {
         );
         self.stay_on_current_track()
     }
-}
-
-/// yt-dlp's rejected-cookie warning comes only from its YouTube extractor.
-fn resolves_through_youtube(song: &Song) -> bool {
-    matches!(
-        song.playable,
-        Some(crate::api::PlayableRef::YoutubeVideo { .. }) | None
-    )
 }

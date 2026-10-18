@@ -76,7 +76,12 @@ pub(in crate::daemon) fn engine_with_queue(ids: &[&str]) -> DaemonEngine {
             speed: 1.0,
         },
         crossfade: crossfade::DaemonCrossfade::new(crate::crossfade::LocalCrossfade::Off),
-        config: Config::default(),
+        // An explicit missing path: the default one may hold the developer's real cookies, and
+        // resolving it copies them into the test data directory.
+        config: Config {
+            cookies_file: Some(crate::paths::test_base().join("no-cookies.txt")),
+            ..Config::default()
+        },
         personal_state_revision_guard: crate::sync::OwnerRevisionGuard::new(
             personal_state.revision,
         ),
@@ -114,6 +119,7 @@ pub(in crate::daemon) fn engine_with_queue(ids: &[&str]) -> DaemonEngine {
         heal_pending: None,
         heal_attempted: HashSet::new(),
         heal_last_check: None,
+        heal_repin_pending: false,
         load_retry: LoadRetry::default(),
         last_mode: LastMode::Normal,
         inactive_normal_queue: None,
@@ -953,6 +959,82 @@ async fn heal_result_after_a_replay_or_stop_is_dropped() {
     assert!(
         engine.player.is_none(),
         "a stop is not undone by a late heal result"
+    );
+}
+
+#[tokio::test]
+async fn a_superseded_update_heal_respawns_mpv_on_the_next_load() {
+    let mut engine = engine_with_queue(&["a", "b"]);
+    let mut stale = install_accepting_player(&mut engine);
+    engine
+        .handle_player_event(PlayerEvent::Error(EXTRACTION_ERR.to_owned()))
+        .await;
+    engine.load_current_loaded().expect("replay admitted");
+    drain_load_urls(&mut stale);
+    engine.handle_heal_result("a".to_owned(), true).await;
+    assert!(engine.heal_repin_pending);
+
+    let mut fresh = engine.queue_transport_recovery_parity_player();
+    engine.queue.next(false);
+    engine.load_current().await.expect("next track admitted");
+    assert!(!engine.heal_repin_pending);
+    assert!(
+        drain_load_urls(&mut stale).is_empty() && !drain_load_urls(&mut fresh).is_empty(),
+        "the next load goes to an mpv spawned with the updated yt-dlp"
+    );
+}
+
+#[tokio::test]
+async fn first_youtube_playback_checks_the_cookies_once() {
+    let mut engine = engine_with_queue(&["a"]);
+    let effects = engine.handle_player_event(PlayerEvent::TimePos(1.0)).await;
+    assert!(
+        !effects
+            .iter()
+            .any(|e| matches!(e, EngineEffect::ResolveRetry { .. })),
+        "no cookies file, nothing to check"
+    );
+
+    let mut engine = engine_with_queue(&["a"]);
+    let cookies = crate::paths::test_base().join("daemon-cookie-check.txt");
+    std::fs::create_dir_all(crate::paths::test_base()).unwrap();
+    std::fs::write(&cookies, "# Netscape HTTP Cookie File\n").unwrap();
+    engine.config.cookies_file = Some(cookies);
+    let effects = engine.handle_player_event(PlayerEvent::TimePos(1.0)).await;
+    assert!(
+        matches!(
+            &effects[..],
+            [EngineEffect::ResolveRetry { video_id, cookies: Some(_), .. }] if video_id == "a"
+        ),
+        "{effects:?}"
+    );
+    assert!(
+        engine.load_retry.pending.is_none(),
+        "a cookie check is not a load retry"
+    );
+    let effects = engine.handle_player_event(PlayerEvent::TimePos(2.0)).await;
+    assert!(
+        !effects
+            .iter()
+            .any(|e| matches!(e, EngineEffect::ResolveRetry { .. })),
+        "once per session"
+    );
+
+    let mut rx = install_accepting_player(&mut engine);
+    engine
+        .handle_resolve_retry(
+            "a".to_owned(),
+            Some("https://cdn.example/a.m4a".to_owned()),
+            true,
+        )
+        .await;
+    assert!(
+        drain_load_urls(&mut rx).is_empty(),
+        "the check never reloads"
+    );
+    assert_eq!(
+        engine.last_error.as_deref(),
+        Some(crate::resolver::REJECTED_COOKIES_NOTICE)
     );
 }
 
