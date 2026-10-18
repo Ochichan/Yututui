@@ -579,7 +579,7 @@ async fn resolve_url_with_program(
             &watch_url,
             cookies,
             fallback,
-            "audio-containing fallback without web_safari",
+            "audio-containing fallback without pinned clients",
             false,
         )
         .await;
@@ -1115,7 +1115,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn cookie_resolve_skips_exclusive_bestaudio_and_pins_web_safari() {
+    async fn cookie_resolve_skips_exclusive_bestaudio_and_excludes_tv_clients() {
         let dir = temp_dir();
         fs::create_dir_all(&dir).unwrap();
         let args_log = dir.join("args.txt");
@@ -1143,18 +1143,18 @@ mod tests {
             !args
                 .lines()
                 .any(|line| line.contains("-f bestaudio -g --no-playlist")),
-            "cookie/web_safari resolve must not use exclusive bestaudio: {args}"
+            "cookie resolve must not use exclusive bestaudio: {args}"
         );
         assert!(args.contains("-f bestaudio/best[acodec!=none]/best -g --no-playlist"));
         assert!(
-            args.contains("player_client=web_safari"),
-            "cookie resolve still pins web_safari on the fallback selector: {args}"
+            args.contains("player_client=default,-tv,-tv_downgraded,-tv_simply"),
+            "cookie resolve still excludes TV clients on the fallback selector: {args}"
         );
         let _ = fs::remove_dir_all(dir);
     }
 
     #[tokio::test]
-    async fn cookie_resolve_retries_fallback_without_web_safari() {
+    async fn cookie_resolve_retries_fallback_without_pinned_clients() {
         let dir = temp_dir();
         fs::create_dir_all(&dir).unwrap();
         let args_log = dir.join("args.txt");
@@ -1164,7 +1164,7 @@ mod tests {
             &dir,
             "yt-dlp",
             &format!(
-                "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\ncase \"$*\" in\n  *player_client=web_safari*) exit 1 ;;\n  *'bestaudio/best[acodec!=none]/best'*) printf '%s\\n' 'https://cdn.example/no-safari.m4a' ;;\n  *) exit 1 ;;\nesac\n",
+                "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\ncase \"$*\" in\n  *player_client=default,-tv*) exit 1 ;;\n  *'bestaudio/best[acodec!=none]/best'*) printf '%s\\n' 'https://cdn.example/unpinned.m4a' ;;\n  *) exit 1 ;;\nesac\n",
                 args_log.display()
             ),
         );
@@ -1178,18 +1178,18 @@ mod tests {
 
         assert_eq!(
             resolved.as_deref(),
-            Some("https://cdn.example/no-safari.m4a")
+            Some("https://cdn.example/unpinned.m4a")
         );
         let args = fs::read_to_string(&args_log).unwrap();
         assert!(
-            args.contains("player_client=web_safari"),
-            "first cookie fallback still tries web_safari: {args}"
+            args.contains("player_client=default,-tv"),
+            "first cookie fallback still excludes TV clients: {args}"
         );
         assert!(
             args.lines()
                 .any(|line| line.contains("-f bestaudio/best[acodec!=none]/best")
-                    && !line.contains("player_client=web_safari")),
-            "cookie fallback must retry once without web_safari: {args}"
+                    && !line.contains("player_client=")),
+            "cookie fallback must retry once without pinned clients: {args}"
         );
         let _ = fs::remove_dir_all(dir);
     }

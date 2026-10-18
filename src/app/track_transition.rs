@@ -672,6 +672,12 @@ impl App {
             }
         }
 
+        // An ordinary load (or queue end) supersedes any in-flight heal, so a late resolver
+        // result cannot restart a track the user has already re-played or replaced.
+        if post_commit.clear_heal_video_id.is_none() {
+            self.heal.pending_video_id = None;
+        }
+
         self.commit_why_gem_post_commit(&mut post_commit);
         self.reconcile_why_gem();
 

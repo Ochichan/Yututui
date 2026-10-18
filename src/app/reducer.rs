@@ -228,6 +228,11 @@ impl App {
                 // auto-skip streak is broken — clear it.
                 if t > 0.0 {
                     self.consecutive_play_errors = 0;
+                    if !self.heal.load_retry_attempted.is_empty()
+                        && let Some(song) = self.queue.current()
+                    {
+                        self.heal.load_retry_attempted.remove(&song.video_id);
+                    }
                 }
                 // Keep the whole-second anchor current in every mode, but only redraw when
                 // the Player view that renders the scalar is visible. Navigation back to the

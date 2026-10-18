@@ -248,6 +248,159 @@ fn extraction_error_triggers_ytdlp_self_heal_instead_of_skipping() {
 }
 
 #[test]
+fn generic_watch_url_load_failure_retries_once_through_the_resolver() {
+    let mut app = app_playing(3, 0);
+    app.prefetch.last_load_prefetched = false;
+    let generic = crate::player::recovery::GENERIC_LOADING_FAILURE;
+
+    let cmds = app.update(PlayerMsg::Error(generic.to_owned()));
+    assert!(
+        cmds.iter().any(|cmd| matches!(
+            cmd,
+            Cmd::ResolveForSelfHeal { video_id, .. } if video_id == "id0"
+        )),
+        "a failed watch-URL load re-resolves through the resolver"
+    );
+    assert_eq!(heal_cmd_id(&cmds), None, "no yt-dlp update check");
+    assert_no_load(&cmds);
+    assert_eq!(current(&app), "id0", "cursor stays on the failed track");
+    assert_eq!(app.heal.pending_video_id.as_deref(), Some("id0"));
+
+    let mut cmds = app.update(StreamingMsg::Resolved {
+        video_id: "id0".to_owned(),
+        stream_url: "https://cdn.example/id0".to_owned(),
+        self_heal: true,
+    });
+    assert_eq!(load_url(&cmds), Some("https://cdn.example/id0"));
+    admit_player_transition(&mut app, &mut cmds);
+    assert_eq!(app.heal.pending_video_id, None);
+    assert_eq!(current(&app), "id0");
+
+    // The direct URL failing too takes the existing prefetched-URL fallback to the watch URL.
+    let mut cmds = app.update(PlayerMsg::Error(generic.to_owned()));
+    assert!(!has_load_retry(&cmds));
+    admit_player_transition(&mut app, &mut cmds);
+    assert_loads_video(&cmds, "id0");
+    assert!(!app.prefetch.last_load_prefetched);
+
+    // A second watch-URL failure is the end of this track's extra chances: skip.
+    let mut cmds = app.update(PlayerMsg::Error(generic.to_owned()));
+    assert!(
+        !has_load_retry(&cmds),
+        "the direct-URL retry is spent; no second resolver round"
+    );
+    admit_player_transition(&mut app, &mut cmds);
+    assert_loads_video(&cmds, "id1");
+    assert_eq!(current(&app), "id1");
+}
+
+fn has_load_retry(cmds: &[Cmd]) -> bool {
+    cmds.iter()
+        .any(|cmd| matches!(cmd, Cmd::ResolveForSelfHeal { .. }))
+}
+
+#[test]
+fn load_retry_guard_resets_once_the_track_plays() {
+    let mut app = app_playing(3, 0);
+    app.prefetch.last_load_prefetched = false;
+    app.update(PlayerMsg::Error(
+        crate::player::recovery::GENERIC_LOADING_FAILURE.to_owned(),
+    ));
+    let mut cmds = app.update(StreamingMsg::Resolved {
+        video_id: "id0".to_owned(),
+        stream_url: "https://cdn.example/id0".to_owned(),
+        self_heal: true,
+    });
+    admit_player_transition(&mut app, &mut cmds);
+    assert!(app.heal.load_retry_attempted.contains("id0"));
+
+    app.update(PlayerMsg::TimePos(5.0));
+    assert!(
+        !app.heal.load_retry_attempted.contains("id0"),
+        "a track that played earns a fresh retry for a later transient failure"
+    );
+    assert!(
+        !app.prefetch.watch_retry_attempted.contains("id0"),
+        "the retry must not spend the prefetched-URL fallback"
+    );
+}
+
+#[test]
+fn pending_heal_blocks_a_load_retry() {
+    let mut app = app_playing(3, 0);
+    app.prefetch.last_load_prefetched = false;
+    app.heal.pending_video_id = Some("elsewhere".to_owned());
+    let mut cmds = app.update(PlayerMsg::Error(
+        crate::player::recovery::GENERIC_LOADING_FAILURE.to_owned(),
+    ));
+    assert!(!has_load_retry(&cmds));
+    admit_player_transition(&mut app, &mut cmds);
+    assert_loads_video(&cmds, "id1");
+}
+
+#[test]
+fn midtrack_generic_failure_never_uses_the_load_retry() {
+    let mut app = app_playing(3, 0);
+    app.prefetch.last_load_prefetched = false;
+    let generic = crate::player::recovery::GENERIC_LOADING_FAILURE;
+    app.update(PlayerMsg::TimePos(30.0));
+    let mut cmds = app.update(PlayerMsg::Error(generic.to_owned()));
+    assert!(!has_load_retry(&cmds), "midtrack uses source recovery");
+    admit_player_transition(&mut app, &mut cmds);
+    app.update(PlayerMsg::TimePos(31.0));
+
+    let mut cmds = app.update(PlayerMsg::Error(generic.to_owned()));
+    assert!(
+        !has_load_retry(&cmds),
+        "spent source recovery falls to the skip path, not a load retry"
+    );
+    admit_player_transition(&mut app, &mut cmds);
+    assert_eq!(current(&app), "id1");
+}
+
+#[test]
+fn load_retry_result_cannot_restart_a_track_the_user_replayed() {
+    let mut app = app_playing(3, 0);
+    app.prefetch.last_load_prefetched = false;
+    app.update(PlayerMsg::Error(
+        crate::player::recovery::GENERIC_LOADING_FAILURE.to_owned(),
+    ));
+    assert_eq!(app.heal.pending_video_id.as_deref(), Some("id0"));
+    // The user skips ahead and back while the resolve is still running.
+    let mut cmds = app.update(Msg::Key(key(KeyCode::Char('.'))));
+    admit_player_transition(&mut app, &mut cmds);
+    assert_eq!(current(&app), "id1");
+    assert_eq!(app.heal.pending_video_id, None);
+    let mut cmds = app.update(Msg::Key(key(KeyCode::Char(','))));
+    admit_player_transition(&mut app, &mut cmds);
+    assert_eq!(current(&app), "id0");
+
+    let cmds = app.update(StreamingMsg::Resolved {
+        video_id: "id0".to_owned(),
+        stream_url: "https://cdn.example/id0".to_owned(),
+        self_heal: true,
+    });
+    assert_no_load(&cmds);
+}
+
+#[test]
+fn generic_watch_url_load_failure_skips_when_resolver_also_fails() {
+    let mut app = app_playing(3, 0);
+    app.prefetch.last_load_prefetched = false;
+    app.update(PlayerMsg::Error(
+        crate::player::recovery::GENERIC_LOADING_FAILURE.to_owned(),
+    ));
+    assert_eq!(app.heal.pending_video_id.as_deref(), Some("id0"));
+
+    let mut cmds = app.update(Msg::ResolveFailed {
+        video_id: "id0".to_owned(),
+    });
+    admit_player_transition(&mut app, &mut cmds);
+    assert_loads_video(&cmds, "id1");
+    assert_eq!(app.heal.pending_video_id, None);
+}
+
+#[test]
 fn heal_success_resolves_and_reloads_the_same_track() {
     let mut app = app_playing(3, 0);
     app.update(PlayerMsg::Error(EXTRACTION_ERR.to_owned()));

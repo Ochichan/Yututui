@@ -250,6 +250,40 @@ impl App {
             let video_id = song.video_id.clone();
             return self.prefetch_watch_retry_intent(video_id, watch_url);
         }
+        // A watch-URL load that mpv reports only as `loading failed` is usually its ytdl_hook
+        // getting no playable format from one YouTube response, which a fresh extraction often
+        // does not repeat. Retry this track once through a resolver-resolved direct URL (whose
+        // last cookie stage also drops the client pin). Uses the self-heal in-flight latch so
+        // this retry and an update heal never run at once.
+        if !midtrack_recoverable
+            && !self.prefetch.last_load_prefetched
+            && recoverable_source
+                == Some(crate::player::recovery::RecoverableSourceFailure::GenericLoadingFailure)
+            && self.heal.pending_video_id.is_none()
+            && let Some(song) = self.queue.current()
+            && let Some(watch_url) = song.prefetch_target()
+            && !self.heal.load_retry_attempted.contains(&song.video_id)
+        {
+            let video_id = song.video_id.clone();
+            if self.heal.load_retry_attempted.len() >= crate::playback_policy::HEAL_ATTEMPTED_MAX {
+                self.heal.load_retry_attempted.clear();
+            }
+            self.heal.load_retry_attempted.insert(video_id.clone());
+            self.heal.pending_video_id = Some(video_id.clone());
+            self.prefetch.resolved.remove(&video_id);
+            self.status.kind = StatusKind::Info;
+            self.status.text = t!(
+                "Stream failed to load — retrying this track",
+                "스트림 로드 실패 — 같은 곡을 다시 시도",
+                "ストリームの読み込みに失敗 — 同じ曲を再試行"
+            )
+            .to_owned();
+            self.dirty = true;
+            return vec![Cmd::ResolveForSelfHeal {
+                video_id,
+                watch_url,
+            }];
+        }
         // Self-heal: an extraction-shaped failure on a yt-dlp-resolved track is
         // the stale-yt-dlp signature. Update it in the background and retry this
         // track ONCE — via a resolver-resolved direct URL, because the session
