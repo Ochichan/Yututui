@@ -424,6 +424,7 @@ impl App {
             return Vec::new();
         }
         self.heal.pending_video_id = None;
+        let load_retry = std::mem::take(&mut self.heal.pending_is_load_retry);
         if self.queue.current().is_none_or(|s| s.video_id != video_id) {
             return Vec::new();
         }
@@ -434,11 +435,19 @@ impl App {
             Vec::new()
         };
         self.status.kind = StatusKind::Error;
-        self.status.text = t!(
-            "⚠ Couldn't resolve the stream (yt-dlp may be outdated) — skipped",
-            "⚠ 스트림 해석 실패 (yt-dlp가 오래됐을 수 있음) — 건너뜀",
-            "⚠ ストリーム解決に失敗 (yt-dlpが古い可能性) — スキップ"
-        )
+        self.status.text = if load_retry {
+            t!(
+                "⚠ Couldn't load the stream — skipped",
+                "⚠ 스트림을 불러오지 못함 — 건너뜀",
+                "⚠ ストリームを読み込めませんでした — スキップ"
+            )
+        } else {
+            t!(
+                "⚠ Couldn't resolve the stream (yt-dlp may be outdated) — skipped",
+                "⚠ 스트림 해석 실패 (yt-dlp가 오래됐을 수 있음) — 건너뜀",
+                "⚠ ストリーム解決に失敗 (yt-dlpが古い可能性) — スキップ"
+            )
+        }
         .to_owned();
         Self::attach_track_commit_status(&mut cmds, StatusKind::Error, self.status.text.clone());
         self.dirty = true;

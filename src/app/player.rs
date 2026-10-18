@@ -270,6 +270,7 @@ impl App {
             }
             self.heal.load_retry_attempted.insert(video_id.clone());
             self.heal.pending_video_id = Some(video_id.clone());
+            self.heal.pending_is_load_retry = true;
             self.prefetch.resolved.remove(&video_id);
             self.status.kind = StatusKind::Info;
             self.status.text = t!(
@@ -309,6 +310,7 @@ impl App {
             self.heal.attempted.insert(video_id.clone());
             self.heal.last_check = Some(Instant::now());
             self.heal.pending_video_id = Some(video_id.clone());
+            self.heal.pending_is_load_retry = false;
             // The failed load may itself have been a stale prefetched URL —
             // drop it so the retry resolves fresh with the updated binary.
             self.prefetch.resolved.remove(&video_id);

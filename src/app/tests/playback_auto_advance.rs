@@ -385,6 +385,7 @@ fn load_retry_result_cannot_restart_a_track_the_user_replayed() {
 
 #[test]
 fn generic_watch_url_load_failure_skips_when_resolver_also_fails() {
+    let _guard = crate::i18n::lock_for_test();
     let mut app = app_playing(3, 0);
     app.prefetch.last_load_prefetched = false;
     app.update(PlayerMsg::Error(
@@ -398,6 +399,25 @@ fn generic_watch_url_load_failure_skips_when_resolver_also_fails() {
     admit_player_transition(&mut app, &mut cmds);
     assert_loads_video(&cmds, "id1");
     assert_eq!(app.heal.pending_video_id, None);
+    assert!(
+        !app.status.text.contains("yt-dlp"),
+        "a load retry never ran an update, so the skip must not blame yt-dlp"
+    );
+}
+
+#[test]
+fn update_heal_resolve_failure_still_points_at_yt_dlp() {
+    let _guard = crate::i18n::lock_for_test();
+    let mut app = app_playing(3, 0);
+    app.update(PlayerMsg::Error(EXTRACTION_ERR.to_owned()));
+    app.update(Msg::YtdlpHealResult {
+        video_id: "id0".to_owned(),
+        updated: true,
+    });
+    app.update(Msg::ResolveFailed {
+        video_id: "id0".to_owned(),
+    });
+    assert!(app.status.text.contains("yt-dlp"));
 }
 
 #[test]
