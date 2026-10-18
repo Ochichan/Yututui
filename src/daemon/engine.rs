@@ -1447,14 +1447,16 @@ impl DaemonEngine {
         (Vec::new(), false)
     }
 
-    /// Every load supersedes an in-flight retry. The resolved direct URL replaces the watch URL
-    /// only for the retried track's load.
+    /// Every load supersedes an in-flight load retry or update heal, so a late result cannot
+    /// restart a track the user already replayed or replaced. The resolved direct URL replaces
+    /// the watch URL only for the retried track's load.
     fn load_retry_target(
         &mut self,
         video_id: &str,
         target: crate::playback_target::PlaybackDestination,
     ) -> crate::playback_target::PlaybackDestination {
         self.load_retry.pending = None;
+        self.heal_pending = None;
         match self.load_retry.direct.take() {
             Some((retry_id, url)) if retry_id == video_id => {
                 crate::playback_target::PlaybackDestination::direct(url)
@@ -1470,6 +1472,7 @@ impl DaemonEngine {
 
     fn stop_playback(&mut self) {
         self.load_retry.pending = None;
+        self.heal_pending = None;
         self.snapshot_listening_progress();
         self.clear_listening_track();
         self.source_recovery.supersede_transport();

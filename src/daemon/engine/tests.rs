@@ -926,6 +926,54 @@ async fn stale_heal_result_is_dropped() {
 }
 
 #[tokio::test]
+async fn heal_result_after_a_replay_or_stop_is_dropped() {
+    let mut engine = engine_with_queue(&["a", "b"]);
+    let mut rx = install_accepting_player(&mut engine);
+    engine
+        .handle_player_event(PlayerEvent::Error(EXTRACTION_ERR.to_owned()))
+        .await;
+    // The user replays the same track before the update check lands.
+    engine.load_current_loaded().expect("replay admitted");
+    drain_load_urls(&mut rx);
+    assert!(engine.heal_pending.is_none());
+    let effects = engine.handle_heal_result("a".to_owned(), true).await;
+    assert!(effects.is_empty());
+    assert!(
+        engine.player.is_some() && drain_load_urls(&mut rx).is_empty(),
+        "a late heal result neither drops the player nor restarts the track"
+    );
+
+    let mut engine = engine_with_queue(&["a"]);
+    engine
+        .handle_player_event(PlayerEvent::Error(EXTRACTION_ERR.to_owned()))
+        .await;
+    engine.stop_playback();
+    engine.handle_heal_result("a".to_owned(), true).await;
+    assert!(
+        engine.player.is_none(),
+        "a stop is not undone by a late heal result"
+    );
+}
+
+#[tokio::test]
+async fn a_newer_load_frees_the_heal_latch_for_the_next_failure() {
+    let mut engine = engine_with_queue(&["a", "b"]);
+    let _rx = install_accepting_player(&mut engine);
+    engine
+        .handle_player_event(PlayerEvent::Error(EXTRACTION_ERR.to_owned()))
+        .await;
+    engine.queue.next(false);
+    engine.load_current_loaded().expect("next track admitted");
+    let effects = engine.handle_player_event(generic_load_failure()).await;
+    assert!(
+        effects
+            .iter()
+            .any(|e| matches!(e, EngineEffect::ResolveRetry { video_id, .. } if video_id == "b")),
+        "a heal still running for an earlier track must not block this track's load retry"
+    );
+}
+
+#[tokio::test]
 async fn non_extraction_error_skips_without_healing() {
     for error in [
         "mpv could not play this track (HTTP error 403 Forbidden)",
