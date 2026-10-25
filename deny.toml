@@ -9,8 +9,13 @@ db-urls = ["https://github.com/rustsec/advisory-db"]
 # dependencies are covered too; bans/licenses/sources keep the default graph above.
 # Every entry carries: reachable path, why accepted, removal condition, review date.
 ignore = [
-    { id = "RUSTSEC-2024-0370", reason = "proc-macro-error unmaintained, via glib-macros and gtk3-macros in the optional Linux tray path. Remove when both drop proc-macro-error. Review 2026-10" },
-    { id = "RUSTSEC-2024-0436", reason = "paste unmaintained, via lofty 0.24.0 (tag reading); RUSTSEC lists no safe upgrade. Remove when lofty drops paste. Review 2026-10" },
+    { id = "RUSTSEC-2024-0370", reason = "proc-macro-error unmaintained, via glib-macros and gtk3-macros in the optional Linux tray path. Remove when both drop proc-macro-error. Review 2027-01" },
+    { id = "RUSTSEC-2024-0436", reason = "paste unmaintained, via lofty 0.24.0 (tag reading); RUSTSEC lists no safe upgrade. Remove when lofty drops paste (lofty 0.25 is a breaking upgrade, not yet evaluated). Review 2027-01" },
+    { id = "RUSTSEC-2026-0370", reason = "zvariant unmaintained as a standalone crate (merged into zbus 6), via zbus 5.16 from mpris-server 0.10 (Linux MPRIS) and notify-rust 4.18 (Linux notifications); both latest releases still require zbus ^5. Remove when both move to zbus 6. Review 2027-01" },
+    { id = "RUSTSEC-2026-0371", reason = "zbus_names unmaintained (merged into zbus 6), same zbus 5 path as RUSTSEC-2026-0370. Remove when mpris-server and notify-rust move to zbus 6. Review 2027-01" },
+    { id = "RUSTSEC-2026-0372", reason = "zvariant_derive unmaintained (merged into zbus 6), same zbus 5 path as RUSTSEC-2026-0370. Remove when mpris-server and notify-rust move to zbus 6. Review 2027-01" },
+    { id = "RUSTSEC-2026-0374", reason = "basic-toml unmaintained, via i18n-config 0.4.8 in age 0.12.1's localized error strings; age and i18n-config have no newer release. Remove when age drops it. Review 2027-01" },
+    { id = "RUSTSEC-2026-0387", reason = "crypto-bigint 0.5.5 timing side channels, via p256 0.13 in age 0.12.1 (latest). The app only uses age x25519 and scrypt recipients, never p256 tag recipients, so the affected arithmetic is not reached. Remove when age moves to crypto-bigint >=0.7.6. Review 2027-01" },
 ]
 yanked = "warn"
 
