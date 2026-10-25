@@ -158,6 +158,11 @@ impl RuntimeEvent {
                     lane: Lane::WorkResult,
                 }
             }
+            RuntimeEvent::Resolver(crate::resolver::ResolverEvent::CookiesRejected) => {
+                EventPolicy::MustDeliver {
+                    lane: Lane::WorkResult,
+                }
+            }
             RuntimeEvent::Resolver(_) => EventPolicy::CoalesceLatest {
                 lane: Lane::WorkResult,
                 key: Key::ResolverVideo,
@@ -523,6 +528,9 @@ impl From<RuntimeEvent> for Msg {
                 } else {
                     Msg::Noop
                 }
+            }
+            RuntimeEvent::Resolver(crate::resolver::ResolverEvent::CookiesRejected) => {
+                Msg::Streaming(StreamingMsg::CookiesRejected)
             }
             RuntimeEvent::Scrobble(event) => Msg::Scrobble(event),
             RuntimeEvent::Signal(crate::player::lifetime::SignalEvent::Quit) => Msg::Quit,

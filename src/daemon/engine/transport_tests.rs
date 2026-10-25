@@ -131,6 +131,8 @@ async fn actual_mpv_generic_initial_load_failure_never_uses_resume() {
     let mut rx = install_test_player(&mut engine);
     engine.loaded_video_id = Some("seed".to_owned());
     engine.playback.time_pos = None;
+    // With the direct-URL load retry already spent, the failure takes the plain skip path.
+    engine.load_retry.attempted.insert("seed".to_owned());
 
     engine
         .handle_player_event(PlayerEvent::Error(

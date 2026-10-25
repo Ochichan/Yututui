@@ -389,6 +389,7 @@ impl DaemonEngine {
                 return Ok(());
             }
         };
+        let target = self.load_retry_target(&song.video_id, target);
 
         let recovery = match (&self.transport_recovery, intent) {
             (

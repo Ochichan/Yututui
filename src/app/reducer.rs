@@ -228,6 +228,11 @@ impl App {
                 // auto-skip streak is broken — clear it.
                 if t > 0.0 {
                     self.consecutive_play_errors = 0;
+                    if !self.heal.load_retry_attempted.is_empty()
+                        && let Some(song) = self.queue.current()
+                    {
+                        self.heal.load_retry_attempted.remove(&song.video_id);
+                    }
                 }
                 // Keep the whole-second anchor current in every mode, but only redraw when
                 // the Player view that renders the scalar is visible. Navigation back to the
@@ -419,25 +424,52 @@ impl App {
             return Vec::new();
         }
         self.heal.pending_video_id = None;
+        let load_retry = std::mem::take(&mut self.heal.pending_is_load_retry);
         if self.queue.current().is_none_or(|s| s.video_id != video_id) {
             return Vec::new();
         }
         self.consecutive_play_errors = self.consecutive_play_errors.saturating_add(1);
+        self.status.kind = StatusKind::Error;
+        self.dirty = true;
+        if self.consecutive_play_errors > MAX_CONSECUTIVE_PLAY_ERRORS {
+            self.status.text = playback_error::breaker_status_for_failure(if load_retry {
+                crate::tools::PlaybackFailureClass::Unknown
+            } else {
+                crate::tools::PlaybackFailureClass::Extraction
+            });
+            return Vec::new();
+        }
         let mut cmds = if self.queue.peek_next().is_some() {
             self.advance(false)
         } else {
             Vec::new()
         };
-        self.status.kind = StatusKind::Error;
-        self.status.text = t!(
-            "⚠ Couldn't resolve the stream (yt-dlp may be outdated) — skipped",
-            "⚠ 스트림 해석 실패 (yt-dlp가 오래됐을 수 있음) — 건너뜀",
-            "⚠ ストリーム解決に失敗 (yt-dlpが古い可能性) — スキップ"
-        )
+        self.status.text = if std::mem::take(&mut self.heal.cookies_rejected_unshown) {
+            Self::cookies_rejected_status()
+        } else if load_retry {
+            t!(
+                "⚠ Couldn't load the stream — skipped",
+                "⚠ 스트림을 불러오지 못함 — 건너뜀",
+                "⚠ ストリームを読み込めませんでした — スキップ"
+            )
+        } else {
+            t!(
+                "⚠ Couldn't resolve the stream (yt-dlp may be outdated) — skipped",
+                "⚠ 스트림 해석 실패 (yt-dlp가 오래됐을 수 있음) — 건너뜀",
+                "⚠ ストリーム解決に失敗 (yt-dlpが古い可能性) — スキップ"
+            )
+        }
         .to_owned();
         Self::attach_track_commit_status(&mut cmds, StatusKind::Error, self.status.text.clone());
-        self.dirty = true;
         cmds
+    }
+
+    fn cookies_rejected_status() -> &'static str {
+        t!(
+            "⚠ YouTube cookies have expired — export fresh cookies from your browser",
+            "⚠ YouTube 쿠키가 만료됨 — 브라우저에서 쿠키를 다시 내보내세요",
+            "⚠ YouTubeのCookieが期限切れ — ブラウザから再エクスポートしてください"
+        )
     }
 
     fn handle_search_results(
@@ -632,6 +664,12 @@ impl App {
 
     fn handle_streaming(&mut self, sm: StreamingMsg) -> Vec<Cmd> {
         match sm {
+            StreamingMsg::CookiesRejected => {
+                self.heal.cookies_rejected_unshown = true;
+                self.status.kind = StatusKind::Error;
+                self.status.text = Self::cookies_rejected_status().to_owned();
+                self.dirty = true;
+            }
             StreamingMsg::Resolved {
                 video_id,
                 stream_url,
@@ -653,7 +691,19 @@ impl App {
                 // (bypassing the session mpv's stale spawn-time ytdl_hook).
                 if healing {
                     if self.queue.current().is_some_and(|s| s.video_id == video_id) {
-                        return self.reload_healed_track(video_id);
+                        let mut cmds = self.reload_healed_track(video_id);
+                        // CookiesRejected is emitted before this anonymous-client fallback.
+                        // The admitted reload clears status text, so pin the expiry notice
+                        // onto the commit. Leave the flag set until admission succeeds: a
+                        // rejected batch replaces the status and must attach it again.
+                        if self.heal.cookies_rejected_unshown {
+                            Self::attach_track_commit_status(
+                                &mut cmds,
+                                StatusKind::Error,
+                                Self::cookies_rejected_status().to_owned(),
+                            );
+                        }
+                        return cmds;
                     }
                     // The user moved on while resolution was in flight. No player command is
                     // needed, so this stale background result can retire immediately.

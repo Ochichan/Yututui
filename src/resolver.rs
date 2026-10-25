@@ -13,6 +13,7 @@ use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use std::time::Duration;
 
 use tokio::sync::mpsc;
@@ -89,7 +90,34 @@ pub enum ResolverEvent {
         video_id: VideoId,
         purpose: ResolvePurpose,
     },
+    /// yt-dlp reported the account cookies as rotated or expired. Sent at most once per
+    /// resolver, so a stale cookie file raises one notice instead of one per track.
+    CookiesRejected,
 }
+
+/// What one resolve learned. yt-dlp warns about rejected cookies even when the resolve
+/// itself succeeds (it falls back to anonymous clients), so the flag is independent of the URL.
+#[derive(Debug, Default, PartialEq)]
+pub(crate) struct ResolveOutcome {
+    pub stream_url: Option<String>,
+    pub cookies_rejected: bool,
+}
+
+impl From<Option<String>> for ResolveOutcome {
+    fn from(stream_url: Option<String>) -> Self {
+        Self {
+            stream_url,
+            cookies_rejected: false,
+        }
+    }
+}
+
+/// Owner-facing notice for [`ResolverEvent::CookiesRejected`] where no localized UI exists.
+pub(crate) const REJECTED_COOKIES_NOTICE: &str =
+    "YouTube cookies have expired; export fresh cookies from your browser";
+
+/// yt-dlp's warning when the YouTube session cookies it was given no longer authenticate.
+const REJECTED_COOKIES_WARNING: &str = "account cookies are no longer valid";
 
 type EventSink = Arc<dyn Fn(ResolverEvent) + Send + Sync>;
 
@@ -403,7 +431,7 @@ where
     )
 }
 
-fn spawn_with<F, R, Fut>(
+fn spawn_with<F, R, Fut, O>(
     emit: F,
     cookies: Option<PathBuf>,
     policy: QueuePolicy,
@@ -412,7 +440,8 @@ fn spawn_with<F, R, Fut>(
 where
     F: Fn(ResolverEvent) + Send + Sync + 'static,
     R: Fn(WatchUrl, Option<PathBuf>) -> Fut + Clone + Send + Sync + 'static,
-    Fut: Future<Output = Option<String>> + Send + 'static,
+    Fut: Future<Output = O> + Send + 'static,
+    O: Into<ResolveOutcome> + 'static,
 {
     let (mut handle, inbox) = resolver_channel(policy);
     let emit: EventSink = Arc::new(emit);
@@ -429,7 +458,7 @@ where
     handle
 }
 
-async fn run_resolver_actor<R, Fut>(
+async fn run_resolver_actor<R, Fut, O>(
     mut inbox: ResolverInbox,
     emit: EventSink,
     cookies: Option<PathBuf>,
@@ -437,9 +466,11 @@ async fn run_resolver_actor<R, Fut>(
     resolve: R,
 ) where
     R: Fn(WatchUrl, Option<PathBuf>) -> Fut + Clone + Send + Sync + 'static,
-    Fut: Future<Output = Option<String>> + Send + 'static,
+    Fut: Future<Output = O> + Send + 'static,
+    O: Into<ResolveOutcome> + 'static,
 {
     let mut children = JoinSet::new();
+    let cookies_rejection_reported = Arc::new(AtomicBool::new(false));
     loop {
         if *shutdown_rx.borrow() {
             break;
@@ -472,6 +503,7 @@ async fn run_resolver_actor<R, Fut>(
                 let tx = inbox.tx.clone();
                 let queue = Arc::clone(&inbox.queue);
                 let resolve = resolve.clone();
+                let cookies_rejection_reported = Arc::clone(&cookies_rejection_reported);
                 children.spawn(async move {
                     // Keep the semantic key retryable even if the resolver or callback panics.
                     let mut in_flight = InFlightGuard {
@@ -480,12 +512,17 @@ async fn run_resolver_actor<R, Fut>(
                         queue,
                         finished: false,
                     };
-                    let result = resolve(watch_url, child_cookies).await;
+                    let outcome: ResolveOutcome = resolve(watch_url, child_cookies).await.into();
+                    if outcome.cookies_rejected
+                        && !cookies_rejection_reported.swap(true, AtomicOrdering::Relaxed)
+                    {
+                        emit(ResolverEvent::CookiesRejected);
+                    }
                     if !in_flight.finish() {
                         tracing::debug!(video_id = %video_id, "suppressing superseded resolver result");
                         return;
                     }
-                    match result {
+                    match outcome.stream_url {
                         Some(stream_url) => {
                             tracing::info!(video_id = %video_id, "prefetched");
                             emit(ResolverEvent::Resolved {
@@ -526,7 +563,10 @@ async fn run_resolver_actor<R, Fut>(
 }
 
 /// Resolve a watch URL to a direct audio stream URL via `yt-dlp -g`.
-async fn resolve_url(watch_url: &str, cookies: Option<&std::path::Path>) -> Option<String> {
+pub(crate) async fn resolve_url(
+    watch_url: &str,
+    cookies: Option<&std::path::Path>,
+) -> ResolveOutcome {
     // Looked up per invocation (not captured at actor spawn) so a managed yt-dlp
     // installed mid-session — including by the playback self-heal — applies to the
     // very next resolve.
@@ -537,54 +577,57 @@ async fn resolve_url_with_program(
     program: &str,
     watch_url: &str,
     cookies: Option<&std::path::Path>,
-) -> Option<String> {
-    let watch_url = crate::api::validate_playable_url_destination(
+) -> ResolveOutcome {
+    let Ok(watch_url) = crate::api::validate_playable_url_destination(
         crate::search_source::SearchSource::Youtube,
         watch_url,
     )
     .await
     .map_err(|error| {
         tracing::warn!(%error, "refusing to resolve unsafe watch URL");
-    })
-    .ok()?;
+    }) else {
+        return ResolveOutcome::default();
+    };
     let fallback = "bestaudio/best[acodec!=none]/best";
-    if cookies.is_none()
-        && let Some(stream_url) = resolve_url_with_format(
+    let mut outcome = ResolveOutcome::default();
+    if cookies.is_none() {
+        outcome.stream_url = resolve_url_with_format(
             program,
             &watch_url,
             cookies,
             "bestaudio",
             "audio-only",
             false,
+            &mut outcome.cookies_rejected,
         )
-        .await
-    {
-        return Some(stream_url);
+        .await;
+        if outcome.stream_url.is_some() {
+            return outcome;
+        }
     }
-    if let Some(stream_url) = resolve_url_with_format(
+    outcome.stream_url = resolve_url_with_format(
         program,
         &watch_url,
         cookies,
         fallback,
         "audio-containing fallback",
         cookies.is_some(),
+        &mut outcome.cookies_rejected,
     )
-    .await
-    {
-        return Some(stream_url);
-    }
-    if cookies.is_some() {
-        return resolve_url_with_format(
+    .await;
+    if outcome.stream_url.is_none() && cookies.is_some() {
+        outcome.stream_url = resolve_url_with_format(
             program,
             &watch_url,
             cookies,
             fallback,
-            "audio-containing fallback without web_safari",
+            "audio-containing fallback without pinned clients",
             false,
+            &mut outcome.cookies_rejected,
         )
         .await;
     }
-    None
+    outcome
 }
 
 async fn resolve_url_with_format(
@@ -594,6 +637,7 @@ async fn resolve_url_with_format(
     format_selector: &str,
     stage: &str,
     pin_stream_client: bool,
+    cookies_rejected: &mut bool,
 ) -> Option<String> {
     let mut cmd = crate::tools::ytdlp_command_for(program);
     cmd.args(["-f", format_selector, "-g", "--no-playlist"])
@@ -613,6 +657,11 @@ async fn resolve_url_with_format(
     )
     .await
     .ok()?;
+    if cookies.is_some()
+        && String::from_utf8_lossy(&out.stderr_tail).contains(REJECTED_COOKIES_WARNING)
+    {
+        *cookies_rejected = true;
+    }
     if !out.status.success() {
         tracing::warn!(
             status = %out.status,
@@ -983,7 +1032,7 @@ mod queue_tests {
                     active.store(true, Ordering::SeqCst);
                     let _active = ActiveResolve(active);
                     started.notify_one();
-                    std::future::pending().await
+                    std::future::pending::<Option<String>>().await
                 }
             },
         );
@@ -1018,6 +1067,52 @@ mod queue_tests {
     }
 }
 
+#[cfg(test)]
+mod cookie_notice_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn rejected_cookies_are_reported_once_per_resolver() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+        let mut handle = spawn_with(
+            move |event| {
+                let _ = tx.try_send(match event {
+                    ResolverEvent::Resolved { .. } => "resolved",
+                    ResolverEvent::Failed { .. } => "failed",
+                    ResolverEvent::CookiesRejected => "cookies",
+                });
+            },
+            None,
+            RESOLVER_QUEUE,
+            |_, _| async {
+                ResolveOutcome {
+                    stream_url: Some("https://cdn.example/a.m4a".to_owned()),
+                    cookies_rejected: true,
+                }
+            },
+        );
+        let mut seen = Vec::new();
+        for id in ["one", "two"] {
+            assert_eq!(
+                handle.resolve(id.to_owned(), format!("https://example.test/{id}")),
+                Ok(DeliveryReceipt::Enqueued)
+            );
+            loop {
+                let event = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+                    .await
+                    .expect("resolver event")
+                    .expect("resolver alive");
+                seen.push(event);
+                if event == "resolved" {
+                    break;
+                }
+            }
+        }
+        assert_eq!(seen, ["cookies", "resolved", "resolved"]);
+        handle.shutdown().await;
+    }
+}
+
 #[cfg(all(test, unix))]
 mod tests {
     use std::fs;
@@ -1044,7 +1139,10 @@ mod tests {
         )
         .await;
 
-        assert_eq!(resolved.as_deref(), Some("https://cdn.example/audio.m4a"));
+        assert_eq!(
+            resolved.stream_url.as_deref(),
+            Some("https://cdn.example/audio.m4a")
+        );
         let _ = fs::remove_dir_all(dir);
     }
 
@@ -1071,7 +1169,10 @@ mod tests {
         )
         .await;
 
-        assert_eq!(resolved.as_deref(), Some("https://cdn.example/audio.m4a"));
+        assert_eq!(
+            resolved.stream_url.as_deref(),
+            Some("https://cdn.example/audio.m4a")
+        );
         let args: Vec<String> = fs::read_to_string(&args_log)
             .unwrap()
             .lines()
@@ -1105,7 +1206,7 @@ mod tests {
         .await;
 
         assert_eq!(
-            resolved.as_deref(),
+            resolved.stream_url.as_deref(),
             Some("https://cdn.example/fallback.mp4")
         );
         let args = fs::read_to_string(&args_log).unwrap();
@@ -1115,7 +1216,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn cookie_resolve_skips_exclusive_bestaudio_and_pins_web_safari() {
+    async fn cookie_resolve_skips_exclusive_bestaudio_and_excludes_tv_clients() {
         let dir = temp_dir();
         fs::create_dir_all(&dir).unwrap();
         let args_log = dir.join("args.txt");
@@ -1137,24 +1238,27 @@ mod tests {
         )
         .await;
 
-        assert_eq!(resolved.as_deref(), Some("https://cdn.example/cookie.m4a"));
+        assert_eq!(
+            resolved.stream_url.as_deref(),
+            Some("https://cdn.example/cookie.m4a")
+        );
         let args = fs::read_to_string(&args_log).unwrap();
         assert!(
             !args
                 .lines()
                 .any(|line| line.contains("-f bestaudio -g --no-playlist")),
-            "cookie/web_safari resolve must not use exclusive bestaudio: {args}"
+            "cookie resolve must not use exclusive bestaudio: {args}"
         );
         assert!(args.contains("-f bestaudio/best[acodec!=none]/best -g --no-playlist"));
         assert!(
-            args.contains("player_client=web_safari"),
-            "cookie resolve still pins web_safari on the fallback selector: {args}"
+            args.contains("player_client=default,-tv,-tv_downgraded,-tv_simply"),
+            "cookie resolve still excludes TV clients on the fallback selector: {args}"
         );
         let _ = fs::remove_dir_all(dir);
     }
 
     #[tokio::test]
-    async fn cookie_resolve_retries_fallback_without_web_safari() {
+    async fn cookie_resolve_retries_fallback_without_pinned_clients() {
         let dir = temp_dir();
         fs::create_dir_all(&dir).unwrap();
         let args_log = dir.join("args.txt");
@@ -1164,7 +1268,7 @@ mod tests {
             &dir,
             "yt-dlp",
             &format!(
-                "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\ncase \"$*\" in\n  *player_client=web_safari*) exit 1 ;;\n  *'bestaudio/best[acodec!=none]/best'*) printf '%s\\n' 'https://cdn.example/no-safari.m4a' ;;\n  *) exit 1 ;;\nesac\n",
+                "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\ncase \"$*\" in\n  *player_client=default,-tv*) exit 1 ;;\n  *'bestaudio/best[acodec!=none]/best'*) printf '%s\\n' 'https://cdn.example/unpinned.m4a' ;;\n  *) exit 1 ;;\nesac\n",
                 args_log.display()
             ),
         );
@@ -1177,19 +1281,19 @@ mod tests {
         .await;
 
         assert_eq!(
-            resolved.as_deref(),
-            Some("https://cdn.example/no-safari.m4a")
+            resolved.stream_url.as_deref(),
+            Some("https://cdn.example/unpinned.m4a")
         );
         let args = fs::read_to_string(&args_log).unwrap();
         assert!(
-            args.contains("player_client=web_safari"),
-            "first cookie fallback still tries web_safari: {args}"
+            args.contains("player_client=default,-tv"),
+            "first cookie fallback still excludes TV clients: {args}"
         );
         assert!(
             args.lines()
                 .any(|line| line.contains("-f bestaudio/best[acodec!=none]/best")
-                    && !line.contains("player_client=web_safari")),
-            "cookie fallback must retry once without web_safari: {args}"
+                    && !line.contains("player_client=")),
+            "cookie fallback must retry once without pinned clients: {args}"
         );
         let _ = fs::remove_dir_all(dir);
     }
@@ -1207,7 +1311,36 @@ mod tests {
         let resolved =
             resolve_url_with_program(fake.to_str().unwrap(), "https://x/watch?v=abc123", None)
                 .await;
-        assert_eq!(resolved, None, "non-http scheme is rejected");
+        assert_eq!(resolved.stream_url, None, "non-http scheme is rejected");
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn resolve_url_flags_rejected_cookies_even_when_it_resolves() {
+        let dir = temp_dir();
+        fs::create_dir_all(&dir).unwrap();
+        let cookies = dir.join("cookies.txt");
+        fs::write(&cookies, "# Netscape HTTP Cookie File\n").unwrap();
+        let fake = write_executable(
+            &dir,
+            "yt-dlp",
+            "#!/bin/sh\necho 'WARNING: [youtube] The provided YouTube account cookies are no longer valid. They have likely been rotated in the browser as a security measure.' >&2\nprintf '%s\\n' 'https://cdn.example/audio.m4a'\n",
+        );
+        let watch = "https://music.youtube.com/watch?v=abc123";
+
+        let with_cookies =
+            resolve_url_with_program(fake.to_str().unwrap(), watch, Some(cookies.as_path())).await;
+        assert_eq!(
+            with_cookies.stream_url.as_deref(),
+            Some("https://cdn.example/audio.m4a")
+        );
+        assert!(with_cookies.cookies_rejected);
+
+        let anonymous = resolve_url_with_program(fake.to_str().unwrap(), watch, None).await;
+        assert!(
+            !anonymous.cookies_rejected,
+            "without a cookie file the warning cannot be about ours"
+        );
         let _ = fs::remove_dir_all(dir);
     }
 

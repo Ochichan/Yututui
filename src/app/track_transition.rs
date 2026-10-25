@@ -672,6 +672,12 @@ impl App {
             }
         }
 
+        // An ordinary load (or queue end) supersedes any in-flight heal, so a late resolver
+        // result cannot restart a track the user has already re-played or replaced.
+        if post_commit.clear_heal_video_id.is_none() {
+            self.heal.pending_video_id = None;
+        }
+
         self.commit_why_gem_post_commit(&mut post_commit);
         self.reconcile_why_gem();
 
@@ -700,6 +706,7 @@ impl App {
         if !post_commit.romanize_songs.is_empty() {
             effects.extend(self.request_romanization_for_songs(&post_commit.romanize_songs));
         }
+        let completed_heal = post_commit.clear_heal_video_id.is_some();
         if let Some(video_id) = post_commit.clear_heal_video_id.take() {
             debug_assert_eq!(
                 self.heal.pending_video_id.as_deref(),
@@ -714,6 +721,11 @@ impl App {
         if let Some((kind, text)) = status_after_commit {
             self.status.kind = kind;
             self.status.text = text;
+            // The cookie notice is attached before admission. Consume it only once this
+            // healed reload is accepted; a rejected batch overwrites status and retries.
+            if completed_heal {
+                self.heal.cookies_rejected_unshown = false;
+            }
         }
 
         match video_follow_up {
