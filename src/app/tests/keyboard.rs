@@ -428,3 +428,90 @@ fn ctrl_a_selects_then_backspace_clears_ai_input() {
     assert_eq!(app.ai.input, "");
     assert!(!app.ai.select_all);
 }
+
+fn backspace() -> Chord {
+    Chord::new(KeyCode::Backspace, KeyModifiers::empty())
+}
+
+#[test]
+fn backspace_reads_as_delete_only_on_surfaces_that_show_the_removed_row() {
+    let mut app = App::new(100);
+    assert!(
+        !app.backspace_reads_as_delete(backspace(), true),
+        "Player Delete removes the playing track unseen"
+    );
+
+    app.mode = Mode::Library;
+    assert!(app.backspace_reads_as_delete(backspace(), true));
+    assert!(!app.backspace_reads_as_delete(backspace(), false));
+    assert!(
+        !app.backspace_reads_as_delete(Chord::new(KeyCode::Backspace, KeyModifiers::CONTROL), true)
+    );
+    app.library_ui.filter_editing = true;
+    assert!(!app.backspace_reads_as_delete(backspace(), true));
+    app.library_ui.filter_editing = false;
+    app.bridges.ui_tier.set(crate::ui::layout::UiTier::Mini);
+    assert!(!app.backspace_reads_as_delete(backspace(), true));
+    app.bridges.ui_tier.set(crate::ui::layout::UiTier::Full);
+
+    app.mode = Mode::Search;
+    assert!(!app.backspace_reads_as_delete(backspace(), true));
+    // The queue popup captures the keyboard above a focused Search input.
+    app.queue_popup.open = true;
+    assert!(app.backspace_reads_as_delete(backspace(), true));
+    app.queue_popup.open = false;
+
+    app.open_settings();
+    assert_eq!(app.mode, Mode::Settings);
+    assert!(!app.backspace_reads_as_delete(backspace(), true));
+}
+
+#[test]
+fn any_user_binding_of_backspace_turns_the_alias_off() {
+    let mut app = App::new(100);
+    app.mode = Mode::Library;
+    app.keymap
+        .rebind(KeyContext::Player, Action::QueueRemove, backspace())
+        .unwrap();
+    assert!(!app.backspace_reads_as_delete(backspace(), true));
+
+    let mut app = App::new(100);
+    app.queue_popup.open = true;
+    app.keymap
+        .rebind(
+            KeyContext::Common,
+            Action::DeleteChar,
+            crate::keymap::parse_chord("f6").unwrap(),
+        )
+        .unwrap();
+    app.keymap
+        .rebind(KeyContext::Common, Action::Back, backspace())
+        .unwrap();
+    assert!(
+        !app.backspace_reads_as_delete(backspace(), true),
+        "Backspace bound to Back must close the popup, not delete a row"
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn mac_backspace_removes_the_selected_queue_popup_row() {
+    let mut app = app_playing(3, 0);
+    app.queue_popup.open = true;
+    app.queue_popup.cursor = 2;
+    app.queue_popup.anchor = 2;
+    app.update(Msg::Key(key(KeyCode::Backspace)));
+    assert_eq!(app.queue.len(), 2);
+    assert_eq!(current(&app), "id0");
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn mac_backspace_deletes_a_playlist_like_the_delete_key() {
+    let mut app = app_with_playlists();
+    app.update(Msg::Key(key(KeyCode::Backspace)));
+    assert_eq!(
+        app.library_ui.confirm_playlist_delete.as_deref(),
+        Some("alpha")
+    );
+}

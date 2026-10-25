@@ -2,6 +2,10 @@
 
 use super::*;
 
+/// Mac keyboards label Backspace "delete" and reach forward Delete only through Fn, so the
+/// removal actions bound to Delete are otherwise out of reach there.
+const BACKSPACE_ALIASES_DELETE: bool = cfg!(target_os = "macos");
+
 impl App {
     pub(in crate::app) fn on_key(&mut self, mut k: KeyEvent) -> Vec<Cmd> {
         // Character repeat is opt-in. The translator forwards only lyric-delay mappings, but
@@ -233,6 +237,11 @@ impl App {
             } else {
                 return Vec::new();
             }
+        }
+
+        if self.backspace_reads_as_delete(chord, BACKSPACE_ALIASES_DELETE) {
+            k.code = KeyCode::Delete;
+            chord = Chord::from(k);
         }
 
         // The "add to playlist" picker captures the keyboard while open (list nav + the
@@ -672,9 +681,42 @@ impl App {
         true
     }
 
+    /// Whether plain Backspace should act as Delete on this surface. Only the queue popup, the
+    /// listening overlay, and the Library qualify: each shows the row a removal targets, and the
+    /// destructive Library removals confirm first. Player mode is left out because its Delete
+    /// removes the playing track unseen, and a held Backspace would drain the queue. Any user
+    /// binding of plain Backspace other than the text-editing DeleteChar turns the alias off.
+    pub(in crate::app) fn backspace_reads_as_delete(
+        &self,
+        chord: Chord,
+        platform_alias: bool,
+    ) -> bool {
+        if !platform_alias
+            || chord != Chord::new(KeyCode::Backspace, KeyModifiers::empty())
+            || self.overlay_text_entry()
+            || self.playlist_picker.is_some()
+            || self.keymap.binds_beyond_delete_char(chord)
+        {
+            return false;
+        }
+        // These overlays capture the keyboard above the screen, so a focused Search or filter
+        // input underneath does not own the key.
+        if self.overlays.listening.is_some() || self.queue_popup.open {
+            return true;
+        }
+        self.mode == Mode::Library
+            && !self.mode_text_entry()
+            && self.bridges.ui_tier.get() != crate::ui::layout::UiTier::Mini
+    }
+
     /// Whether a focused text field is currently capturing typed characters (so command
     /// keys and the `?` help shortcut must not fire — they'd be typed instead).
     pub(in crate::app) fn in_text_entry(&self) -> bool {
+        self.overlay_text_entry() || self.mode_text_entry()
+    }
+
+    /// Text entry owned by an overlay or modal, whatever screen is underneath.
+    fn overlay_text_entry(&self) -> bool {
         if self
             .overlays
             .listening
@@ -717,9 +759,11 @@ impl App {
             return true;
         }
         // The results-filter popup's query input is always live while it's open.
-        if self.search_filter.open {
-            return true;
-        }
+        self.search_filter.open
+    }
+
+    /// Text entry owned by the current screen's own input.
+    fn mode_text_entry(&self) -> bool {
         match self.mode {
             Mode::Search if self.active_search_surface() == ActiveSearchSurface::Local => {
                 self.local_mode.find.focus == LocalFindFocus::Input
