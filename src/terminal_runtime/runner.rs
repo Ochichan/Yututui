@@ -349,6 +349,9 @@ pub async fn run(
 
     let mut app = App::new(player_runtime.volume);
     app.terminal_keyboard_mode = keyboard_input_mode;
+    if player_runtime.cookies_file.is_some() {
+        app.arm_cookie_check();
+    }
     if let Some(warning) = cookies_warning {
         app.status.text = warning;
     }

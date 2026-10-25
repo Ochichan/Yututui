@@ -132,6 +132,14 @@ impl KeyMap {
         self.bindings.get(&(ctx, chord)).copied()
     }
 
+    /// Whether `chord` has any binding besides the shared text-editing DeleteChar. A platform
+    /// key alias defers to every explicit mapping of its source chord.
+    pub fn binds_beyond_delete_char(&self, chord: Chord) -> bool {
+        self.bindings.iter().any(|(&(ctx, bound), &action)| {
+            bound == chord && !(ctx == KeyContext::Common && action == Action::DeleteChar)
+        })
+    }
+
     /// Resolve a `Global` action (help, streaming), independent of the active screen.
     pub fn global_action(&self, chord: Chord) -> Option<Action> {
         self.bindings.get(&(KeyContext::Global, chord)).copied()

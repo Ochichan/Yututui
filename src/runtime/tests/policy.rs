@@ -269,6 +269,12 @@ fn runtime_event_policy_covers_leaf_event_classes() {
         },
     );
     assert_policy(
+        RuntimeEvent::Resolver(crate::resolver::ResolverEvent::CookiesRejected),
+        EventPolicy::MustDeliver {
+            lane: EventLane::WorkResult,
+        },
+    );
+    assert_policy(
         RuntimeEvent::Resolver(crate::resolver::ResolverEvent::Failed {
             video_id: crate::ids::VideoId::from("v"),
             purpose: crate::resolver::ResolvePurpose::Prefetch,

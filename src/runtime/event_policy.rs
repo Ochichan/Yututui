@@ -60,6 +60,7 @@ pub(super) fn app_msg_policy(msg: &Msg) -> EventPolicy {
         Msg::Streaming(StreamingMsg::Resolved {
             self_heal: true, ..
         })
+        | Msg::Streaming(StreamingMsg::CookiesRejected)
         | Msg::ResolveFailed { .. } => EventPolicy::MustDeliver {
             lane: Lane::WorkResult,
         },

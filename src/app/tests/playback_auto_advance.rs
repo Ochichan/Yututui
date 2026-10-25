@@ -248,6 +248,179 @@ fn extraction_error_triggers_ytdlp_self_heal_instead_of_skipping() {
 }
 
 #[test]
+fn generic_watch_url_load_failure_retries_once_through_the_resolver() {
+    let mut app = app_playing(3, 0);
+    app.prefetch.last_load_prefetched = false;
+    let generic = crate::player::recovery::GENERIC_LOADING_FAILURE;
+
+    let cmds = app.update(PlayerMsg::Error(generic.to_owned()));
+    assert!(
+        cmds.iter().any(|cmd| matches!(
+            cmd,
+            Cmd::ResolveForSelfHeal { video_id, .. } if video_id == "id0"
+        )),
+        "a failed watch-URL load re-resolves through the resolver"
+    );
+    assert_eq!(heal_cmd_id(&cmds), None, "no yt-dlp update check");
+    assert_no_load(&cmds);
+    assert_eq!(current(&app), "id0", "cursor stays on the failed track");
+    assert_eq!(app.heal.pending_video_id.as_deref(), Some("id0"));
+
+    let mut cmds = app.update(StreamingMsg::Resolved {
+        video_id: "id0".to_owned(),
+        stream_url: "https://cdn.example/id0".to_owned(),
+        self_heal: true,
+    });
+    assert_eq!(load_url(&cmds), Some("https://cdn.example/id0"));
+    admit_player_transition(&mut app, &mut cmds);
+    assert_eq!(app.heal.pending_video_id, None);
+    assert_eq!(current(&app), "id0");
+
+    // The direct URL failing too takes the existing prefetched-URL fallback to the watch URL.
+    let mut cmds = app.update(PlayerMsg::Error(generic.to_owned()));
+    assert!(!has_load_retry(&cmds));
+    admit_player_transition(&mut app, &mut cmds);
+    assert_loads_video(&cmds, "id0");
+    assert!(!app.prefetch.last_load_prefetched);
+
+    // A second watch-URL failure is the end of this track's extra chances: skip.
+    let mut cmds = app.update(PlayerMsg::Error(generic.to_owned()));
+    assert!(
+        !has_load_retry(&cmds),
+        "the direct-URL retry is spent; no second resolver round"
+    );
+    admit_player_transition(&mut app, &mut cmds);
+    assert_loads_video(&cmds, "id1");
+    assert_eq!(current(&app), "id1");
+}
+
+fn has_load_retry(cmds: &[Cmd]) -> bool {
+    cmds.iter()
+        .any(|cmd| matches!(cmd, Cmd::ResolveForSelfHeal { .. }))
+}
+
+#[test]
+fn load_retry_guard_resets_once_the_track_plays() {
+    let mut app = app_playing(3, 0);
+    app.prefetch.last_load_prefetched = false;
+    app.update(PlayerMsg::Error(
+        crate::player::recovery::GENERIC_LOADING_FAILURE.to_owned(),
+    ));
+    let mut cmds = app.update(StreamingMsg::Resolved {
+        video_id: "id0".to_owned(),
+        stream_url: "https://cdn.example/id0".to_owned(),
+        self_heal: true,
+    });
+    admit_player_transition(&mut app, &mut cmds);
+    assert!(app.heal.load_retry_attempted.contains("id0"));
+
+    app.update(PlayerMsg::TimePos(5.0));
+    assert!(
+        !app.heal.load_retry_attempted.contains("id0"),
+        "a track that played earns a fresh retry for a later transient failure"
+    );
+    assert!(
+        !app.prefetch.watch_retry_attempted.contains("id0"),
+        "the retry must not spend the prefetched-URL fallback"
+    );
+}
+
+#[test]
+fn pending_heal_blocks_a_load_retry() {
+    let mut app = app_playing(3, 0);
+    app.prefetch.last_load_prefetched = false;
+    app.heal.pending_video_id = Some("elsewhere".to_owned());
+    let mut cmds = app.update(PlayerMsg::Error(
+        crate::player::recovery::GENERIC_LOADING_FAILURE.to_owned(),
+    ));
+    assert!(!has_load_retry(&cmds));
+    admit_player_transition(&mut app, &mut cmds);
+    assert_loads_video(&cmds, "id1");
+}
+
+#[test]
+fn midtrack_generic_failure_never_uses_the_load_retry() {
+    let mut app = app_playing(3, 0);
+    app.prefetch.last_load_prefetched = false;
+    let generic = crate::player::recovery::GENERIC_LOADING_FAILURE;
+    app.update(PlayerMsg::TimePos(30.0));
+    let mut cmds = app.update(PlayerMsg::Error(generic.to_owned()));
+    assert!(!has_load_retry(&cmds), "midtrack uses source recovery");
+    admit_player_transition(&mut app, &mut cmds);
+    app.update(PlayerMsg::TimePos(31.0));
+
+    let mut cmds = app.update(PlayerMsg::Error(generic.to_owned()));
+    assert!(
+        !has_load_retry(&cmds),
+        "spent source recovery falls to the skip path, not a load retry"
+    );
+    admit_player_transition(&mut app, &mut cmds);
+    assert_eq!(current(&app), "id1");
+}
+
+#[test]
+fn load_retry_result_cannot_restart_a_track_the_user_replayed() {
+    let mut app = app_playing(3, 0);
+    app.prefetch.last_load_prefetched = false;
+    app.update(PlayerMsg::Error(
+        crate::player::recovery::GENERIC_LOADING_FAILURE.to_owned(),
+    ));
+    assert_eq!(app.heal.pending_video_id.as_deref(), Some("id0"));
+    // The user skips ahead and back while the resolve is still running.
+    let mut cmds = app.update(Msg::Key(key(KeyCode::Char('.'))));
+    admit_player_transition(&mut app, &mut cmds);
+    assert_eq!(current(&app), "id1");
+    assert_eq!(app.heal.pending_video_id, None);
+    let mut cmds = app.update(Msg::Key(key(KeyCode::Char(','))));
+    admit_player_transition(&mut app, &mut cmds);
+    assert_eq!(current(&app), "id0");
+
+    let cmds = app.update(StreamingMsg::Resolved {
+        video_id: "id0".to_owned(),
+        stream_url: "https://cdn.example/id0".to_owned(),
+        self_heal: true,
+    });
+    assert_no_load(&cmds);
+}
+
+#[test]
+fn generic_watch_url_load_failure_skips_when_resolver_also_fails() {
+    let _guard = crate::i18n::lock_for_test();
+    let mut app = app_playing(3, 0);
+    app.prefetch.last_load_prefetched = false;
+    app.update(PlayerMsg::Error(
+        crate::player::recovery::GENERIC_LOADING_FAILURE.to_owned(),
+    ));
+    assert_eq!(app.heal.pending_video_id.as_deref(), Some("id0"));
+
+    let mut cmds = app.update(Msg::ResolveFailed {
+        video_id: "id0".to_owned(),
+    });
+    admit_player_transition(&mut app, &mut cmds);
+    assert_loads_video(&cmds, "id1");
+    assert_eq!(app.heal.pending_video_id, None);
+    assert!(
+        !app.status.text.contains("yt-dlp"),
+        "a load retry never ran an update, so the skip must not blame yt-dlp"
+    );
+}
+
+#[test]
+fn update_heal_resolve_failure_still_points_at_yt_dlp() {
+    let _guard = crate::i18n::lock_for_test();
+    let mut app = app_playing(3, 0);
+    app.update(PlayerMsg::Error(EXTRACTION_ERR.to_owned()));
+    app.update(Msg::YtdlpHealResult {
+        video_id: "id0".to_owned(),
+        updated: true,
+    });
+    app.update(Msg::ResolveFailed {
+        video_id: "id0".to_owned(),
+    });
+    assert!(app.status.text.contains("yt-dlp"));
+}
+
+#[test]
 fn heal_success_resolves_and_reloads_the_same_track() {
     let mut app = app_playing(3, 0);
     app.update(PlayerMsg::Error(EXTRACTION_ERR.to_owned()));
@@ -422,4 +595,99 @@ fn non_extraction_error_never_triggers_a_heal() {
         "network errors skip as before"
     );
     assert_loads_video(&cmds, "id1");
+}
+
+#[test]
+fn rejected_youtube_cookies_raise_an_error_status() {
+    let _guard = crate::i18n::lock_for_test();
+    let mut app = app_playing(1, 0);
+    app.update(StreamingMsg::CookiesRejected);
+    assert_eq!(app.status.kind, StatusKind::Error);
+    assert!(app.status.text.contains("cookies have expired"));
+}
+
+#[test]
+fn failed_load_retries_stop_at_the_skip_breaker() {
+    let _guard = crate::i18n::lock_for_test();
+    let failures = MAX_CONSECUTIVE_PLAY_ERRORS as usize + 1;
+    let mut app = app_playing(failures + 2, 0);
+    for attempt in 1..=failures {
+        let video_id = app.queue.current().unwrap().video_id.clone();
+        app.prefetch.last_load_prefetched = false;
+        app.update(PlayerMsg::Error(
+            crate::player::recovery::GENERIC_LOADING_FAILURE.to_owned(),
+        ));
+        assert_eq!(
+            app.heal.pending_video_id.as_deref(),
+            Some(video_id.as_str())
+        );
+        let mut cmds = app.update(Msg::ResolveFailed { video_id });
+        if attempt < failures {
+            admit_player_transition(&mut app, &mut cmds);
+            assert_loads_video(&cmds, &format!("id{attempt}"));
+        } else {
+            assert_no_load(&cmds);
+            assert_eq!(
+                app.queue.current().unwrap().video_id,
+                format!("id{}", attempt - 1)
+            );
+            assert!(app.status.text.contains("Several tracks failed"));
+        }
+    }
+}
+
+#[test]
+fn rejected_cookies_name_the_cause_when_the_load_retry_fails() {
+    let _guard = crate::i18n::lock_for_test();
+    let mut app = app_playing(3, 0);
+    app.prefetch.last_load_prefetched = false;
+    app.update(PlayerMsg::Error(
+        crate::player::recovery::GENERIC_LOADING_FAILURE.to_owned(),
+    ));
+    // The resolver reports the rejection before the failed resolve it came from.
+    app.update(StreamingMsg::CookiesRejected);
+    let mut cmds = app.update(Msg::ResolveFailed {
+        video_id: "id0".to_owned(),
+    });
+    admit_player_transition(&mut app, &mut cmds);
+    assert_loads_video(&cmds, "id1");
+    assert!(app.status.text.contains("cookies have expired"));
+    assert!(!app.heal.cookies_rejected_unshown);
+}
+
+#[test]
+fn rejected_cookies_stay_visible_when_the_retry_starts_playback() {
+    let _guard = crate::i18n::lock_for_test();
+    let mut app = app_playing(3, 0);
+    app.prefetch.last_load_prefetched = false;
+    app.update(PlayerMsg::Error(
+        crate::player::recovery::GENERIC_LOADING_FAILURE.to_owned(),
+    ));
+    // The resolver reports the rejection before the anonymous-client URL.
+    app.update(StreamingMsg::CookiesRejected);
+    let cmds = app.update(StreamingMsg::Resolved {
+        video_id: "id0".to_owned(),
+        stream_url: "https://cdn.example/id0".to_owned(),
+        self_heal: true,
+    });
+    assert!(
+        reject_player_transition(&mut app, cmds, crate::util::delivery::DeliveryError::Busy)
+            .is_empty()
+    );
+    assert!(
+        app.heal.cookies_rejected_unshown,
+        "a rejected reload must be able to attach the notice again"
+    );
+
+    let mut cmds = app.update(StreamingMsg::Resolved {
+        video_id: "id0".to_owned(),
+        stream_url: "https://cdn.example/id0".to_owned(),
+        self_heal: true,
+    });
+    admit_player_transition(&mut app, &mut cmds);
+    assert_eq!(load_url(&cmds), Some("https://cdn.example/id0"));
+    assert_eq!(current(&app), "id0");
+    assert_eq!(app.status.kind, StatusKind::Error);
+    assert!(app.status.text.contains("cookies have expired"));
+    assert!(!app.heal.cookies_rejected_unshown);
 }
