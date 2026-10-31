@@ -280,6 +280,12 @@ code, kbd, .mono { font-family: "JetBrains Mono", ui-monospace, monospace; }
 }
 .trust span { display: inline-flex; align-items: center; gap: .45rem; }
 .trust .pipe { color: var(--line); }
+.trust__ram {
+  flex: 1 0 100%;
+  margin: .2rem 0 0;
+  max-width: 78ch;
+  line-height: 1.55;
+}
 
 /* ============================================================
    Terminal demo (the signature element) — faithful YuTuTui! Player
@@ -882,6 +888,7 @@ kbd {
     <span data-i18n="trust.themes">🎨 14 themes, recolorable to the last hex</span><span class="pipe">│</span>
     <span data-i18n="trust.keys">⌨ App actions rebindable</span><span class="pipe">│</span>
     <span data-i18n="trust.mit">⚖ MIT</span>
+    <p class="trust__ram" data-i18n-html="hero.ram">ytt ~21–51 MiB RSS; with guardian + mpv while streaming ~91–313 MiB (macOS, Debian, Windows; <a href="https://github.com/Ochichan/Yututui/blob/main/README.md#resource-use" target="_blank" rel="noopener">measured 2026-09-30, v1.7.7</a>).</p>
   </div>
 
   <!-- ===== the living terminal (signature) — a faithful YuTuTui! Player ===== -->
@@ -1525,6 +1532,7 @@ var KO = {
   "copy": "복사",
   "trust.ram": "🪶 작은 바이너리 하나", "trust.ads": "🚫 광고 없음", "trust.themes": "🎨 테마 14종, 마지막 hex까지 내 마음대로",
   "trust.keys": "⌨ 앱 동작 키 재설정 가능", "trust.mit": "⚖ MIT",
+  "hero.ram": "ytt RSS 약 21–51 MiB. 스트리밍 중 guardian + mpv까지 약 91–313 MiB (macOS, Debian, Windows. <a href=\"https://github.com/Ochichan/Yututui/blob/main/README.ko.md#%EB%A6%AC%EC%86%8C%EC%8A%A4-%EC%82%AC%EC%9A%A9%EB%9F%89\" target=\"_blank\" rel=\"noopener\">2026-09-30 측정, v1.7.7</a>).",
 
   "demo.empty": "재생 중인 곡 없음 — s 를 눌러 검색하세요",
   "demo.upnext": "다음 곡",
@@ -1694,6 +1702,7 @@ var JA = {
   "copy": "コピー",
   "trust.ram": "🪶 小さなバイナリ一つ", "trust.ads": "🚫 広告ゼロ", "trust.themes": "🎨 テーマ14種、最後の hex まで自分色",
   "trust.keys": "⌨ アプリ操作を再設定可能", "trust.mit": "⚖ MIT",
+  "hero.ram": "ytt の RSS は約 21–51 MiB。ストリーミング中は guardian と mpv を含めて約 91–313 MiB（macOS・Debian・Windows、<a href=\"https://github.com/Ochichan/Yututui/blob/main/README.ja.md#%E3%83%AA%E3%82%BD%E3%83%BC%E3%82%B9%E4%BD%BF%E7%94%A8%E9%87%8F\" target=\"_blank\" rel=\"noopener\">2026-09-30 測定、v1.7.7</a>）。",
 
   "demo.empty": "再生中の曲なし — s を押して検索",
   "demo.upnext": "次の曲",
