@@ -776,6 +776,9 @@ fn print_potoken_readiness(cfg: &config::Config, lang: i18n::Language) {
         "  {}",
         potoken::provider_line(&potoken::probe_plugin_dirs(), lang)
     );
+    if let Some(note) = potoken::scope_note(lang) {
+        println!("    {note}");
+    }
 
     // The cookies file the app resolves at startup (config path or the default location).
     let cookies = cfg

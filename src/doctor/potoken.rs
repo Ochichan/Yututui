@@ -80,6 +80,25 @@ pub(super) fn probe_plugin_dirs() -> PluginDirs {
         })
 }
 
+/// The probe ignores the user's yt-dlp config unless `YTM_YTDLP_USER_CONFIG=1`, and mpv's
+/// ytdl_hook always reads it. Say so, because a plugin option set there changes what playback
+/// loads without changing the line above.
+pub(super) fn scope_note(lang: Language) -> Option<&'static str> {
+    let reads_user_config =
+        std::env::var("YTM_YTDLP_USER_CONFIG").is_ok_and(|value| value.trim() == "1");
+    (!reads_user_config).then_some(match lang {
+        Language::Korean => {
+            "yt-dlp 사용자 설정 파일은 읽지 않고 확인했습니다. mpv 재생은 그 파일을 읽으므로, 거기에 `--plugin-dirs`나 `--no-plugin-dirs`가 있으면 실제 재생은 위 결과와 다를 수 있습니다"
+        }
+        Language::Japanese => {
+            "yt-dlp のユーザー設定ファイルは読まずに確認しました。mpv の再生はそのファイルを読むため、そこに `--plugin-dirs` や `--no-plugin-dirs` があると実際の再生は上の結果と異なる場合があります"
+        }
+        _ => {
+            "checked without your yt-dlp config file; mpv playback reads that file, so `--plugin-dirs` or `--no-plugin-dirs` set there can make playback differ from the line above"
+        }
+    })
+}
+
 pub(super) fn provider_line(dirs: &PluginDirs, lang: Language) -> String {
     match dirs {
         PluginDirs::Provider(dir) => match lang {

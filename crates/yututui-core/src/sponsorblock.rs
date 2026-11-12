@@ -25,8 +25,11 @@ const TAIL_GUARD_SECS: f64 = 1.0;
 /// Run origin for a fresh load, so a segment starting at 0:00 counts as entered by playback.
 const FRESH_ORIGIN: f64 = -1.0;
 /// Largest forward step between two reports that still counts as uninterrupted playback.
-/// Reports arrive once per media second; a larger step is a seek that landed.
-const MAX_NATURAL_STEP_SECS: f64 = 5.0;
+/// Reports arrive once per media second, so one dropped report is the most this allows; a
+/// larger step is a seek that landed.
+const MAX_NATURAL_STEP_SECS: f64 = 2.0;
+/// The first report of a fresh load may arrive a few seconds in.
+const MAX_FRESH_START_SECS: f64 = 4.0;
 /// Reports are whole media seconds and never go backwards in playback; this absorbs jitter.
 const MAX_BACKWARD_JITTER_SECS: f64 = 0.5;
 
@@ -146,21 +149,23 @@ impl SkipPolicy {
             }
             return None;
         }
-        let step = self
-            .last
-            .replace(obs.position)
-            .map(|last| obs.position - last);
-        match step {
-            Some(step) if (-MAX_BACKWARD_JITTER_SECS..=MAX_NATURAL_STEP_SECS).contains(&step) => {
-                // The earlier report of the pair can predate a seek, so the run starts at the
-                // later one.
-                self.run_origin.get_or_insert(obs.position);
+        let last = self.last.replace(obs.position);
+        let natural = match last {
+            Some(last) if last == FRESH_ORIGIN => {
+                (0.0..=MAX_FRESH_START_SECS).contains(&obs.position)
             }
-            _ => {
-                self.run_origin = None;
-                return None;
+            Some(last) => {
+                (-MAX_BACKWARD_JITTER_SECS..=MAX_NATURAL_STEP_SECS).contains(&(obs.position - last))
             }
+            None => false,
+        };
+        if !natural {
+            self.run_origin = None;
+            return None;
         }
+        // The earlier report of the pair can predate a seek, so the run starts at the later
+        // one. A fresh load keeps the origin it was given.
+        self.run_origin.get_or_insert(obs.position);
         if obs.blocked {
             return None;
         }
@@ -304,6 +309,21 @@ mod tests {
         let mut policy = policy_with("vid", &[(60.0, 90.0)]);
         play(&mut policy, 0, 10, 1);
         assert_eq!(play(&mut policy, 59, 95, 2), Vec::<f64>::new());
+    }
+
+    #[test]
+    fn a_short_seek_into_a_segment_after_two_stale_reports_plays_it() {
+        let mut policy = policy_with("vid", &[(60.0, 90.0)]);
+        play(&mut policy, 0, 56, 1);
+        assert_eq!(policy.observe(obs(57.0, 2)), None);
+        assert_eq!(policy.observe(obs(58.0, 2)), None);
+        assert_eq!(play(&mut policy, 61, 95, 2), Vec::<f64>::new());
+    }
+
+    #[test]
+    fn a_fresh_load_whose_first_report_is_a_few_seconds_in_still_skips_a_leading_segment() {
+        let mut policy = policy_with("vid", &[(0.0, 20.0)]);
+        assert_eq!(policy.observe(obs(3.0, 1)), Some(20.0));
     }
 
     #[test]

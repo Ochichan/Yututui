@@ -147,3 +147,36 @@ async fn a_seek_that_lands_inside_a_segment_plays_it_in_both_owners() {
     }
     assert_parity("sponsorblock seek into segment", &app, &engine);
 }
+
+#[tokio::test]
+async fn a_short_seek_into_a_segment_after_two_stale_reports_plays_it_in_both_owners() {
+    let (mut app, mut engine) = hermetic_pair();
+    app.install_seek_parity_state("b", 55.0, 180.0);
+    let mut engine_player = engine.install_seek_parity_player("b", 55.0, 180.0);
+    app.install_sponsorblock_parity_state(&[SEGMENT]);
+    engine.install_sponsorblock_parity_state(&[SEGMENT]);
+    for position in [55.0, 56.0] {
+        report(&mut app, &mut engine, &mut engine_player, position).await;
+    }
+
+    let (reply_tx, _reply_rx) = tokio::sync::oneshot::channel();
+    let commands = app.update(Msg::Remote(
+        crate::remote::proto::RemoteCommand::SeekTo { ms: 61_000 },
+        reply_tx.into(),
+    ));
+    admit_app_player_intents(&mut app, commands);
+    let (reply, _, _) = engine
+        .handle_remote(crate::remote::proto::RemoteCommand::SeekTo { ms: 61_000 })
+        .await;
+    assert!(reply.ok);
+    while engine_player.try_recv().is_ok() {}
+
+    // Two reports that predate the seek, then the landing inside the segment.
+    for position in [57.0, 58.0, 61.0, 62.0] {
+        assert_eq!(
+            report(&mut app, &mut engine, &mut engine_player, position).await,
+            (None, None)
+        );
+    }
+    assert_parity("sponsorblock short seek into segment", &app, &engine);
+}
