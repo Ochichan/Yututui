@@ -669,6 +669,7 @@ fn project_settings(config: &Config) -> PortableSettingsV1 {
             "autoplay_streaming": config.autoplay_streaming,
             "autoplay_on_start": config.autoplay_on_start,
             "auto_continue_videos": config.auto_continue_videos,
+            "skip_non_music": config.streaming.skip_non_music,
             "video_layout": config.video_layout,
             "album_art_quality": config.album_art_quality,
             "media_controls": config.media_controls,

@@ -327,6 +327,10 @@ async fn run_owner_loop(
     mut scrobble: crate::scrobble::ScrobbleHandle,
 ) -> i32 {
     let mut lyrics_host = lyrics_host::LyricsHost::spawn(event_tx.clone());
+    let sponsorblock = crate::sponsorblock::spawn({
+        let event_tx = event_tx.clone();
+        move |event| record_daemon_event(&event_tx, DaemonEvent::SponsorBlock(event))
+    });
 
     if !shutdown.is_triggered() {
         let startup_snapshot = engine.media_snapshot();
@@ -580,6 +584,10 @@ async fn run_owner_loop(
             DaemonEvent::Lyrics(crate::lyrics::LyricsEvent::Result { video_id, lines }) => {
                 lyrics_host.on_result(&mut publisher, video_id, &lines);
             }
+            DaemonEvent::SponsorBlock(crate::sponsorblock::SponsorBlockEvent::Result {
+                video_id,
+                segments,
+            }) => engine.on_sponsorblock_result(video_id, segments),
             DaemonEvent::Signal => {
                 shutdown.trigger();
                 break 'owner;
@@ -650,6 +658,10 @@ async fn run_owner_loop(
         let view = engine.core_view();
         publisher.observe(&view);
         lyrics_host.observe(&mut publisher, view.queue.current());
+        if let Some(request) = engine.take_sponsorblock_request() {
+            // A rejected fetch only means no segments for this track.
+            let _ = sponsorblock.fetch(request);
+        }
     }
     // Every loop exit arrives here with the latch already set and no await in between, so
     // retiring the player once here is enough: a queued TransportClosed cannot recreate mpv

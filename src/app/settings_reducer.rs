@@ -38,6 +38,7 @@ fn draft_toggle_flag(field: Field, draft: &mut SettingsDraft) -> Option<&mut boo
         Field::AlbumArt => &mut draft.album_art,
         Field::MediaControls => &mut draft.media_controls,
         Field::AutoContinueVideos => &mut draft.auto_continue_videos,
+        Field::SkipNonMusic => &mut draft.skip_non_music,
         Field::UpdateCheck => &mut draft.update_check_enabled,
         Field::LocalIncludeDownloadDir => &mut draft.local_include_download_dir,
         Field::LocalMusicRootRecursive => &mut draft.local_music_root_recursive,
@@ -132,6 +133,7 @@ impl App {
             gapless: self.config.effective_gapless(),
             media_controls: self.config.effective_media_controls(),
             auto_continue_videos: self.config.effective_auto_continue_videos(),
+            skip_non_music: self.config.streaming.effective_skip_non_music(),
             video_layout: self.config.video_layout,
             player_bar_position: self.config.effective_player_bar_position(),
             audio_backend: self.config.audio.backend,
@@ -544,6 +546,7 @@ impl App {
             | Field::AlbumArt
             | Field::MediaControls
             | Field::AutoContinueVideos
+            | Field::SkipNonMusic
             | Field::UpdateCheck
             | Field::LocalIncludeDownloadDir
             | Field::LocalMusicRootRecursive

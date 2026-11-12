@@ -82,6 +82,7 @@ impl DaemonEngine {
             RemoteCommand::SeekBack => self.seek(-self.config.effective_seek_seconds()),
             RemoteCommand::SeekForward => self.seek(self.config.effective_seek_seconds()),
             RemoteCommand::SeekTo { ms } => self.seek_to(ms as f64 / 1000.0),
+            RemoteCommand::Chapter { direction } => self.jump_chapter(direction),
             RemoteCommand::ToggleShuffle => {
                 self.queue.toggle_shuffle();
                 self.config.shuffle = Some(self.queue.shuffle);

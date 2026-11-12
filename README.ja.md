@@ -197,6 +197,8 @@ OS別メモリは macOS の `vmmap` DIRTY、Linux の `Private_Dirty + Shared_Di
 
 **`Shift+L`** でアートの下に同期歌詞を表示します。見えている歌詞の行をクリックすると、その時点へ移動します。**`z`** と **`Shift+Z`** で歌詞を0.1秒ずつ早めたり遅らせたりできます。歌詞を読み込むと **`[ − 0.0s + ]`** の調整ボタンが3秒間表示され、**`[±]`** に折りたたまれます。ハンドルをクリックすると、調整ボタンが再び3秒間開きます。
 
+**設定 → 再生 → 音楽以外の区間をスキップ**は、[SponsorBlock](https://sponsor.ajay.app/) のデータ (CC BY-NC-SA 4.0) を使って YouTube の曲のトークなど音楽以外の区間をスキップします。既定ではオフです。送信する内容とスキップの条件は[マニュアル](MANUAL.ja.md#skip-non-music)にあります。
+
 再生コントロールは各画面の下部に表示され、**`Shift+B`** で折りたためます。設定では従来の上部配置も選べます。アルバムアートは残りの空間の中央に表示されます。ウィンドウが約32×14より小さくなるとミニプレイヤーに切り替わり、広げると全体のレイアウトに戻ります。
 
 ### カタログは七つ、検索窓は一つ
@@ -403,6 +405,7 @@ ytt -r pp                  # 再生 / 一時停止   (別名: toggle, play, paus
 ytt -r next / prev         # 曲の移動
 ytt -r volume 40           # 音量を直接指定; up / down も可
 ytt -r seek-to 90          # 1:30 へジャンプ
+ytt -r chapter next        # 長いミックスの次のチャプターへ; prev も可
 ytt -r streaming on        # 無限ストリーミング: on / off / toggle
 ytt -r play "lofi"         # デーモン: 検索して最初の結果を再生
 ytt -r status              # 一行の「再生中」(--json はスクリプト用)
@@ -485,7 +488,7 @@ TUI の中でも: 設定 → **アカウント** → *Spotify からインポー
 <details>
 <summary><b>サインイン Cookie & ファイルの場所</b></summary>
 
-**YouTube のアクセス設定。** トークンの要件とプロバイダーの設定は yt-dlp の [PO Token Guide](https://github.com/yt-dlp/yt-dlp/wiki/PO-Token-Guide) を参照してください。yt-dlp の YouTube OAuth ログインは現在動作しません。アカウントが必要なら公式の [Cookie 書き出し手順](https://github.com/yt-dlp/yt-dlp/wiki/Extractors#exporting-youtube-cookies) に従ってください。`ytt doctor --verbose` が旧 OAuth プラグインを検出しても、ログインが動作することを意味しません。
+**YouTube のアクセス設定。** トークンの要件とプロバイダーの設定は yt-dlp の [PO Token Guide](https://github.com/yt-dlp/yt-dlp/wiki/PO-Token-Guide) を参照してください。yt-dlp の YouTube OAuth ログインは現在動作しません。アカウントが必要なら公式の [Cookie 書き出し手順](https://github.com/yt-dlp/yt-dlp/wiki/Extractors#exporting-youtube-cookies) に従ってください。`ytt doctor --verbose` は yt-dlp が読み込むプラグインディレクトリを表示します。PO トークンプロバイダーは yt-dlp のプラグインなので、そこに表示されている必要があります。
 
 **Cookie（任意）。** アカウントが必要なコンテンツには、YouTube Music の Cookie を **Netscape 形式**で `~/Music/yututui/cookies.txt`（Windows: `%USERPROFILE%\Music\yututui\cookies.txt`）に書き出して再起動します。**ファイルはパスワードのように扱ってください。** 上の書き出し手順を参照してください。Cookie も期限切れになることがあり、地域制限コンテンツへのアクセスを保証するものではありません。
 

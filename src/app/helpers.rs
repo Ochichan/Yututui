@@ -8,13 +8,13 @@ pub(in crate::app) fn fetch_lyrics_cmd(song: &Song) -> Cmd {
         .duration_secs
         .or_else(|| crate::streaming::candidate::parse_duration_secs(&song.duration))
         .map(f64::from);
-    Cmd::FetchLyrics(crate::lyrics::LyricsRequest {
+    Cmd::Fetch(FetchCmd::Lyrics(crate::lyrics::LyricsRequest {
         video_id: song.video_id.clone(),
         artist: song.artist.clone(),
         title: song.title.clone(),
         album: song.album.clone(),
         duration_secs,
-    })
+    }))
 }
 
 pub(in crate::app) fn song_label(song: &Song) -> String {

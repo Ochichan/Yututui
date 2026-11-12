@@ -684,7 +684,7 @@ pub(super) fn render_chapter_ticks(
     area: ratatui::layout::Rect,
 ) {
     if app.current_is_radio_stream()
-        || app.playback.chapters.is_empty()
+        || app.loaded_chapters().is_empty()
         || !app.playback.duration.is_some_and(|duration| duration > 0.0)
     {
         return;
@@ -694,7 +694,7 @@ pub(super) fn render_chapter_ticks(
         .fg(app.theme.color(crate::theme::ThemeRole::GaugeEmpty))
         .bg(app.theme.color(crate::theme::ThemeRole::GaugeFilled))
         .add_modifier(ratatui::style::Modifier::BOLD);
-    for chapter in &app.playback.chapters {
+    for chapter in app.loaded_chapters() {
         let chapter_ratio = (chapter.start_secs / duration).clamp(0.0, 1.0);
         // The first/last boundaries sit under the gauge ends — no tick needed there.
         if chapter_ratio <= 0.0 || chapter_ratio >= 1.0 {

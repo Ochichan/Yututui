@@ -1,6 +1,7 @@
 //! Dispatch reducer commands to runtime-owned actors and background jobs.
 
 use super::*;
+use crate::app::FetchCmd;
 
 mod data;
 mod download;
@@ -102,10 +103,18 @@ impl RuntimeHandles {
             Cmd::Recorder(job) => {
                 self.dispatch_recorder(app, job);
             }
-            Cmd::FetchLyrics(request) => {
+            Cmd::Fetch(FetchCmd::Lyrics(request)) => {
                 if !report_actor_delivery(app, "lyrics", self.lyrics_handle.fetch(request)) {
                     recover_actor_rejection(app, ActorRejectionRecovery::Lyrics);
                 }
+            }
+            Cmd::Fetch(FetchCmd::SponsorBlock(request)) => {
+                // A rejected fetch only means no segments for this track.
+                let _ = report_actor_delivery(
+                    app,
+                    "sponsorblock",
+                    self.sponsorblock_handle.fetch(request),
+                );
             }
             Cmd::FetchArtwork { video_id, source } => {
                 if !report_actor_delivery(

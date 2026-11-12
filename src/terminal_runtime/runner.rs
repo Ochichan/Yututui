@@ -649,6 +649,12 @@ pub async fn run(
     // Lyrics actor: fetches synced lyrics from lrclib on demand, cached per track.
     let lyrics_handle = lyrics::spawn(runtime::sink(worker_tx.clone(), RuntimeEvent::Lyrics));
 
+    // SponsorBlock actor: idle unless `streaming.skip_non_music` makes the reducer emit a fetch.
+    let sponsorblock_handle =
+        crate::sponsorblock::spawn(runtime::sink(worker_tx.clone(), |event| {
+            RuntimeEvent::App(Msg::Player(app::PlayerMsg::SponsorBlock(event)))
+        }));
+
     // Artwork actor: fetches + decodes album art / thumbnails on demand (only used when
     // album art is enabled; the reducer simply never emits a fetch otherwise).
     let artwork_handle = artwork::spawn(runtime::sink(worker_tx.clone(), RuntimeEvent::Artwork));
@@ -690,6 +696,7 @@ pub async fn run(
         worker_tx.clone(),
         api_handle,
         lyrics_handle,
+        sponsorblock_handle,
         artwork_handle,
         download_handle,
         resolver_handle,

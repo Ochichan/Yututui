@@ -113,6 +113,7 @@ fn daemon_capabilities_advertise_headless_playback() {
     assert!(daemon_capabilities().contains(&WEB_DAV_SYNC_CAPABILITY.to_string()));
     assert!(daemon_capabilities().contains(&crate::remote::OPEN_SUBSONIC_CAPABILITY.to_string()));
     assert!(daemon_capabilities().contains(&LONG_FORM_SEEK_OPTIMIZATION_CAPABILITY.to_string()));
+    assert!(daemon_capabilities().contains(&crate::remote::CHAPTER_JUMP_CAPABILITY.to_string()));
 }
 
 #[test]

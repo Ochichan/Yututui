@@ -90,6 +90,9 @@ pub enum PlayerCommit {
     Seek {
         optimistic_position: Option<f64>,
     },
+    SponsorBlockSkip {
+        target: f64,
+    },
     ListeningSeek {
         position_ms: u64,
         change: Option<Box<crate::listening::ListeningOperation>>,
@@ -124,7 +127,10 @@ impl PlayerCommit {
     pub(in crate::app) fn is_seek(&self) -> bool {
         matches!(
             self,
-            Self::Seek { .. } | Self::ListeningSeek { .. } | Self::RadioLiveSeek(_)
+            Self::Seek { .. }
+                | Self::ListeningSeek { .. }
+                | Self::SponsorBlockSkip { .. }
+                | Self::RadioLiveSeek(_)
         )
     }
 
@@ -151,6 +157,7 @@ impl PlayerCommit {
             | Self::Volume { .. }
             | Self::Seek { .. }
             | Self::ListeningSeek { .. }
+            | Self::SponsorBlockSkip { .. }
             | Self::Speed { .. }
             | Self::EqPreset { .. }
             | Self::Normalize { .. }
@@ -272,6 +279,9 @@ impl App {
                     self.playback.time_pos = Some(position);
                     self.playback.time_pos_at = Some(Instant::now());
                 }
+            }
+            PlayerCommit::SponsorBlockSkip { target } => {
+                self.commit_sponsorblock_skip(target);
             }
             PlayerCommit::ListeningSeek {
                 position_ms,

@@ -304,7 +304,10 @@ fn json_round_trips() {
         listening_local_scope: Some("local-scope-test".to_owned()),
         auto_continue_videos: Some(true),
         search: SearchConfig::default(),
-        streaming: StreamingConfig::default(),
+        streaming: StreamingConfig {
+            skip_non_music: Some(true),
+            ..StreamingConfig::default()
+        },
         animations: AnimationsConfig {
             master: true,
             radio_master: Some(false),
@@ -391,6 +394,7 @@ fn json_round_trips() {
     );
     assert!(!back.recording.notify);
     assert_eq!(back.volume, 70);
+    assert_eq!(back.streaming.skip_non_music, Some(true));
     assert_eq!(back.cookie.as_deref(), Some("SID=abc"));
     assert_eq!(back.download_dir, Some(PathBuf::from("/tmp/dl")));
     assert!(!back.local.include_download_dir());
@@ -771,6 +775,8 @@ fn playback_effective_defaults_and_overrides() {
     assert!(!d.effective_autoplay_streaming());
     assert!(!d.effective_autoplay_on_start());
     assert!(!d.effective_auto_continue_videos());
+    assert!(!d.streaming.effective_skip_non_music());
+    assert_eq!(d.streaming.skip_non_music, None);
 
     // Preset gains feed through when no hand-tuned bands are set.
     let preset = Config {

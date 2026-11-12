@@ -44,6 +44,8 @@ pub struct CoreView<'a> {
     pub streaming: bool,
     pub radio_mode: bool,
     pub stream_now_playing: Option<Cow<'a, str>>,
+    /// The chapter at the playhead, already gated on a loaded track by the host.
+    pub chapter: Option<CoreChapter<'a>>,
     pub owner_mode: InstanceMode,
     pub eq_preset: &'a str,
     pub eq_bands: [f64; 10],
@@ -63,6 +65,37 @@ pub struct CoreView<'a> {
     /// Both owners hold these stores natively.
     pub library: &'a crate::library::Library,
     pub signals: &'a crate::signals::Signals,
+}
+
+/// Borrowed current-chapter projection with a one-based `index`.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct CoreChapter<'a> {
+    pub title: &'a str,
+    pub index: usize,
+    pub count: usize,
+}
+
+impl<'a> CoreChapter<'a> {
+    /// The chapter containing `position_secs`, from the owner's chapter list.
+    pub fn at(chapters: &'a [crate::player::Chapter], position_secs: Option<f64>) -> Option<Self> {
+        let index = yututui_core::chapters::current_index(
+            chapters.iter().map(|chapter| chapter.start_secs),
+            position_secs?,
+        )?;
+        Some(Self {
+            title: chapters[index].title.trim(),
+            index: index + 1,
+            count: chapters.len(),
+        })
+    }
+
+    fn to_wire(self) -> super::proto::ChapterModel {
+        super::proto::ChapterModel {
+            title: self.title.to_owned(),
+            index: u32::try_from(self.index).unwrap_or(u32::MAX),
+            count: u32::try_from(self.count).unwrap_or(u32::MAX),
+        }
+    }
 }
 
 /// Borrowed current-art projection. It is converted to the owned wire type only when a player
@@ -97,6 +130,7 @@ struct PlayerFingerprint {
     streaming: bool,
     radio_mode: bool,
     stream_now_playing: Option<String>,
+    chapter: Option<(String, usize, usize)>,
     eq_preset: String,
     eq_bands: [f64; 10],
     eq_normalize: bool,
@@ -127,6 +161,9 @@ impl PlayerFingerprint {
             streaming: view.streaming,
             radio_mode: view.radio_mode,
             stream_now_playing: view.stream_now_playing.as_deref().map(str::to_owned),
+            chapter: view
+                .chapter
+                .map(|chapter| (chapter.title.to_owned(), chapter.index, chapter.count)),
             eq_preset: view.eq_preset.to_owned(),
             eq_bands: view.eq_bands,
             eq_normalize: view.eq_normalize,
@@ -160,6 +197,13 @@ impl PlayerFingerprint {
             && self.streaming == view.streaming
             && self.radio_mode == view.radio_mode
             && self.stream_now_playing.as_deref() == view.stream_now_playing.as_deref()
+            && self
+                .chapter
+                .as_ref()
+                .map(|(title, index, count)| (title.as_str(), *index, *count))
+                == view
+                    .chapter
+                    .map(|chapter| (chapter.title, chapter.index, chapter.count))
             && self.eq_preset == view.eq_preset
             && self.eq_bands == view.eq_bands
             && self.eq_normalize == view.eq_normalize
@@ -489,6 +533,7 @@ pub(crate) fn player_model(view: &CoreView<'_>) -> PlayerModel {
         streaming: view.streaming,
         radio_mode: view.radio_mode,
         stream_now_playing: view.stream_now_playing.as_deref().map(str::to_owned),
+        chapter: view.chapter.map(CoreChapter::to_wire),
         owner_mode: view.owner_mode,
         eq: EqModel {
             preset: view.eq_preset.to_owned(),
@@ -821,6 +866,7 @@ pub(crate) fn test_view(queue: &Queue) -> CoreView<'_> {
         streaming: false,
         radio_mode: false,
         stream_now_playing: None,
+        chapter: None,
         owner_mode: InstanceMode::StandaloneTui,
         eq_preset: "Flat",
         eq_bands: [0.0; 10],

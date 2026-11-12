@@ -157,6 +157,9 @@ pub(crate) fn settle_player_intent(
             if let crate::app::PlayerCommit::Track(plan) = &commit {
                 app.reject_track_transition(plan);
             }
+            if matches!(&commit, crate::app::PlayerCommit::SponsorBlockSkip { .. }) {
+                app.reject_sponsorblock_skip();
+            }
             report_player_delivery(app, label, Err(error));
             if let Some(reply) = remote_reply {
                 let code = match error {

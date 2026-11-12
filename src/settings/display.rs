@@ -39,6 +39,7 @@ impl SettingsDraft {
             | Field::Gapless
             | Field::MediaControls
             | Field::AutoContinueVideos
+            | Field::SkipNonMusic
             | Field::VideoLayout
             | Field::AlbumArtQuality
             | Field::RadioRecording
@@ -220,6 +221,7 @@ impl SettingsDraft {
             Field::Gapless => toggle_str(self.gapless),
             Field::MediaControls => toggle_str(self.media_controls),
             Field::AutoContinueVideos => toggle_str(self.auto_continue_videos),
+            Field::SkipNonMusic => toggle_str(self.skip_non_music),
             Field::VideoLayout => self.video_layout.label().to_owned(),
             Field::AlbumArtQuality => self.album_art_quality.label().to_owned(),
             Field::AudioBackend => self.audio_backend.id().to_owned(),

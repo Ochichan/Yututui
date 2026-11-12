@@ -97,6 +97,9 @@ pub(in crate::daemon) fn engine_with_queue(ids: &[&str]) -> DaemonEngine {
         signals: Signals::default(),
         station: StationStore::default(),
         loaded_video_id: None,
+        sponsorblock: Default::default(),
+        chapters: Vec::new(),
+        chapters_track: None,
         transport_recovery: TransportRecoveryState::Armed,
         transport_recovery_generation: 0,
         source_recovery: crate::player::recovery::RecoveryPlanner::default(),
@@ -1114,7 +1117,7 @@ async fn non_extraction_error_skips_without_healing() {
         let last_error = engine.last_error.as_deref().unwrap_or_default();
         assert!(last_error.contains("YouTube rejected the stream"));
         assert!(last_error.contains("ytt doctor --verbose"));
-        assert!(last_error.contains("PO token"));
+        assert!(last_error.contains("PO-token provider"));
     }
 }
 

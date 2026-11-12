@@ -14,12 +14,14 @@
 //!   by construction today: `App::new(volume)` vs config-seeded engine, `paused: false`
 //!   vs `true` with nothing loaded). The script then must keep them equal.
 
+mod chapters;
 mod crossfade;
 mod harness;
 mod listening;
 mod personal_sync;
 mod rating_recommendation;
 mod sleep_timer;
+mod sponsorblock;
 mod taste;
 mod taste_remote;
 

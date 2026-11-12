@@ -469,6 +469,7 @@ impl DaemonEngine {
         self.playback.time_pos_at = None;
         if matches!(intent, LoadCurrentIntent::Ordinary) {
             self.bump_position_epoch(PositionEpochReason::TrackRestart);
+            self.sponsorblock_on_load(&song);
         }
         self.playback.duration = None;
         self.loaded_video_id = Some(song.video_id.clone());

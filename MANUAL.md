@@ -156,6 +156,26 @@ backend** exposes the underlying mpv audio options.
 Right-click a row to open its context menu. You can remap mouse gestures through `mouse_bindings`
 in `config.json`.
 
+<a id="skip-non-music"></a>
+
+### Skip non-music segments
+
+Open **Settings → Playback → Skip non-music segments** to skip talk and other non-music parts of
+YouTube tracks. The setting is off by default, and the app sends no request while it is off.
+
+When it is on, YuTuTui! asks [SponsorBlock](https://sponsor.ajay.app/) for the `music_offtopic`
+segments of each YouTube track. The request carries the first 4 characters of a SHA-256 hash of
+the video ID. It does not carry the ID.
+
+- Playback skips a segment when it runs into one. Up to one second of the segment can play first.
+- If you seek, resume, or jump to a bookmark or chapter inside a segment, that segment plays.
+- Downloaded files, Local Deck tracks, and radio stations are never skipped.
+- The headless daemon reads the setting when it starts. Restart the daemon after you change it.
+- The setting applies from the next track you load.
+
+Segment data comes from SponsorBlock and is licensed under
+[CC BY-NC-SA 4.0](https://creativecommons.org/licenses/by-nc-sa/4.0/).
+
 ### Library and downloads
 
 Press `l` to open the Library. Its five tabs are **All**, **Favorites**, **History**, **Downloads**,
@@ -834,6 +854,12 @@ ytt doctor --verbose
 ```
 
 Then follow the [playback troubleshooting steps](README.md#playback).
+
+The report lists the plugin directories that yt-dlp loads. A PO-token provider is a yt-dlp plugin,
+so it must appear there to take effect. Follow yt-dlp's
+[PO Token Guide](https://github.com/yt-dlp/yt-dlp/wiki/PO-Token-Guide) to install one. When the
+directory name does not identify a provider, `yt-dlp -v <url>` names the active ones on its
+`PO Token Providers:` line.
 
 If the problem remains, [open an issue](https://github.com/Ochichan/Yututui/issues). Include your
 operating system, the action that caused the problem, the complete error, and relevant diagnostic

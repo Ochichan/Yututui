@@ -41,6 +41,7 @@ impl Field {
             | Field::Gapless
             | Field::MediaControls
             | Field::AutoContinueVideos
+            | Field::SkipNonMusic
             | Field::UpdateCheck
             | Field::AutoplayStreaming
             | Field::Normalize
@@ -283,6 +284,12 @@ impl Field {
                 "OS media controls",
                 "OS 미디어 컨트롤",
                 "OSメディアコントロール"
+            )
+            .to_owned(),
+            Field::SkipNonMusic => t!(
+                "Skip non-music segments",
+                "음악이 아닌 구간 건너뛰기",
+                "音楽以外の区間をスキップ"
             )
             .to_owned(),
             Field::AutoContinueVideos => t!(

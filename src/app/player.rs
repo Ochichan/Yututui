@@ -2,6 +2,7 @@
 
 use super::*;
 use crate::tools::PlaybackFailureClass;
+use yututui_core::chapters::{self, ChapterDirection, ChapterJumpRefusal};
 
 /// A player/playback runtime message: mpv property changes, EOF, playback errors, and
 /// video-overlay IPC events. Bucketed under [`Msg::Player`] to keep the flat `Msg` lean.
@@ -33,6 +34,8 @@ pub enum PlayerMsg {
     /// mpv `chapter-list` for the current file: title + start time per boundary, empty when
     /// the media has none. Replaces (never merges) the stored list — mpv re-emits per file.
     Chapters(Vec<crate::player::Chapter>),
+    /// SponsorBlock segments for a YouTube track (empty = none found or fetch failed).
+    SponsorBlock(crate::sponsorblock::SponsorBlockEvent),
     /// Latest cross-platform audio endpoint inventory reported by mpv.
     AudioDeviceList(Vec<crate::player::AudioDevice>),
     /// A manual device-list refresh failed without affecting playback.
@@ -109,36 +112,26 @@ impl App {
     /// canonical `player_intent` path, so `position_epoch` bumps centrally. A track without
     /// chapters (or already at the first/last boundary) explains itself instead of seeking.
     pub(in crate::app) fn jump_chapter(&mut self, next: bool) -> Vec<Cmd> {
-        if self.playback.chapters.is_empty() {
-            self.status.text = t!(
-                "No chapters on this track",
-                "이 트랙에는 챕터가 없어요",
-                "このトラックにはチャプターがありません"
-            )
-            .to_owned();
-            self.status.kind = StatusKind::Info;
-            self.dirty = true;
-            return Vec::new();
-        }
-        let pos = self.playback.time_pos.unwrap_or(0.0);
-        // A half-second hysteresis so a jump lands on the next/previous boundary instead of
-        // immediately re-selecting the boundary we're already sitting on.
-        let target = if next {
-            self.playback
-                .chapters
-                .iter()
-                .map(|chapter| chapter.start_secs)
-                .find(|&start| start > pos + 0.5)
+        let direction = if next {
+            ChapterDirection::Next
         } else {
-            self.playback
-                .chapters
-                .iter()
-                .rev()
-                .map(|chapter| chapter.start_secs)
-                .find(|&start| start < pos - 0.5)
+            ChapterDirection::Prev
         };
-        match target {
-            Some(seconds) => self.player_intent(
+        self.try_jump_chapter(direction).unwrap_or_default()
+    }
+
+    /// [`Self::jump_chapter`] that reports the refusal, for the remote reply.
+    pub(in crate::app) fn try_jump_chapter(
+        &mut self,
+        direction: ChapterDirection,
+    ) -> Result<Vec<Cmd>, ChapterJumpRefusal> {
+        let position = self.playback.time_pos.unwrap_or(0.0);
+        let starts = self
+            .loaded_chapters()
+            .iter()
+            .map(|chapter| chapter.start_secs);
+        match chapters::jump_target(starts, position, direction) {
+            Ok(seconds) => Ok(self.player_intent(
                 "seek_chapter",
                 PlayerCmd::SeekAbsolute {
                     seconds,
@@ -147,34 +140,50 @@ impl App {
                 PlayerCommit::Seek {
                     optimistic_position: Some(seconds),
                 },
-            ),
-            None => {
-                self.status.text = t!(
-                    "Already at the first/last chapter",
-                    "이미 첫/마지막 챕터에 있어요",
-                    "すでに最初/最後のチャプターです"
-                )
+            )),
+            Err(refusal) => {
+                self.status.text = match refusal {
+                    ChapterJumpRefusal::NoChapters => t!(
+                        "No chapters on this track",
+                        "이 트랙에는 챕터가 없어요",
+                        "このトラックにはチャプターがありません"
+                    ),
+                    ChapterJumpRefusal::AtBoundary => t!(
+                        "Already at the first/last chapter",
+                        "이미 첫/마지막 챕터에 있어요",
+                        "すでに最初/最後のチャプターです"
+                    ),
+                }
                 .to_owned();
                 self.status.kind = StatusKind::Info;
                 self.dirty = true;
-                Vec::new()
+                Err(refusal)
             }
         }
+    }
+
+    pub(crate) fn loaded_chapters(&self) -> &[crate::player::Chapter] {
+        crate::player::chapters_for_track(
+            &self.playback.chapters,
+            self.playback.chapters_track.as_deref(),
+            self.prefetch.loaded_video_id.as_deref(),
+        )
+    }
+
+    /// The chapter the playhead currently sits in, when the loaded media has chapters and a
+    /// known position.
+    pub(crate) fn current_chapter(&self) -> Option<(usize, &crate::player::Chapter)> {
+        let position = self.playback.time_pos?;
+        let list = self.loaded_chapters();
+        let index =
+            chapters::current_index(list.iter().map(|chapter| chapter.start_secs), position)?;
+        Some((index, &list[index]))
     }
 
     /// The title of the chapter the playhead currently sits in, when the loaded media has
     /// chapters and a known position. Drives the title-line suffix and the status-line tag.
     pub fn current_chapter_name(&self) -> Option<&str> {
-        let chapters = &self.playback.chapters;
-        if chapters.is_empty() {
-            return None;
-        }
-        let pos = self.playback.time_pos?;
-        let index = chapters
-            .iter()
-            .rposition(|chapter| chapter.start_secs <= pos + 0.5)
-            .unwrap_or(0);
-        let title = chapters[index].title.trim();
+        let title = self.current_chapter()?.1.title.trim();
         (!title.is_empty()).then_some(title)
     }
 

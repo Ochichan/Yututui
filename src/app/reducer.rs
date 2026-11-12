@@ -246,6 +246,7 @@ impl App {
                     tracing::debug!(time_pos = t, "progress");
                 }
                 let mut commands = self.observe_listening_position(t);
+                commands.extend(self.observe_sponsorblock_position(t));
                 commands.extend(self.begin_crossfade_if_due());
                 return commands;
             }
@@ -278,8 +279,10 @@ impl App {
             }
             PlayerMsg::Chapters(chapters) => {
                 self.playback.chapters = chapters;
+                self.playback.chapters_track = self.prefetch.loaded_video_id.clone();
                 self.dirty = true;
             }
+            PlayerMsg::SponsorBlock(event) => return self.handle_sponsorblock_event(event),
             PlayerMsg::AudioDeviceList(devices) => {
                 return self.on_audio_device_list(devices);
             }

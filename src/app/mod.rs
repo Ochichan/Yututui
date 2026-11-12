@@ -131,6 +131,7 @@ mod session_restore;
 
 mod sleep_timer;
 pub use sleep_timer::{SleepPopup, SleepState};
+mod sponsorblock;
 
 mod state;
 pub use state::*;

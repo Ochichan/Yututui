@@ -57,6 +57,22 @@ pub struct Chapter {
     pub start_secs: f64,
 }
 
+/// The chapter list as it applies to the loaded track.
+///
+/// mpv reports `chapter-list` only when the value changes, so a track without chapters that
+/// follows one with chapters can leave the old list in place. `stored_for` is the track that
+/// was loaded when the list arrived; a list stored for another track reads as empty.
+pub fn chapters_for_track<'a>(
+    list: &'a [Chapter],
+    stored_for: Option<&str>,
+    loaded: Option<&str>,
+) -> &'a [Chapter] {
+    match stored_for {
+        Some(stored_for) if Some(stored_for) != loaded => &[],
+        _ => list,
+    }
+}
+
 /// Chapter-list policy ceilings shared by the parser and its consumers.
 pub mod chapter_policy {
     /// Most chapters kept from a hostile/spammy list; a real track has a handful.

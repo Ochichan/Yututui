@@ -33,7 +33,7 @@ pub use command::{
     RemoteSettingChange,
 };
 pub use model::{ArtworkRef, LyricLineModel, TrackModel, WhyGemModel};
-pub use model_player::{EqModel, PlayerModel, QueueModel};
+pub use model_player::{ChapterModel, EqModel, PlayerModel, QueueModel};
 pub use model_settings::{
     ActionInfoModel, AnimationsModel, AudioSettingsModel, KeymapSettingsModel,
     LongFormSeekEffective, LongFormSeekReason, PlaybackSettingsModel, SearchSettingsModel,

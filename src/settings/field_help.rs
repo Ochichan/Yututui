@@ -200,6 +200,11 @@ impl Field {
                 "OS 미디어 패널에 재생 정보를 보여 주고 미디어 키를 받아요.",
                 "OSのメディアパネルに再生情報を出し、メディアキーを受け付けます。"
             ),
+            Field::SkipNonMusic => t!(
+                "Uses SponsorBlock data to skip talk and other non-music parts of YouTube tracks. Sends the first 4 characters of a hash of the video ID to sponsor.ajay.app. Off by default. Applies from the next track.",
+                "SponsorBlock 데이터로 YouTube 곡의 말소리 등 음악이 아닌 구간을 건너뜁니다. 영상 ID 해시의 앞 4자를 sponsor.ajay.app으로 보냅니다. 기본값은 꺼짐입니다. 다음 곡부터 적용됩니다.",
+                "SponsorBlock のデータを使い、YouTube の曲のトークなど音楽以外の区間をスキップします。動画 ID のハッシュの先頭 4 文字を sponsor.ajay.app に送信します。既定ではオフです。次の曲から適用されます。"
+            ),
             Field::AutoContinueVideos => t!(
                 "With the video window open, play the next track's video when one ends.",
                 "영상 창이 열려 있으면 곡이 끝날 때 다음 곡 영상을 이어서 재생해요.",

@@ -61,7 +61,7 @@ pub(super) fn durable_mutation_component(cmd: &Cmd) -> Option<&'static str> {
             DataCmd::ScanDownloads(_) | DataCmd::PersonalDataExport(_) | DataCmd::SyncUi(_),
         )
         | Cmd::Download(DownloadCmd::Scan(_))
-        | Cmd::FetchLyrics(_)
+        | Cmd::Fetch(_)
         | Cmd::Atlas(_)
         | Cmd::Resolve { .. }
         | Cmd::ResolveForSelfHeal { .. }

@@ -199,6 +199,8 @@ The player draws cover images using Kitty, Sixel, or iTerm2 image protocols, det
 
 Press **`Shift+L`** to show synced lyrics below the art. Click a visible lyric line to seek to that point. **`z`** and **`Shift+Z`** shift lyrics 0.1 seconds earlier or later. The **`[ − 0.0s + ]`** controls appear for three seconds when lyrics load, then fold into **`[±]`**. Click that handle to reopen the adjustment controls for three seconds.
 
+**Settings → Playback → Skip non-music segments** skips talk and other non-music parts of YouTube tracks using [SponsorBlock](https://sponsor.ajay.app/) data (CC BY-NC-SA 4.0). It is off by default. See the [manual](MANUAL.md#skip-non-music) for what it sends and when it skips.
+
 Playback controls dock to the bottom of each screen; **`Shift+B`** collapses them. Settings also offers the classic top layout. Album art stays centered in the remaining space. Below about 32×14, the app switches to a miniplayer and restores the full layout when the window grows.
 
 ### Seven catalogs, one search box
@@ -405,6 +407,7 @@ ytt -r pp                  # play / pause      (aliases: toggle, play, pause)
 ytt -r next / prev         # skip around
 ytt -r volume 40           # set volume; also: up / down
 ytt -r seek-to 90          # jump to 1:30
+ytt -r chapter next        # next chapter of a long mix; also: prev
 ytt -r streaming on        # endless streaming: on / off / toggle
 ytt -r play "lofi"         # daemon: search and play the first result
 ytt -r status              # one-line "now playing" (--json for scripts)
@@ -487,7 +490,7 @@ For a destructive, one-shot exact mirror, use an explicit playlist ID with `--to
 <details>
 <summary><b>Sign-in cookies & file locations</b></summary>
 
-**YouTube access.** For token requirements and provider setup, follow yt-dlp's [PO Token Guide](https://github.com/yt-dlp/yt-dlp/wiki/PO-Token-Guide). YouTube OAuth login no longer works with yt-dlp; use the official [cookie export instructions](https://github.com/yt-dlp/yt-dlp/wiki/Extractors#exporting-youtube-cookies) when account access is needed. `ytt doctor --verbose` reports local tool readiness; a detected legacy OAuth plugin does not establish that sign-in works.
+**YouTube access.** For token requirements and provider setup, follow yt-dlp's [PO Token Guide](https://github.com/yt-dlp/yt-dlp/wiki/PO-Token-Guide). YouTube OAuth login no longer works with yt-dlp; use the official [cookie export instructions](https://github.com/yt-dlp/yt-dlp/wiki/Extractors#exporting-youtube-cookies) when account access is needed. `ytt doctor --verbose` lists the plugin directories yt-dlp loads; a PO-token provider is a yt-dlp plugin and must appear there to take effect.
 
 **Cookies (optional).** For content requiring an account, export YouTube Music cookies in **Netscape format** to `~/Music/yututui/cookies.txt` (Windows: `%USERPROFILE%\Music\yututui\cookies.txt`) and restart. **Treat the file like a password.** Follow the export instructions above; cookies can expire, and they do not guarantee access to region-restricted content.
 

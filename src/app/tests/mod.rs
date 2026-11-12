@@ -70,6 +70,7 @@ mod settings_layout;
 mod settings_ui;
 mod sleep_timer;
 mod source_recovery;
+mod sponsorblock;
 mod startup_playback;
 mod station_taste;
 mod streaming_extend;
