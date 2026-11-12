@@ -195,6 +195,8 @@ OS별 메모리는 macOS의 `vmmap` DIRTY, Linux의 `Private_Dirty + Shared_Dirt
 
 **`Shift+L`**로 앨범 아트 아래에 싱크 가사를 표시합니다. 보이는 가사 행을 클릭하면 해당 시점으로 이동합니다. **`z`**와 **`Shift+Z`**로 가사를 0.1초씩 앞당기거나 늦출 수 있습니다. 가사를 불러오면 **`[ − 0.0s + ]`** 조절 버튼이 3초 동안 표시된 뒤 **`[±]`**로 접힙니다. 핸들을 클릭하면 조절 버튼이 다시 3초 동안 열립니다.
 
+**설정 → 재생 → 음악이 아닌 구간 건너뛰기**는 [SponsorBlock](https://sponsor.ajay.app/) 데이터(CC BY-NC-SA 4.0)로 YouTube 곡의 말소리 등 음악이 아닌 구간을 건너뜁니다. 기본값은 꺼짐입니다. 무엇을 보내고 언제 건너뛰는지는 [매뉴얼](MANUAL.ko.md#skip-non-music)에 있습니다.
+
 재생 컨트롤은 각 화면 하단에 표시되며 **`Shift+B`**로 접을 수 있습니다. 설정에서 클래식 상단 배치도 선택할 수 있습니다. 앨범 아트는 남은 공간 가운데에 표시됩니다. 창이 약 32×14보다 작아지면 미니플레이어로 바뀌고, 창을 키우면 전체 화면으로 돌아옵니다.
 
 ### 카탈로그 일곱, 검색창 하나
@@ -401,6 +403,7 @@ ytt -r pp                  # 재생 / 일시정지   (별칭: toggle, play, paus
 ytt -r next / prev         # 곡 이동
 ytt -r volume 40           # 볼륨 지정; up / down 도 가능
 ytt -r seek-to 90          # 1:30 지점으로 점프
+ytt -r chapter next        # 긴 믹스의 다음 챕터로 이동; prev도 가능
 ytt -r streaming on        # 무한 스트리밍: on / off / toggle
 ytt -r play "lofi"         # 데몬: 검색해서 첫 결과 재생
 ytt -r status              # 한 줄 "지금 재생 중" (--json 스크립트용)
@@ -483,7 +486,7 @@ TUI에서는 설정 → **계정** → *Import from Spotify…*로 가져옵니�
 <details>
 <summary><b>로그인 쿠키 & 파일 위치</b></summary>
 
-**YouTube 접근 설정.** 토큰 요구사항과 공급자 설정은 yt-dlp의 [PO 토큰 안내](https://github.com/yt-dlp/yt-dlp/wiki/PO-Token-Guide)를 참고하세요. yt-dlp의 YouTube OAuth 로그인은 더 이상 동작하지 않습니다. 계정 접근이 필요하면 공식 [쿠키 내보내기 안내](https://github.com/yt-dlp/yt-dlp/wiki/Extractors#exporting-youtube-cookies)를 따르세요. `ytt doctor --verbose`의 로컬 도구 진단에서 예전 OAuth 플러그인이 감지되더라도 로그인이 된다는 뜻은 아닙니다.
+**YouTube 접근 설정.** 토큰 요구사항과 공급자 설정은 yt-dlp의 [PO 토큰 안내](https://github.com/yt-dlp/yt-dlp/wiki/PO-Token-Guide)를 참고하세요. yt-dlp의 YouTube OAuth 로그인은 더 이상 동작하지 않습니다. 계정 접근이 필요하면 공식 [쿠키 내보내기 안내](https://github.com/yt-dlp/yt-dlp/wiki/Extractors#exporting-youtube-cookies)를 따르세요. `ytt doctor --verbose`는 yt-dlp가 불러오는 플러그인 디렉터리를 보여 줍니다. PO 토큰 공급자는 yt-dlp 플러그인이라 그 목록에 있어야 동작합니다.
 
 **쿠키 (선택).** 계정이 필요한 콘텐츠는 YouTube Music 쿠키를 **Netscape 형식**으로 `~/Music/yututui/cookies.txt`(Windows: `%USERPROFILE%\Music\yututui\cookies.txt`)에 내보내고 재시작하세요. **파일은 비밀번호처럼 다루세요.** 위의 내보내기 안내를 따르되, 쿠키도 만료될 수 있으며 지역 제한 콘텐츠 접근을 보장하지는 않습니다.
 
