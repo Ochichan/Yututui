@@ -40,6 +40,7 @@ fn entering_a_segment_skips_once_and_reports_it() {
     let _guard = crate::i18n::lock_for_test();
     crate::i18n::set_language(crate::i18n::Language::English);
     let mut app = app_playing(2, 0);
+    app.playback.duration = Some(200.0);
     app.install_sponsorblock_parity_state(&[(60.0, 90.0)]);
 
     for position in [57.0, 58.0, 59.0] {
@@ -62,6 +63,7 @@ fn entering_a_segment_skips_once_and_reports_it() {
 #[test]
 fn nothing_is_skipped_when_the_setting_is_off() {
     let mut app = app_playing(2, 0);
+    app.playback.duration = Some(200.0);
     app.install_sponsorblock_parity_state(&[(60.0, 90.0)]);
     app.config.streaming.skip_non_music = Some(false);
 
@@ -73,6 +75,7 @@ fn nothing_is_skipped_when_the_setting_is_off() {
 #[test]
 fn nothing_is_skipped_while_a_transport_recovery_is_active() {
     let mut app = app_playing(2, 0);
+    app.playback.duration = Some(200.0);
     app.install_sponsorblock_parity_state(&[(60.0, 90.0)]);
     app.recorder.transport_recovery_active = true;
     for position in [58.0, 59.0, 60.4] {
@@ -86,6 +89,7 @@ fn nothing_is_skipped_while_a_transport_recovery_is_active() {
 #[test]
 fn a_seek_into_a_segment_plays_it() {
     let mut app = app_playing(2, 0);
+    app.playback.duration = Some(200.0);
     app.install_sponsorblock_parity_state(&[(60.0, 90.0)]);
     assert!(!has_skip_intent(&app.update(PlayerMsg::TimePos(10.0))));
 

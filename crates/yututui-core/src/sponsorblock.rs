@@ -30,7 +30,9 @@ const MAX_NATURAL_STEP_SECS: f64 = 5.0;
 /// Reports are whole media seconds and never go backwards in playback; this absorbs jitter.
 const MAX_BACKWARD_JITTER_SECS: f64 = 0.5;
 
-/// Whether `segment` may be skipped for a track of known (or unknown) `duration`.
+/// Whether `segment` lies inside a known track and covers less than [`MAX_COVERAGE`] of it.
+/// An unknown length does not reject here; [`SkipPolicy::observe`] withholds the seek until
+/// a positive duration can apply this rule.
 fn fits_duration(segment: Segment, duration: Option<f64>) -> bool {
     let Some(duration) = duration.filter(|d| d.is_finite() && *d > 0.0) else {
         return true;
@@ -168,18 +170,20 @@ impl SkipPolicy {
         if stored_id != track_id {
             return None;
         }
+        // `MAX_COVERAGE` needs a positive length. Until one is known, a fresh 0:00 report
+        // must not seek a mislabeled full-track span to its far end; the next report decides.
+        let duration = obs.duration.filter(|d| d.is_finite() && *d > 0.0)?;
         let segment = segments.iter().find(|segment| {
-            fits_duration(**segment, obs.duration)
+            fits_duration(**segment, Some(duration))
                 && origin < segment.start
                 && obs.position >= segment.start
                 && obs.position < segment.end
                 && segment.end - obs.position >= MIN_REMAINING_SECS
         })?;
-        let target = match obs.duration.filter(|d| d.is_finite() && *d > 0.0) {
-            Some(duration) if segment.end >= duration - TAIL_GUARD_SECS => {
-                duration - TAIL_GUARD_SECS
-            }
-            _ => segment.end,
+        let target = if segment.end >= duration - TAIL_GUARD_SECS {
+            duration - TAIL_GUARD_SECS
+        } else {
+            segment.end
         };
         if target <= obs.position {
             return None;
@@ -325,6 +329,37 @@ mod tests {
     fn segment_at_zero_skips_on_a_fresh_load() {
         let mut policy = policy_with("vid", &[(0.0, 20.0)]);
         assert_eq!(policy.observe(obs(0.0, 1)), Some(20.0));
+    }
+
+    #[test]
+    fn a_fresh_load_does_not_skip_an_oversized_span_before_duration_is_known() {
+        let mut policy = policy_with("vid", &[(0.0, 190.0)]);
+        let at_zero = Observation {
+            duration: None,
+            ..obs(0.0, 1)
+        };
+        assert_eq!(policy.observe(at_zero), None);
+        assert_eq!(
+            policy.observe(Observation {
+                duration: Some(0.0),
+                ..obs(0.0, 1)
+            }),
+            None
+        );
+        assert_eq!(policy.observe(obs(1.0, 1)), None);
+    }
+
+    #[test]
+    fn a_leading_segment_skips_once_duration_is_known() {
+        let mut policy = policy_with("vid", &[(0.0, 20.0)]);
+        assert_eq!(
+            policy.observe(Observation {
+                duration: None,
+                ..obs(0.0, 1)
+            }),
+            None
+        );
+        assert_eq!(policy.observe(obs(1.0, 1)), Some(20.0));
     }
 
     #[test]
