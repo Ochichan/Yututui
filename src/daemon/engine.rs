@@ -28,6 +28,7 @@ use crate::tools::PlaybackFailureClass;
 use crate::util::sanitize;
 use yututui_core::sleep_timer::{SLEEP_MAX_MINUTES, SleepStep, SleepTimer};
 
+mod chapters;
 mod crossfade;
 mod delivery;
 mod listening;
@@ -39,6 +40,7 @@ mod persistence_gate;
 mod personal_export;
 pub(super) mod personal_sync;
 mod remote_dispatch;
+mod sponsorblock;
 mod streaming;
 mod taste_remote;
 mod transport;
@@ -158,6 +160,11 @@ pub struct DaemonEngine {
     #[cfg(test)]
     personal_state_paths: crate::personal_state::PersonalStatePaths,
     loaded_video_id: Option<String>,
+    sponsorblock: sponsorblock::DaemonSkip,
+    /// mpv's latest `chapter-list`. Like the App, never cleared on load. Read it through
+    /// `loaded_chapters`, which hides a list left over from another track.
+    chapters: Vec<crate::player::Chapter>,
+    chapters_track: Option<String>,
     /// One lifecycle owns automatic-restart gating and any current-track replay payload.
     transport_recovery: TransportRecoveryState,
     transport_recovery_generation: u64,
@@ -361,6 +368,9 @@ impl DaemonEngine {
             #[cfg(test)]
             personal_state_paths: tests::personal_state_paths(),
             loaded_video_id: None,
+            sponsorblock: Default::default(),
+            chapters: Vec::new(),
+            chapters_track: None,
             transport_recovery: TransportRecoveryState::Armed,
             transport_recovery_generation: 0,
             source_recovery: crate::player::recovery::RecoveryPlanner::default(),
@@ -507,6 +517,7 @@ impl DaemonEngine {
                     }
                 }
                 self.observe_listening_position(t);
+                self.observe_sponsorblock_position(t);
                 let mut effects = self.advance_crossfade_if_due(t).await;
                 if t > 0.0 {
                     effects.extend(self.begin_cookie_check());
@@ -551,8 +562,11 @@ impl DaemonEngine {
             PlayerEvent::CacheTime(_) => Vec::new(),
             // Recording is a TUI-only feature; the headless engine ignores container hints.
             PlayerEvent::AudioCodec(_) | PlayerEvent::FileFormat(_) => Vec::new(),
-            // Chapters drive the TUI seekbar only; the headless engine never renders them.
-            PlayerEvent::Chapters(_) => Vec::new(),
+            PlayerEvent::Chapters(chapters) => {
+                self.chapters = chapters;
+                self.chapters_track = self.loaded_video_id.clone();
+                Vec::new()
+            }
             // Audio-output discovery and picker acknowledgements belong to the interactive TUI.
             PlayerEvent::AudioDeviceList(_)
             | PlayerEvent::AudioDeviceRefreshFailed(_)
@@ -767,6 +781,12 @@ impl DaemonEngine {
             streaming: self.streaming_active(),
             radio_mode: self.last_mode == LastMode::Radio,
             stream_now_playing: None,
+            chapter: cur.and_then(|_| {
+                crate::remote::publish::CoreChapter::at(
+                    self.loaded_chapters(),
+                    self.playback.time_pos,
+                )
+            }),
             owner_mode: crate::remote::proto::InstanceMode::Daemon,
             eq_preset: self.config.eq_preset.label(),
             eq_bands: self.config.effective_eq_bands(),

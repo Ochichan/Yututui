@@ -149,6 +149,11 @@ pub enum RemoteCommand {
     Listening {
         action: ListeningRemoteAction,
     },
+    /// Seek to the next/previous chapter boundary of the current track. Additive (post-v8);
+    /// an older owner rejects it as `bad_request` instead of misbehaving.
+    Chapter {
+        direction: yututui_core::chapters::ChapterDirection,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -215,7 +220,8 @@ impl RemoteCommand {
             | RemoteCommand::QueueClearUpcoming { .. }
             | RemoteCommand::Sleep { .. }
             | RemoteCommand::Ban { .. }
-            | RemoteCommand::Listening { .. } => RequestRetryClass::RetainedOutcome,
+            | RemoteCommand::Listening { .. }
+            | RemoteCommand::Chapter { .. } => RequestRetryClass::RetainedOutcome,
         }
     }
 

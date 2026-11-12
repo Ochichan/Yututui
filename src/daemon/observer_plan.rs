@@ -40,6 +40,7 @@ impl DaemonEvent {
                 | crate::player::PlayerEvent::AudioDeviceSelectionResult { .. },
             )
             | DaemonEvent::Lyrics(_)
+            | DaemonEvent::SponsorBlock(_)
             | DaemonEvent::Signal
             | DaemonEvent::TelemetryWake => ObserverPlan::INERT,
             _ => ObserverPlan::PROJECTED,

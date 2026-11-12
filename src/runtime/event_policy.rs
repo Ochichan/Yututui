@@ -144,6 +144,9 @@ pub(super) fn player_msg_policy(msg: &PlayerMsg) -> EventPolicy {
             lane: Lane::Telemetry,
             key: Key::PlayerTimePos,
         },
+        PlayerMsg::SponsorBlock(_) => EventPolicy::MustDeliver {
+            lane: Lane::WorkResult,
+        },
         PlayerMsg::Duration(_) => EventPolicy::CoalesceLatest {
             lane: Lane::Telemetry,
             key: Key::PlayerDuration,

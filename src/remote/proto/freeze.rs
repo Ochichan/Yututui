@@ -192,6 +192,83 @@ fn local_crossfade_setting_shape_is_additive() {
 }
 
 #[test]
+fn chapter_command_shape_is_additive() {
+    use yututui_core::chapters::ChapterDirection;
+
+    for (direction, line) in [
+        (
+            ChapterDirection::Next,
+            r#"{"cmd":"chapter","direction":"next"}"#,
+        ),
+        (
+            ChapterDirection::Prev,
+            r#"{"cmd":"chapter","direction":"prev"}"#,
+        ),
+    ] {
+        let command = RemoteCommand::Chapter { direction };
+        assert_eq!(serde_json::to_string(&command).unwrap(), line);
+        assert_eq!(
+            serde_json::from_str::<RemoteCommand>(line).unwrap(),
+            command
+        );
+    }
+}
+
+#[test]
+fn chapter_snapshot_field_is_absent_without_chapters_and_additive_with_them() {
+    use super::{ChapterModel, PlayerModel};
+
+    fn player(chapter: Option<ChapterModel>) -> PlayerModel {
+        PlayerModel {
+            track: None,
+            paused: false,
+            volume: 50,
+            speed_tenths: 10,
+            elapsed_ms: None,
+            duration_ms: None,
+            position_epoch: 0,
+            shuffle: false,
+            repeat: crate::queue::Repeat::Off,
+            streaming: false,
+            radio_mode: false,
+            stream_now_playing: None,
+            chapter,
+            owner_mode: super::InstanceMode::Daemon,
+            eq: super::EqModel {
+                preset: "Flat".to_owned(),
+                bands: [0.0; 10],
+                normalize: false,
+            },
+            queue_pos: 0,
+            queue_len: 0,
+        }
+    }
+
+    let plain = serde_json::to_string(&player(None)).unwrap();
+    assert!(!plain.contains("chapter"), "{plain}");
+    // An owner that predates the field produces exactly this and must still parse.
+    assert_eq!(
+        serde_json::from_str::<PlayerModel>(&plain).unwrap(),
+        player(None)
+    );
+
+    let chapter = ChapterModel {
+        title: "Verse".to_owned(),
+        index: 2,
+        count: 4,
+    };
+    let with = serde_json::to_string(&player(Some(chapter.clone()))).unwrap();
+    assert!(
+        with.contains(r#""chapter":{"title":"Verse","index":2,"count":4}"#),
+        "{with}"
+    );
+    assert_eq!(
+        serde_json::from_str::<PlayerModel>(&with).unwrap(),
+        player(Some(chapter))
+    );
+}
+
+#[test]
 fn golden_v7_request_serialization_is_byte_stable() {
     let req = RemoteRequest {
         version: 7,

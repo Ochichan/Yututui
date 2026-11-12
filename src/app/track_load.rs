@@ -103,6 +103,7 @@ impl App {
             self.note_session_activity();
         }
         self.associate_lyrics_with_track(&song.video_id);
+        effects.extend(self.sponsorblock_on_load(&song));
         self.prefetch.loaded_video_id = Some(song.video_id.clone());
         self.clear_artwork();
 

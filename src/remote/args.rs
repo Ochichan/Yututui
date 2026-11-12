@@ -4,6 +4,8 @@
 //! `main`. The verb (with short aliases) maps to an [`Invocation`]; `-q`/`--json` are
 //! client-side display flags.
 
+use yututui_core::chapters::ChapterDirection;
+
 use super::proto::{
     BanTarget, ListeningRemoteAction, RemoteCommand, RemoteSettingChange, ToggleState, Topic,
 };
@@ -58,6 +60,7 @@ Commands:
   back                    Seek backward
   fwd, forward            Seek forward
   seek-to <seconds>       Seek to an absolute position in the current track
+  chapter <next|prev>     Jump to the next or previous chapter of the current track
   crossfade <seconds|off> Set local-file crossfade (off, or 0 to 3.0 seconds in 0.1s steps)
   streaming [on|off|toggle]
                           Toggle (or set) autoplay streaming
@@ -257,6 +260,18 @@ pub fn parse(args: &[String]) -> Result<Parsed, ParseError> {
             };
             Invocation::Command(RemoteCommand::Listening { action })
         }
+        "chapter" => {
+            let direction = match rest.as_slice() {
+                ["next"] => ChapterDirection::Next,
+                ["prev"] => ChapterDirection::Prev,
+                _ => {
+                    return Err(ParseError::Invalid(format!(
+                        "{verb}: expected exactly one direction (next or prev)"
+                    )));
+                }
+            };
+            Invocation::Command(RemoteCommand::Chapter { direction })
+        }
         "resume-session" | "load-session" => Invocation::Command(RemoteCommand::ResumeSession),
         "status" | "st" => Invocation::Command(RemoteCommand::Status),
         "info" => {
@@ -418,6 +433,18 @@ mod tests {
         assert_eq!(
             cmd(&["seek-to", "92.5"]),
             RemoteCommand::SeekTo { ms: 92_500 }
+        );
+        assert_eq!(
+            cmd(&["chapter", "next"]),
+            RemoteCommand::Chapter {
+                direction: ChapterDirection::Next
+            }
+        );
+        assert_eq!(
+            cmd(&["chapter", "prev"]),
+            RemoteCommand::Chapter {
+                direction: ChapterDirection::Prev
+            }
         );
         assert_eq!(cmd(&["resume-session"]), RemoteCommand::ResumeSession);
         assert_eq!(cmd(&["load-session"]), RemoteCommand::ResumeSession);
@@ -589,6 +616,22 @@ mod tests {
     fn enqueue_requires_query() {
         let owned = vec!["enqueue".to_string()];
         assert!(matches!(parse(&owned), Err(ParseError::Invalid(_))));
+    }
+
+    #[test]
+    fn chapter_requires_exactly_one_known_direction() {
+        for args in [
+            &["chapter"][..],
+            &["chapter", "later"][..],
+            &["chapter", "next", "prev"][..],
+            &["chapter", "Next"][..],
+        ] {
+            let owned: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+            assert!(
+                matches!(parse(&owned), Err(ParseError::Invalid(_))),
+                "{args:?}"
+            );
+        }
     }
 
     #[test]

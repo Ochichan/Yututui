@@ -354,6 +354,8 @@ pub struct Playback {
     pub pre_mute_volume: Option<i64>,
     /// Playback speed multiplier (1.0 = normal).
     pub speed: f64,
+    /// Edge-triggered non-music skip decisions for the loaded track.
+    pub(in crate::app) skip_policy: yututui_core::sponsorblock::SkipPolicy,
     /// Current live-radio now-playing metadata, when the active stream exposes it.
     pub stream_now_playing: Option<StreamNowPlaying>,
     /// mpv `audio-codec-name` for the active stream (e.g. `mp3`, `aac`); the radio recorder
@@ -373,6 +375,9 @@ pub struct Playback {
     /// Chapter boundaries of the loaded media, from mpv's `chapter-list` (empty when the
     /// media has none). Drives the seekbar markers and the `!`/`@` jumps.
     pub chapters: Vec<crate::player::Chapter>,
+    /// Track that was loaded when `chapters` arrived. Read the list through
+    /// `App::loaded_chapters`, which hides a list left over from another track.
+    pub chapters_track: Option<String>,
     pub loaded: Option<crate::player::PlaybackLoad>,
     pub overlap_fired: bool,
 }

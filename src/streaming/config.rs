@@ -485,9 +485,16 @@ pub struct StreamingConfig {
     pub cooc: CoocConfig,
     pub ai: AiRerankConfig,
     pub gate: MusicGateConfig,
+    /// Skip SponsorBlock `music_offtopic` segments of YouTube tracks. Lives here rather than
+    /// on `Config` because `src/config.rs` is at its size limit; `None` means off.
+    pub skip_non_music: Option<bool>,
 }
 
 impl StreamingConfig {
+    pub fn effective_skip_non_music(&self) -> bool {
+        self.skip_non_music.unwrap_or(false)
+    }
+
     /// A known track duration outside the streaming length window (too short = interlude/skit,
     /// too long = mix/podcast). Single source of truth for the rule, shared by the scoring
     /// hard filter and the final sanitize pass so the two can't drift apart.
@@ -510,6 +517,7 @@ impl Default for StreamingConfig {
             cooc: CoocConfig::default(),
             ai: AiRerankConfig::default(),
             gate: MusicGateConfig::default(),
+            skip_non_music: None,
         }
     }
 }

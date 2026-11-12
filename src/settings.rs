@@ -157,6 +157,7 @@ impl SettingsTab {
                     Field::Gapless,
                     Field::MediaControls,
                     Field::AutoContinueVideos,
+                    Field::SkipNonMusic,
                     Field::VideoLayout,
                     Field::AlbumArtQuality,
                     Field::LocalCrossfade,
@@ -329,6 +330,8 @@ pub enum Field {
     /// When the `v` video overlay is open, auto-play the next queue track's video at the
     /// end of the current one (TUI only).
     AutoContinueVideos,
+    /// Skip SponsorBlock `music_offtopic` segments of YouTube tracks (`streaming.skip_non_music`).
+    SkipNonMusic,
     /// Which layout the `v` video overlay opens in by default (Compact / Large / Fullscreen);
     /// a Select field cycled like the others. `Shift+V` still cycles the live window.
     VideoLayout,
@@ -684,6 +687,8 @@ pub struct SettingsDraft {
     pub media_controls: bool,
     /// The video overlay auto-continues into the next queue track's video on EOF.
     pub auto_continue_videos: bool,
+    /// Skip non-music segments of YouTube tracks using SponsorBlock data.
+    pub skip_non_music: bool,
     /// Which layout the `v` video overlay opens in by default.
     pub video_layout: crate::config::VideoOverlay,
     pub audio_backend: crate::config::AudioBackend,
@@ -821,6 +826,7 @@ impl SettingsDraft {
         cfg.update_check_enabled = self.update_check_enabled;
         cfg.media_controls = Some(self.media_controls);
         cfg.auto_continue_videos = Some(self.auto_continue_videos);
+        cfg.streaming.skip_non_music = Some(self.skip_non_music);
         cfg.video_layout = self.video_layout;
         cfg.audio.backend = self.audio_backend;
         cfg.audio.mpv.output = blank_to_none(&self.audio_mpv_output);

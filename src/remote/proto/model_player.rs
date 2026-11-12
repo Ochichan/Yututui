@@ -32,12 +32,25 @@ pub struct PlayerModel {
     /// ICY title for live radio.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stream_now_playing: Option<String>,
+    /// The chapter the playhead sits in. Absent when the track has no chapters, so the
+    /// snapshot of an ordinary track keeps its established bytes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chapter: Option<ChapterModel>,
     pub owner_mode: InstanceMode,
     pub eq: EqModel,
     /// Queue cursor (order position). The cursor rides the player topic — a track
     /// advance is a small player push, never a queue-snapshot push.
     pub queue_pos: usize,
     pub queue_len: usize,
+}
+
+/// The current chapter of the loaded track.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChapterModel {
+    pub title: String,
+    /// One-based position in the chapter list.
+    pub index: u32,
+    pub count: u32,
 }
 
 /// Full queue contents, pushed on membership/order change only. `rev` is assigned from
@@ -101,6 +114,7 @@ mod tests {
             streaming: true,
             radio_mode: false,
             stream_now_playing: Some("ICY Title".to_string()),
+            chapter: None,
             owner_mode: InstanceMode::Daemon,
             eq: EqModel {
                 preset: "Rock".to_string(),

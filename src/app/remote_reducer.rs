@@ -24,6 +24,7 @@ impl App {
                 Some(RemoteReplyPlan::NowPlaying)
             }
             RemoteCommand::SeekTo { .. }
+            | RemoteCommand::Chapter { .. }
             | RemoteCommand::QueuePlay { .. }
             | RemoteCommand::QueuePlayIfRevision { .. }
             | RemoteCommand::QueueRemove { .. }
@@ -149,6 +150,16 @@ impl App {
                 // bump and radio guard live in one place.
                 let cmds = self.apply_media(crate::media::MediaCommand::SeekTo(secs));
                 (RemoteResponse::status(self.status_snapshot()), cmds)
+            }
+            RemoteCommand::Chapter { direction } => {
+                // The daemon's `loaded_video_id` guard, so both owners refuse the same states.
+                if self.queue.current().is_none() || self.prefetch.loaded_video_id.is_none() {
+                    return (RemoteResponse::err("nothing_playing"), Vec::new());
+                }
+                match self.try_jump_chapter(direction) {
+                    Ok(cmds) => (RemoteResponse::status(self.status_snapshot()), cmds),
+                    Err(refusal) => (RemoteResponse::err(refusal.reason()), Vec::new()),
+                }
             }
             RemoteCommand::SeekBack => {
                 let cmds = self.on_player_action(Action::SeekBack);
@@ -614,6 +625,12 @@ impl App {
                 .stream_now_playing
                 .as_ref()
                 .map(|now| std::borrow::Cow::Owned(now.label())),
+            chapter: cur.and_then(|_| {
+                crate::remote::publish::CoreChapter::at(
+                    self.loaded_chapters(),
+                    self.playback.time_pos,
+                )
+            }),
             owner_mode: InstanceMode::StandaloneTui,
             eq_preset: self.audio.preset.label(),
             eq_bands: self.audio.bands,

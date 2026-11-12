@@ -55,6 +55,7 @@ pub mod second_launch;
 pub mod session;
 pub mod settings;
 pub mod signals;
+pub mod sponsorblock;
 pub mod spotify;
 pub mod station;
 pub mod streaming;

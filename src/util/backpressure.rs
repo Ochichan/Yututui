@@ -74,6 +74,11 @@ pub const LYRICS_QUEUE: QueuePolicy = QueuePolicy::CoalescedByKey {
     capacity: 1,
 };
 
+pub const SPONSORBLOCK_QUEUE: QueuePolicy = QueuePolicy::CoalescedByKey {
+    name: "sponsorblock",
+    capacity: 1,
+};
+
 pub const TRANSFER_QUEUE: QueuePolicy = QueuePolicy::Bounded {
     name: "transfer",
     capacity: 64,

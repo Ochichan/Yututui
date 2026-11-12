@@ -31,7 +31,7 @@ pub(super) fn playback_sections() -> Vec<(&'static str, usize)> {
     vec![
         (
             t!("Now Playing", "현재 재생", "再生中"),
-            10 + AtlasField::ALL.len(),
+            11 + AtlasField::ALL.len(),
         ),
         (
             t!("Audio backend", "오디오 백엔드", "オーディオバックエンド"),

@@ -32,6 +32,8 @@ pub(super) enum DaemonEvent {
     /// The lyrics actor resolved (or failed to find) lines for a track. Fetches are
     /// gated on a live `lyrics` subscriber; see [`super::lyrics_host::LyricsHost`].
     Lyrics(crate::lyrics::LyricsEvent),
+    /// SponsorBlock segments resolved for a YouTube track (empty on none or failure).
+    SponsorBlock(crate::sponsorblock::SponsorBlockEvent),
     /// A playback-self-heal yt-dlp update check finished (see
     /// [`super::engine::EngineEffect::YtdlpSelfHeal`]).
     YtdlpHeal {
@@ -82,6 +84,9 @@ impl DaemonEvent {
             DaemonEvent::Lyrics(_) => EventPolicy::MustDeliver {
                 lane: Lane::WorkResult,
             },
+            DaemonEvent::SponsorBlock(_) => EventPolicy::MustDeliver {
+                lane: Lane::WorkResult,
+            },
             DaemonEvent::YtdlpHeal { .. } | DaemonEvent::ResolveRetry { .. } => {
                 EventPolicy::MustDeliver {
                     lane: Lane::WorkResult,
@@ -115,6 +120,7 @@ impl DaemonEvent {
             DaemonEvent::OpenSubsonicBridge(_) => "open_subsonic_bridge",
             DaemonEvent::OpenSubsonicReady => "open_subsonic_ready",
             DaemonEvent::Lyrics(_) => "lyrics",
+            DaemonEvent::SponsorBlock(_) => "sponsorblock",
             DaemonEvent::YtdlpHeal { .. } => "ytdlp_heal",
             DaemonEvent::ResolveRetry { .. } => "resolve_retry",
             DaemonEvent::TransportRecoveryRetry { .. } => "transport_recovery_retry",

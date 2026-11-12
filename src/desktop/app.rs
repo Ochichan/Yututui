@@ -590,6 +590,7 @@ mod tests {
             streaming: false,
             radio_mode: false,
             stream_now_playing: None,
+            chapter: None,
             owner_mode: InstanceMode::StandaloneTui,
             eq: EqModel {
                 preset: "flat".to_string(),

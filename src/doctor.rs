@@ -11,7 +11,7 @@
 use crate::deps::{self, Need};
 use crate::{config, i18n};
 use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 #[path = "doctor/audio_report.rs"]
 mod audio_report;
@@ -19,6 +19,8 @@ mod audio_report;
 mod directory_probe;
 #[path = "doctor/long_form_seek.rs"]
 mod long_form_seek;
+#[path = "doctor/potoken.rs"]
+mod potoken;
 #[path = "doctor/terminal.rs"]
 mod terminal;
 use audio_report::{mpv_lifetime_report, run as run_audio};
@@ -706,6 +708,7 @@ fn print_path_probe(bin: &str) {
     }
 }
 
+#[cfg(target_os = "linux")]
 fn command_stdout(program: &str, args: &[&str]) -> String {
     if !deps::on_path(program) {
         return "missing".to_owned();
@@ -718,7 +721,7 @@ fn command_stdout(program: &str, args: &[&str]) -> String {
     match crate::util::process::std_output_limited(
         cmd,
         crate::util::process::ProcessProfile::DesktopOpen,
-        Duration::from_secs(2),
+        std::time::Duration::from_secs(2),
         4096,
     ) {
         Ok(out) if out.status.success() => {
@@ -757,8 +760,8 @@ fn linux_wsl_detected() -> bool {
 }
 
 /// YouTube bot-protection readiness (advisory; the 403/429 era). Read-only: it never
-/// downloads or runs a provider — it reports the PO-token provider script, the oauth
-/// plugin, and the cookies file the app would actually use.
+/// downloads or runs a provider — it reports the plugin directories the selected yt-dlp
+/// loads and the cookies file the app would actually use.
 fn print_potoken_readiness(cfg: &config::Config, lang: i18n::Language) {
     println!(
         "{}",
@@ -769,55 +772,9 @@ fn print_potoken_readiness(cfg: &config::Config, lang: i18n::Language) {
         }
     );
 
-    // The PO-token provider script: yt-dlp runs it via its config when configured.
-    let provider = deps::on_path("bgutil-ytdlp-pot-provider");
     println!(
         "  {}",
-        match lang {
-            i18n::Language::Korean => match provider {
-                true => "✓ PO 토큰 공급자 — bgutil-ytdlp-pot-provider 발견됨",
-                false =>
-                    "✗ PO 토큰 공급자 없음 — `bgutil-ytdlp-pot-provider`를 설치하면 403/429 차단을 우회하는 데 도움이 됩니다",
-            },
-            i18n::Language::Japanese => match provider {
-                true => "✓ POトークンプロバイダー — bgutil-ytdlp-pot-provider が見つかりました",
-                false =>
-                    "✗ POトークンプロバイダーなし — `bgutil-ytdlp-pot-provider` を導入すると 403/429 対策に役立ちます",
-            },
-            _ => match provider {
-                true => "✓ PO-token provider — bgutil-ytdlp-pot-provider found on PATH",
-                false =>
-                    "✗ no PO-token provider — installing `bgutil-ytdlp-pot-provider` helps when YouTube blocks streams (403/429)",
-            },
-        }
-    );
-
-    // The oauth plugin: `--list-plugins` is local; older yt-dlp without the flag reads
-    // as "not found" and the guidance line covers it.
-    let oauth = crate::tools::ytdlp_selection().is_some_and(|sel| {
-        command_stdout(&sel.path.to_string_lossy(), &["--list-plugins"])
-            .to_ascii_lowercase()
-            .contains("oauth")
-    });
-    println!(
-        "  {}",
-        match lang {
-            i18n::Language::Korean => match oauth {
-                true => "✓ yt-dlp oauth 플러그인 — youtube-oauth2 발견됨",
-                false =>
-                    "✗ yt-dlp oauth 플러그인 없음 — `yt-dlp-youtube-oauth2`를 설치하면 쿠키보다 오래가는 로그인을 제공합니다",
-            },
-            i18n::Language::Japanese => match oauth {
-                true => "✓ yt-dlp oauth プラグイン — youtube-oauth2 が見つかりました",
-                false =>
-                    "✗ yt-dlp oauth プラグインなし — `yt-dlp-youtube-oauth2` を導入すると Cookie より長持ちするサインインが得られます",
-            },
-            _ => match oauth {
-                true => "✓ yt-dlp oauth plugin — youtube-oauth2 detected",
-                false =>
-                    "✗ no yt-dlp oauth plugin — installing `yt-dlp-youtube-oauth2` gives a sign-in that outlives cookie exports",
-            },
-        }
+        potoken::provider_line(&potoken::probe_plugin_dirs(), lang)
     );
 
     // The cookies file the app resolves at startup (config path or the default location).

@@ -2,7 +2,7 @@ use super::{
     LONG_FORM_SEEK_OPTIMIZATION_CAPABILITY, PERSONAL_EXPORT_CAPABILITY,
     PERSONAL_STATE_V2_CAPABILITY, RETAINED_REQUEST_OUTCOMES_CAPABILITY, WEB_DAV_SYNC_CAPABILITY,
 };
-use crate::remote::OPEN_SUBSONIC_CAPABILITY;
+use crate::remote::{CHAPTER_JUMP_CAPABILITY, OPEN_SUBSONIC_CAPABILITY};
 
 pub(super) fn daemon_capabilities() -> Vec<String> {
     vec![
@@ -21,5 +21,6 @@ pub(super) fn daemon_capabilities() -> Vec<String> {
         WEB_DAV_SYNC_CAPABILITY.to_string(),
         OPEN_SUBSONIC_CAPABILITY.to_string(),
         LONG_FORM_SEEK_OPTIMIZATION_CAPABILITY.to_string(),
+        CHAPTER_JUMP_CAPABILITY.to_string(),
     ]
 }

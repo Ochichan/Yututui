@@ -408,7 +408,7 @@ pub fn playback_failure_actionable_error(
             "stream resolution failed; run `ytt tools update`, then `ytt doctor --verbose`: {player_error}"
         ),
         PlaybackFailureClass::Http403 | PlaybackFailureClass::RateLimited => format!(
-            "YouTube rejected the stream; run `ytt doctor --verbose` (a PO token or the oauth plugin often fixes this): {player_error}"
+            "YouTube rejected the stream; run `ytt doctor --verbose` (a PO-token provider or fresh cookies often fixes this): {player_error}"
         ),
         PlaybackFailureClass::Network => {
             format!("network error while opening stream: {player_error}")

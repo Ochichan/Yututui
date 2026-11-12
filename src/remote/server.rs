@@ -547,6 +547,7 @@ fn default_capabilities() -> Vec<String> {
         super::PERSONAL_STATE_V2_CAPABILITY.to_string(),
         super::WEB_DAV_SYNC_CAPABILITY.to_string(),
         super::OPEN_SUBSONIC_CAPABILITY.to_string(),
+        super::CHAPTER_JUMP_CAPABILITY.to_string(),
         RETAINED_REQUEST_OUTCOMES_CAPABILITY.to_string(),
         // v8 sessions with live push — advertised now that subscribe
         // delivers initial snapshots through the owner-lane Publisher.
@@ -592,6 +593,13 @@ fn secondary_capabilities_do_not_advertise_owner_bound_integrations() {
     );
     assert!(secondary_capabilities().contains(&"status".to_string()));
     assert!(secondary_capabilities().contains(&"events-v8".to_string()));
+}
+
+#[cfg(test)]
+#[test]
+fn every_owner_kind_advertises_chapter_jump() {
+    assert!(default_capabilities().contains(&super::CHAPTER_JUMP_CAPABILITY.to_string()));
+    assert!(secondary_capabilities().contains(&super::CHAPTER_JUMP_CAPABILITY.to_string()));
 }
 
 #[cfg(test)]

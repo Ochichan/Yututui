@@ -9,7 +9,7 @@ fn lyrics_request_carries_album_and_numeric_duration() {
         "3:45",
         Some("Rich album".to_owned()),
     );
-    let Cmd::FetchLyrics(request) = fetch_lyrics_cmd(&song) else {
+    let Cmd::Fetch(FetchCmd::Lyrics(request)) = fetch_lyrics_cmd(&song) else {
         panic!("expected a FetchLyrics cmd");
     };
     assert_eq!(request.video_id, "rich-id");
@@ -26,7 +26,7 @@ fn shift_l_toggles_lyrics_and_fetches_on_open() {
     assert!(app.lyrics.visible);
     assert!(app.lyrics.loading);
     match cmds.as_slice() {
-        [Cmd::FetchLyrics(request)] => assert_eq!(request.video_id, "id0"),
+        [Cmd::Fetch(FetchCmd::Lyrics(request))] => assert_eq!(request.video_id, "id0"),
         _ => panic!("expected a FetchLyrics cmd"),
     }
     // Toggling off issues no fetch.
@@ -75,8 +75,9 @@ fn advancing_track_clears_lyrics_and_refetches_when_open() {
     assert!(app.lyrics.track.is_none());
     assert!(app.lyrics.loading);
     assert!(
-        cmds.iter()
-            .any(|c| matches!(c, Cmd::FetchLyrics(request) if request.video_id == "id1"))
+        cmds.iter().any(
+            |c| matches!(c, Cmd::Fetch(FetchCmd::Lyrics(request)) if request.video_id == "id1")
+        )
     );
 }
 

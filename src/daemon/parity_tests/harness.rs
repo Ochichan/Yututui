@@ -55,6 +55,7 @@ pub(super) fn command_parity_class(command: &RemoteCommand) -> CommandParityClas
         | RemoteCommand::SeekBack
         | RemoteCommand::SeekForward
         | RemoteCommand::SeekTo { .. }
+        | RemoteCommand::Chapter { .. }
         | RemoteCommand::QueuePlay { .. }
         | RemoteCommand::QueueRemove { .. }
         | RemoteCommand::QueuePlayIfRevision { .. }

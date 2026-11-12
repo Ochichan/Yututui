@@ -334,6 +334,14 @@ pub struct PersonalDataExportSources {
     pub(crate) station: StationStore,
 }
 
+/// Per-track metadata fetches.
+pub enum FetchCmd {
+    /// Synced lyrics.
+    Lyrics(crate::lyrics::LyricsRequest),
+    /// SponsorBlock non-music segments of a YouTube track.
+    SponsorBlock(crate::sponsorblock::SponsorBlockRequest),
+}
+
 /// Local-data effects dispatched by the runtime.
 pub enum DataCmd {
     /// Refresh the local downloads list from this folder.
@@ -407,8 +415,8 @@ pub enum Cmd {
     Download(DownloadCmd),
     /// Load or rebuild the Local Deck index off the UI thread.
     Local(LocalCmd),
-    /// Fetch synced lyrics for a track.
-    FetchLyrics(crate::lyrics::LyricsRequest),
+    /// Per-track metadata fetches served by leaf actors.
+    Fetch(FetchCmd),
     /// Fetch + decode album art for a track (only when album art is enabled).
     FetchArtwork {
         video_id: String,
