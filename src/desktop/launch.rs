@@ -169,19 +169,19 @@ fn platform_ytt_candidates(home_env: Option<&OsStr>) -> impl Iterator<Item = Pat
 }
 
 fn is_executable_file(path: &Path) -> bool {
-    if !path.is_file() {
-        return false;
-    }
-    #[cfg(unix)]
-    {
-        path.metadata()
-            .map(|meta| meta.permissions().mode() & 0o111 != 0)
-            .unwrap_or(false)
-    }
-    #[cfg(not(unix))]
-    {
-        true
-    }
+    path.is_file() && has_execute_permission(path)
+}
+
+#[cfg(unix)]
+fn has_execute_permission(path: &Path) -> bool {
+    path.metadata()
+        .map(|meta| meta.permissions().mode() & 0o111 != 0)
+        .unwrap_or(false)
+}
+
+#[cfg(not(unix))]
+fn has_execute_permission(_path: &Path) -> bool {
+    true
 }
 
 pub fn open_tui() -> Result<LaunchPlan, LaunchError> {
