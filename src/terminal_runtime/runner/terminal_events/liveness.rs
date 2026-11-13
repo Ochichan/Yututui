@@ -320,20 +320,23 @@ impl ProbeOutcome {
 }
 
 pub(super) fn is_definitive_terminal_loss(error: &io::Error) -> bool {
-    if matches!(
+    matches!(
         error.kind(),
         io::ErrorKind::UnexpectedEof
             | io::ErrorKind::BrokenPipe
             | io::ErrorKind::ConnectionAborted
             | io::ErrorKind::ConnectionReset
             | io::ErrorKind::NotConnected
-    ) {
-        return true;
-    }
-    #[cfg(unix)]
-    if matches!(error.raw_os_error(), Some(libc::EIO | libc::ENXIO)) {
-        return true;
-    }
+    ) || is_terminal_loss_errno(error)
+}
+
+#[cfg(unix)]
+fn is_terminal_loss_errno(error: &io::Error) -> bool {
+    matches!(error.raw_os_error(), Some(libc::EIO | libc::ENXIO))
+}
+
+#[cfg(not(unix))]
+fn is_terminal_loss_errno(_error: &io::Error) -> bool {
     false
 }
 

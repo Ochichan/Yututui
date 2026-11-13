@@ -748,10 +748,7 @@ fn enable_kitty_keyboard_with_state(active: &AtomicU8, output: &mut impl Write) 
     // Non-Unix writers can buffer, so retain the cleanup marker before `execute!`: the control
     // may have been delivered even when the writer reports a later flush failure.
     active.store(ACTIVE_KEYBOARD_KITTY, Ordering::Release);
-    if execute!(output, PushKeyboardEnhancementFlags(flags)).is_err() {
-        return false;
-    }
-    true
+    execute!(output, PushKeyboardEnhancementFlags(flags)).is_ok()
 }
 
 fn kitty_keyboard_flags() -> KeyboardEnhancementFlags {
@@ -794,10 +791,7 @@ fn enable_win32_keyboard() -> bool {
 fn enable_win32_keyboard_with(output: &mut impl Write) -> bool {
     // As above, preserve enough state to undo a control sequence whose final flush failed.
     ACTIVE_KEYBOARD_PROTOCOL.store(ACTIVE_KEYBOARD_WIN32, Ordering::Release);
-    if write_win32_input_sequence(output, ENABLE_WIN32_INPUT).is_err() {
-        return false;
-    }
-    true
+    write_win32_input_sequence(output, ENABLE_WIN32_INPUT).is_ok()
 }
 
 #[cfg(unix)]
