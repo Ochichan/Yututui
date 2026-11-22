@@ -27,18 +27,23 @@ impl ObserverPlan {
 impl DaemonEvent {
     pub(super) fn observer_plan(&self) -> ObserverPlan {
         match self {
-            DaemonEvent::Player(
-                crate::player::PlayerEvent::TimePos(_) | crate::player::PlayerEvent::CacheTime(_),
-            ) => ObserverPlan::PROGRESS,
-            // A lyrics result never changes player/queue/media state — skip projections.
-            DaemonEvent::Remote(RemoteEvent::SessionSubscribe { .. })
-            | DaemonEvent::Player(
+            // Live mpv IPC wraps file-bound events (`TimePos`, `CacheTime`, `Duration`, etc.) in
+            // `PlayerEvent::FileScoped`; classify through `unscoped()` so progress turns are not
+            // misclassified as full projections.
+            DaemonEvent::Player(event) => match event.unscoped() {
+                crate::player::PlayerEvent::TimePos(_)
+                | crate::player::PlayerEvent::CacheTime(_) => ObserverPlan::PROGRESS,
                 crate::player::PlayerEvent::AudioDeviceList(_)
                 | crate::player::PlayerEvent::AudioDeviceRefreshFailed(_)
                 | crate::player::PlayerEvent::AudioDeviceChanged(_)
                 | crate::player::PlayerEvent::CurrentAudioOutput(_)
-                | crate::player::PlayerEvent::AudioDeviceSelectionResult { .. },
-            )
+                | crate::player::PlayerEvent::AudioDeviceSelectionResult { .. } => {
+                    ObserverPlan::INERT
+                }
+                _ => ObserverPlan::PROJECTED,
+            },
+            // A lyrics result never changes player/queue/media state — skip projections.
+            DaemonEvent::Remote(RemoteEvent::SessionSubscribe { .. })
             | DaemonEvent::Lyrics(_)
             | DaemonEvent::SponsorBlock(_)
             | DaemonEvent::Signal
@@ -54,7 +59,8 @@ impl DaemonEvent {
         let plan = self.observer_plan();
         let position_turn = matches!(
             self,
-            DaemonEvent::Player(crate::player::PlayerEvent::TimePos(_))
+            DaemonEvent::Player(event)
+                if matches!(event.unscoped(), crate::player::PlayerEvent::TimePos(_))
         );
         let fingerprint = plan.project_state.then(|| engine.media_fingerprint());
         (plan, position_turn, fingerprint)
@@ -63,26 +69,82 @@ impl DaemonEvent {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::*;
+    use crate::daemon::engine::EngineState;
+    use crate::player::PlayerEvent;
+
+    fn test_engine() -> DaemonEngine {
+        DaemonEngine::with_state(
+            EngineState {
+                config: crate::config::Config::default(),
+                station: crate::station::StationStore::default(),
+                library: crate::library::Library::default(),
+                playlists: crate::playlists::Playlists::default(),
+                signals: crate::signals::Signals::default(),
+            },
+            Arc::new(|_| {}),
+        )
+    }
 
     #[test]
     fn progress_events_skip_owner_projections_but_keep_scrobble_heartbeat() {
-        for event in [
-            DaemonEvent::Player(crate::player::PlayerEvent::TimePos(7.0)),
-            DaemonEvent::Player(crate::player::PlayerEvent::CacheTime(Some(9.0))),
+        let engine = test_engine();
+        for (event, expect_position_turn) in [
+            (DaemonEvent::Player(PlayerEvent::TimePos(7.0)), true),
+            (
+                DaemonEvent::Player(PlayerEvent::file_scoped(1, PlayerEvent::TimePos(7.0))),
+                true,
+            ),
+            (
+                DaemonEvent::Player(PlayerEvent::CacheTime(Some(9.0))),
+                false,
+            ),
+            (
+                DaemonEvent::Player(PlayerEvent::file_scoped(
+                    1,
+                    PlayerEvent::CacheTime(Some(9.0)),
+                )),
+                false,
+            ),
         ] {
-            let plan = event.observer_plan();
+            let (plan, position_turn, fingerprint) = event.observer_context(&engine);
             assert!(!plan.project_state, "progress must skip projection");
             assert!(
                 plan.drive_scrobble_heartbeat,
                 "progress must retain the 1 Hz scrobble clock"
             );
+            assert_eq!(
+                position_turn, expect_position_turn,
+                "TimePos must arm media position rebasing even when file-scoped"
+            );
+            assert!(
+                fingerprint.is_none(),
+                "progress turns must not hash media state before dispatch"
+            );
+        }
+
+        for duration in [
+            DaemonEvent::Player(PlayerEvent::Duration(Some(180.0))),
+            DaemonEvent::Player(PlayerEvent::file_scoped(
+                1,
+                PlayerEvent::Duration(Some(180.0)),
+            )),
+        ] {
+            let (plan, position_turn, fingerprint) = duration.observer_context(&engine);
+            assert_eq!(
+                plan,
+                ObserverPlan::PROJECTED,
+                "a real media facet still runs media/remote observers"
+            );
+            assert!(!position_turn);
+            assert!(fingerprint.is_some());
         }
 
         assert_eq!(
-            DaemonEvent::Player(crate::player::PlayerEvent::Duration(Some(180.0))).observer_plan(),
-            ObserverPlan::PROJECTED,
-            "a real media facet still runs media/remote observers"
+            DaemonEvent::Player(PlayerEvent::AudioDeviceList(Vec::new())).observer_plan(),
+            ObserverPlan::INERT
         );
         assert_eq!(DaemonEvent::Signal.observer_plan(), ObserverPlan::INERT);
         assert_eq!(
