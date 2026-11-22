@@ -10,7 +10,7 @@
     let currentPayload = window.__YTM_TUI_INITIAL__;
     let hasAppliedPayload = false;
     let panelPinned = Boolean(window.__YTM_TUI_INITIAL_PINNED__);
-    let lastQueueKey = null;
+    let lastQueueState = null;
     let lastSourceOptionsKey = null;
     let lastTrackIdentity = currentPayload.trackIdentity;
 
@@ -31,7 +31,11 @@
       "tmScreen", "tmMarquee", "tmTitleA", "tmTitleB"
     ].forEach(id => { els[id] = document.getElementById(id); });
 
-    let locale = window.__YTM_TUI_LOCALE__ === "ko" ? "ko" : "en";
+    function normalizeLocale(value) {
+      return value === "ko" || value === "ja" ? value : "en";
+    }
+
+    let locale = normalizeLocale(window.__YTM_TUI_LOCALE__);
     const copyByLocale = { ko: {
       now: "현재 재생", queue: "대기열", more: "더보기", moreControls: "추가 제어", stream: "자동 재생", tune: "재생 설정",
       music: "음악", radio: "라디오", refresh: "상태 새로고침", hide: "미니플레이어 숨기기",
@@ -49,6 +53,23 @@
       updated: "변경 사항이 적용되었습니다",
       focused: "집중", balanced: "균형", discovery: "발견", djGem: "DJ Gem",
       pinned: "미니플레이어 고정됨", unpinned: "미니플레이어 고정 해제됨", back: "뒤로",
+    }, ja: {
+      now: "再生中", queue: "キュー", more: "その他", moreControls: "その他の操作", stream: "自動再生", tune: "再生設定",
+      music: "音楽", radio: "ラジオ", refresh: "状態を更新", hide: "ミニプレイヤーを隠す",
+      pin: "プレイヤーを固定", unpin: "プレイヤーの固定を解除", previous: "前の曲", next: "次の曲",
+      play: "再生", pause: "一時停止", shuffle: "シャッフル", repeat: "リピート", autoplay: "自動再生",
+      position: "再生位置", volume: "音量", positionShort: "位置", volumeShort: "音量", skinShort: "スキン", unavailable: "利用不可", live: "ライブ配信",
+      of: "/", by: "アーティスト", on: "オン", off: "オフ", streaming: "自動再生", mode: "モード", source: "ソース",
+      radioMode: "ラジオモード", tuiOnly: "(TUI専用)", speed: "速度", seekStep: "シーク幅",
+      normalize: "音量正規化", gapless: "ギャップレス再生", theme: "スキン",
+      start: "開始", startNew: "新しいプレイヤーを開始", resume: "再開", resumePrevious: "前回のセッションを再開",
+      stop: "停止", openTui: "TUIを開く", playerPages: "ミニプレイヤーのページ",
+      playbackMode: "再生モード", playbackControls: "再生コントロール", autoplayMode: "自動再生モード", playerSkin: "プレイヤースキン",
+      queueEmpty: "キューは空です", remove: "削除", confirmRemove: "削除を確認", removing: "削除中",
+      applying: "変更を適用中", commandTimeout: "コマンドの応答が遅延しています。もう一度お試しください。",
+      updated: "変更を適用しました",
+      focused: "集中", balanced: "バランス", discovery: "発見", djGem: "DJ Gem",
+      pinned: "ミニプレイヤーを固定しました", unpinned: "ミニプレイヤーの固定を解除しました", back: "戻る",
     }, en: {
       now: "Now", queue: "Queue", more: "More", moreControls: "More controls", stream: "Autoplay", tune: "Playback",
       music: "Music", radio: "Radio", refresh: "Refresh status", hide: "Hide mini player",
@@ -74,6 +95,11 @@
     }
 
     function setIconOnly(element, name) {
+      if (element.dataset.iconName === name
+          && element.firstElementChild?.tagName?.toLowerCase() === "svg") {
+        return;
+      }
+      element.dataset.iconName = name;
       element.innerHTML = iconMarkup(name);
     }
 
@@ -123,7 +149,7 @@
     }
 
     function setLocale(nextLocale) {
-      const normalized = nextLocale === "ko" ? "ko" : "en";
+      const normalized = normalizeLocale(nextLocale);
       if (normalized === locale) return;
       locale = normalized;
       copy = copyByLocale[locale];
@@ -132,7 +158,7 @@
       // Queue rows carry localized titles and accessible names. Force their
       // semantic markup to refresh even when the authoritative queue revision
       // itself has not changed.
-      lastQueueKey = null;
+      lastQueueState = null;
     }
 
     localizeStatic();
@@ -516,13 +542,17 @@
           entry.fill.style.width = "100%";
           entry.knob.style.left = "0%";
           if (entry.elapsed) entry.elapsed.textContent = copy.live;
-          if (entry.total) entry.total.innerHTML = '<span class="live-tag">LIVE</span>';
+          if (entry.total && !entry.total.querySelector(".live-tag")) {
+            entry.total.innerHTML = '<span class="live-tag">LIVE</span>';
+          }
+          clearBarPreview(entry.bar);
           entry.bar.setAttribute("aria-valuemin", "0");
           entry.bar.setAttribute("aria-valuemax", "0");
           entry.bar.setAttribute("aria-valuenow", "0");
           entry.bar.setAttribute("aria-valuetext", copy.live);
           continue;
         }
+        if (!prog.canSeek) clearBarPreview(entry.bar);
         entry.fill.style.width = pct + "%";
         entry.knob.style.left = pct + "%";
         const elapsedValue = elapsed == null ? 0 : Math.round(elapsed);
@@ -541,6 +571,27 @@
       }
     }
 
+    let progressTimer = null;
+
+    function syncProgressTimer() {
+      const shouldTick = prog.playing && !prog.live && !prog.dragging && !document.hidden;
+      if (shouldTick && progressTimer == null) {
+        progressTimer = setInterval(renderProgress, 250);
+      } else if (!shouldTick && progressTimer != null) {
+        clearInterval(progressTimer);
+        progressTimer = null;
+      }
+    }
+
+    function syncDocumentVisibility() {
+      document.documentElement.classList.toggle("page-hidden", Boolean(document.hidden));
+      syncProgressTimer();
+      if (!document.hidden && prog.playing) renderProgress();
+    }
+
+    document.addEventListener("visibilitychange", syncDocumentVisibility);
+    syncDocumentVisibility();
+
     function syncProgress(payload) {
       const identityChanged = prog.trackIdentity !== payload.trackIdentity;
       if (identityChanged || !payload.connected) {
@@ -549,7 +600,10 @@
         document.querySelectorAll(".bar.dragging").forEach(bar => bar.classList.remove("dragging"));
       }
       prog.trackIdentity = payload.trackIdentity;
-      if ((!identityChanged && performance.now() < prog.holdUntil) || prog.dragging) return;
+      if ((!identityChanged && performance.now() < prog.holdUntil) || prog.dragging) {
+        syncProgressTimer();
+        return;
+      }
       prog.anchorMs = payload.elapsedMs;
       prog.anchorAt = performance.now();
       prog.playing = payload.connected && !payload.paused && payload.elapsedMs != null;
@@ -558,14 +612,22 @@
       prog.live = payload.connected && payload.isLive === true;
       prog.canSeek = payload.canSeek;
       renderProgress();
+      syncProgressTimer();
     }
-
-    setInterval(renderProgress, 250);
 
     function barFraction(bar, clientX) {
       const rect = bar.getBoundingClientRect();
       if (rect.width <= 0) return 0;
       return Math.min(1, Math.max(0, (clientX - rect.left) / rect.width));
+    }
+
+    function setBarPreview(bar, text, fraction) {
+      bar.dataset.preview = text;
+      bar.style.setProperty("--preview-x", (fraction * 100).toFixed(1) + "%");
+    }
+
+    function clearBarPreview(bar) {
+      if (bar.hasAttribute("data-preview")) bar.removeAttribute("data-preview");
     }
 
     function bindSeekBar(entry) {
@@ -575,31 +637,48 @@
         prog.dragging = true;
         bar.classList.add("dragging");
         bar.setPointerCapture(event.pointerId);
-        prog.anchorMs = barFraction(bar, event.clientX) * prog.durationMs;
+        const fraction = barFraction(bar, event.clientX);
+        prog.anchorMs = fraction * prog.durationMs;
+        setBarPreview(bar, fmtTime(prog.anchorMs), fraction);
+        syncProgressTimer();
         renderProgress();
       });
 
       bar.addEventListener("pointermove", event => {
+        if (!prog.canSeek || prog.live || prog.durationMs == null) {
+          clearBarPreview(bar);
+          return;
+        }
+        const fraction = barFraction(bar, event.clientX);
+        const previewMs = fraction * prog.durationMs;
+        setBarPreview(bar, fmtTime(previewMs), fraction);
         if (!prog.dragging) return;
-        prog.anchorMs = barFraction(bar, event.clientX) * prog.durationMs;
+        prog.anchorMs = previewMs;
         renderProgress();
+      });
+
+      bar.addEventListener("pointerleave", () => {
+        if (!prog.dragging) clearBarPreview(bar);
       });
 
       bar.addEventListener("pointerup", event => {
         if (!prog.dragging) return;
         prog.dragging = false;
         bar.classList.remove("dragging");
+        clearBarPreview(bar);
         const target = Math.round(barFraction(bar, event.clientX) * prog.durationMs);
         prog.anchorMs = target;
         prog.anchorAt = performance.now();
         prog.holdUntil = performance.now() + 1500;
         send("seek_to", target);
+        syncProgressTimer();
         renderProgress();
       });
 
       bar.addEventListener("pointercancel", () => {
         prog.dragging = false;
         bar.classList.remove("dragging");
+        clearBarPreview(bar);
         prog.holdUntil = 0;
         syncProgress(currentPayload);
       });
@@ -721,17 +800,30 @@
         vol.dragging = true;
         bar.classList.add("dragging");
         bar.setPointerCapture(event.pointerId);
-        setVolumeLocal(barFraction(bar, event.clientX) * 100);
+        const fraction = barFraction(bar, event.clientX);
+        if (entry.knob) setBarPreview(bar, Math.round(fraction * 100) + "%", fraction);
+        setVolumeLocal(fraction * 100);
       });
 
       bar.addEventListener("pointermove", event => {
+        if (!vol.canVolume) {
+          clearBarPreview(bar);
+          return;
+        }
+        const fraction = barFraction(bar, event.clientX);
+        if (entry.knob) setBarPreview(bar, Math.round(fraction * 100) + "%", fraction);
         if (!vol.dragging) return;
-        setVolumeLocal(barFraction(bar, event.clientX) * 100);
+        setVolumeLocal(fraction * 100);
+      });
+
+      bar.addEventListener("pointerleave", () => {
+        if (!vol.dragging) clearBarPreview(bar);
       });
 
       const endVolumeDrag = () => {
         vol.dragging = false;
         bar.classList.remove("dragging");
+        clearBarPreview(bar);
         flushVolumeSend();
       };
 
@@ -1097,18 +1189,59 @@
       });
     }
 
+    function setQueueRowCurrent(index, isCurrent) {
+      if (index < 0) return true;
+      const button = document.getElementById(`queue-play-${index}`);
+      const row = button?.closest(".queue-item");
+      const number = button?.querySelector(".queue-number");
+      if (!button || !row || !number) return false;
+      row.classList.toggle("current", isCurrent);
+      if (isCurrent) {
+        button.setAttribute("aria-current", "true");
+        number.innerHTML = iconMarkup("play");
+      } else {
+        button.removeAttribute("aria-current");
+        number.textContent = String(index + 1);
+      }
+      return true;
+    }
+
     function renderQueue(payload) {
       els.queueSummary.textContent = payload.queueLabel;
-      // Skip the innerHTML rebuild unless the queue actually changed — rebuilding on
-      // every 2s poll ate in-flight clicks and thrashed layout on large queues.
-      const queueKey = JSON.stringify([payload.queueRev, payload.canManageQueue, payload.queue]);
-      if (queueKey === lastQueueKey) return;
+      // Track queue structure separately from the active cursor so advancing tracks within the
+      // same queueRev updates only the previous and next rows in-place (preserving focus and
+      // avoiding full-list JSON serialization / innerHTML rebuilds on every poll).
+      const currentIndex = payload.queue.findIndex(item => item.current);
+      const hasRev = payload.queueRev != null;
+      const legacyKey = hasRev ? null : JSON.stringify(payload.queue);
+      const sameStructure = lastQueueState != null
+        && lastQueueState.locale === locale
+        && lastQueueState.canManage === payload.canManageQueue
+        && lastQueueState.length === payload.queue.length
+        && (hasRev
+          ? lastQueueState.rev === payload.queueRev
+          : lastQueueState.rev == null && lastQueueState.legacyKey === legacyKey);
+      if (sameStructure) {
+        if (lastQueueState.currentIndex === currentIndex) return;
+        if (setQueueRowCurrent(lastQueueState.currentIndex, false)
+            && setQueueRowCurrent(currentIndex, true)) {
+          lastQueueState.currentIndex = currentIndex;
+          return;
+        }
+      }
       const active = document.activeElement?.closest("[data-position]");
       const restore = active && els.queueList.contains(active)
         ? { action: active.dataset.action, position: Number(active.dataset.position) }
         : null;
       clearRemoveConfirmation();
-      lastQueueKey = queueKey;
+      lastQueueState = {
+        rev: payload.queueRev ?? null,
+        length: payload.queue.length,
+        canManage: payload.canManageQueue,
+        locale,
+        currentIndex,
+        legacyKey,
+      };
 
       if (!payload.queue.length) {
         els.queueList.innerHTML = `<div class="empty"><span class="kaomoji">=^..^=</span><span>${escapeHtml(copy.queueEmpty)}</span></div>`;

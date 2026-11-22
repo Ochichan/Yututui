@@ -879,6 +879,33 @@ fn panel_html_renders_english_and_korean_locales() {
     assert!(korean.contains(r#""stateLabel":"재생 중""#));
     assert!(korean.contains(r#""repeatLabel":"전체""#));
     assert!(korean.contains(r#"window.__YTM_TUI_LOCALE__ = "ko";"#));
+
+    let japanese = html_with_language(
+        &playing_update(),
+        PanelTheme::Default,
+        None,
+        false,
+        false,
+        None,
+        Language::Japanese,
+    );
+    assert!(japanese.contains(r#"<html lang="ja""#));
+    assert!(japanese.contains(r#""stateLabel":"再生中""#));
+    assert!(japanese.contains(r#""repeatLabel":"すべて""#));
+    assert!(japanese.contains(r#"window.__YTM_TUI_LOCALE__ = "ja";"#));
+}
+
+#[test]
+fn panel_html_gates_progress_timer_and_patches_current_queue_row_in_place() {
+    assert!(PANEL_HTML.contains("function syncProgressTimer()"));
+    assert!(PANEL_HTML.contains("visibilitychange"));
+    assert!(PANEL_HTML.contains("html.page-hidden"));
+    assert!(PANEL_HTML.contains("function setQueueRowCurrent(index, isCurrent)"));
+    assert!(
+        !PANEL_HTML
+            .contains("JSON.stringify([payload.queueRev, payload.canManageQueue, payload.queue])")
+    );
+    assert!(PANEL_HTML.contains(".bar[data-preview]::after"));
 }
 
 #[test]
