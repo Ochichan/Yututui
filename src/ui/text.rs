@@ -3,8 +3,38 @@
 //! characters (Korean, Japanese, Chinese). These measure with `unicode-width` instead, so columns
 //! line up flush in every UI language.
 
+use std::borrow::Cow;
+
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+
+/// Static pool of spaces for zero-allocation padding across typical terminal widths.
+const SPACES_POOL: &str = "                                                                                                                                                                                                                                                                ";
+
+/// Return a string of `n` ASCII spaces, borrowing from a static pool whenever `n <= 256`.
+pub fn spaces(n: usize) -> Cow<'static, str> {
+    if n <= SPACES_POOL.len() {
+        Cow::Borrowed(&SPACES_POOL[..n])
+    } else {
+        Cow::Owned(" ".repeat(n))
+    }
+}
+
+/// Borrow the longest prefix of `s` whose display width is at most `max` cells, returning
+/// `(prefix, display_width)` without allocating. Never splits a wide character.
+pub fn truncate_str_to_width(s: &str, max: usize) -> (&str, usize) {
+    let mut w = 0usize;
+    let mut end = 0usize;
+    for (idx, ch) in s.char_indices() {
+        let cw = UnicodeWidthChar::width(ch).unwrap_or(0);
+        if w + cw > max {
+            return (&s[..end], w);
+        }
+        w += cw;
+        end = idx + ch.len_utf8();
+    }
+    (s, w)
+}
 
 /// The visible slices around an editable field's caret. The caret itself is rendered by the
 /// caller so it can keep the surface's existing style and blink animation.

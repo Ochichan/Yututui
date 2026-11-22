@@ -77,12 +77,12 @@ impl App {
                 .as_ref()
                 .map_or(0, |cache| cache.rows.len());
         }
-        let key = self.library_rows_key(tab);
         if let Some(cache) = self.library_rows_cache.borrow().as_ref()
-            && cache.key == key
+            && self.library_rows_key_matches(&cache.key, tab)
         {
             return cache.slots.len();
         }
+        let key = self.library_rows_key(tab);
         // Cache miss: build + store the slots exactly as `library_rows` would (so a following
         // `library_rows` call in the same frame hits the cache), and return the slot count.
         let slots = self.build_library_slots(tab);
@@ -306,6 +306,20 @@ impl App {
             .and_then(|key| self.playlists.find(key))
             .map(|p| p.songs.iter().collect())
             .unwrap_or_default()
+    }
+
+    fn library_rows_key_matches(&self, key: &RowsKey, tab: LibraryTab) -> bool {
+        key.library_rev == self.library.rev
+            && key.downloaded_rev == self.library_ui.downloaded_rev
+            && key.romanize_rev == self.romanization.cache.rev()
+            && key.fav_len == self.library.favorites.len()
+            && key.hist_len == self.library.history.len()
+            && key.radio_fav_len == self.library.radio_favorites.len()
+            && key.radios_len == self.library.radios.len()
+            && key.down_len == self.library_ui.downloaded.len()
+            && key.tab == tab
+            && key.filter == self.library_ui.filter_query
+            && key.romanized_on == self.config.effective_romanized_titles()
     }
 
     fn library_rows_key(&self, tab: LibraryTab) -> RowsKey {

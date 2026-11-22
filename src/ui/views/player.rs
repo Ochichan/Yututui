@@ -208,23 +208,34 @@ pub(in crate::ui) fn render_queue_popup(frame: &mut Frame, app: &App, area: Rect
         } else {
             app.theme.style(R::TextMuted)
         };
-        let mut spans = vec![ratatui::text::Span::styled(prefix, muted)];
-        spans.extend(crate::ui::track_row::spans(
-            &title,
-            &artist,
-            &song.duration,
-            row_w,
-            None,
-            Style::default(),
-            muted,
-        ));
         let row = Rect {
             x: list.x,
             y,
             width: list.width,
             height: 1,
         };
-        frame.render_widget(Paragraph::new(Line::from(spans).style(base)), row);
+        let buf = frame.buffer_mut();
+        buf.set_style(row, base);
+        let (x, _) = buf.set_stringn(
+            row.x,
+            y,
+            prefix.as_str(),
+            usize::from(row.width),
+            base.patch(muted),
+        );
+        let rem = usize::from(row.right().saturating_sub(x));
+        crate::ui::track_row::render_to_buf(
+            buf,
+            x,
+            y,
+            row_w.min(rem),
+            title.as_ref(),
+            artist.as_ref(),
+            &song.duration,
+            None,
+            base,
+            muted,
+        );
 
         let actions_w = queue_actions::render(frame, app, row, i, &song.video_id, selected);
 

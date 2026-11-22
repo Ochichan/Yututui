@@ -211,6 +211,19 @@ fn render_rows(frame: &mut Frame, app: &App, dialog: &ListeningDialog, area: Rec
     let start = dialog
         .selected
         .saturating_sub(usize::from(area.height).saturating_sub(1));
+    // Precompute conflict flags once across all rows instead of scanning per visible row.
+    let mut conflicts = vec![false; dialog.rows.len()];
+    for i in 0..dialog.rows.len() {
+        if conflicts[i] {
+            continue;
+        }
+        for j in (i + 1)..dialog.rows.len() {
+            if dialog.rows[i].same_record(&dialog.rows[j]) {
+                conflicts[i] = true;
+                conflicts[j] = true;
+            }
+        }
+    }
     for (line, (index, row)) in dialog
         .rows
         .iter()
@@ -221,12 +234,7 @@ fn render_rows(frame: &mut Frame, app: &App, dialog: &ListeningDialog, area: Rec
     {
         let rect = Rect::new(area.x, area.y + line as u16, area.width, 1);
         let selected = index == dialog.selected;
-        let conflict = dialog
-            .rows
-            .iter()
-            .filter(|candidate| row.same_record(candidate))
-            .count()
-            > 1;
+        let conflict = conflicts[index];
         let label = format!(
             "{} {}{}",
             if selected { ">" } else { " " },

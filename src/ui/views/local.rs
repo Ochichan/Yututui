@@ -259,33 +259,31 @@ fn render_details(frame: &mut Frame, app: &App, local_rows: &LocalRowsSnapshot, 
     if area.height == 0 || area.width == 0 {
         return;
     }
-    let width = area.width as usize;
-    for (i, line) in app
-        .local_details_lines_for_snapshot(local_rows)
-        .into_iter()
-        .take(area.height as usize)
-        .enumerate()
-    {
+    let max_w = usize::from(area.width.saturating_sub(1));
+    let accent = app.theme.style(R::Accent).add_modifier(Modifier::BOLD);
+    let muted = app.theme.style(R::TextMuted);
+    let now_label = t!("Now playing", "재생 중", "再生中");
+    let next_label = t!("Up next", "다음 곡", "次の再生");
+    let lines = app.local_details_lines_for_snapshot(local_rows);
+    let buf = frame.buffer_mut();
+    for (i, line) in lines.iter().take(area.height as usize).enumerate() {
         let style = if line.is_empty() {
-            app.theme.style(R::TextMuted)
-        } else if i == 0
-            || line == t!("Now playing", "재생 중", "再生中")
-            || line == t!("Up next", "다음 곡", "次の再生")
-        {
-            app.theme.style(R::Accent).add_modifier(Modifier::BOLD)
+            muted
+        } else if i == 0 || line == now_label || line == next_label {
+            accent
         } else {
-            app.theme.style(R::TextMuted)
+            muted
         };
-        let text = crate::ui::text::truncate_owned_to_width(line, width.saturating_sub(1));
-        frame.render_widget(
-            Paragraph::new(Line::from(text).style(style)),
-            Rect {
-                x: area.x,
-                y: area.y + i as u16,
-                width: area.width,
-                height: 1,
-            },
-        );
+        let row = Rect {
+            x: area.x,
+            y: area.y + i as u16,
+            width: area.width,
+            height: 1,
+        };
+        let (clipped, _) = crate::ui::text::truncate_str_to_width(line, max_w);
+        if !clipped.is_empty() {
+            buf.set_stringn(row.x, row.y, clipped, max_w, style);
+        }
     }
 }
 
@@ -345,7 +343,11 @@ fn render_sidebar(frame: &mut Frame, app: &App, area: Rect) {
     if area.height == 0 || area.width == 0 {
         return;
     }
-    let width = area.width as usize;
+    const KEYS: [&str; 10] = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "0"];
+    let row_w = area.width.saturating_sub(1);
+    let max_w = usize::from(row_w);
+    let sel_style = crate::ui::selection_highlight(app);
+    let muted_style = app.theme.style(R::TextMuted);
     for (i, section) in LocalSection::ALL
         .iter()
         .enumerate()
@@ -354,28 +356,46 @@ fn render_sidebar(frame: &mut Frame, app: &App, area: Rect) {
         let y = area.y + i as u16;
         let selected = *section == app.local_mode.ui.section;
         let marker = if selected { "> " } else { "  " };
-        let key = if i == 9 {
-            "0".to_owned()
-        } else {
-            (i + 1).to_string()
-        };
-        let label = format!("{key} {}", section.label());
-        let text = crate::ui::text::ellipsize_owned_to_width(
-            format!("{marker}{label}"),
-            width.saturating_sub(1),
-        );
-        let style = if selected {
-            crate::ui::selection_highlight(app)
-        } else {
-            app.theme.style(R::TextMuted)
-        };
+        let key = KEYS.get(i).copied().unwrap_or("0");
+        let label = section.label();
+        let style = if selected { sel_style } else { muted_style };
         let row = Rect {
             x: area.x,
             y,
-            width: area.width.saturating_sub(1),
+            width: row_w,
             height: 1,
         };
-        frame.render_widget(Paragraph::new(Line::from(text).style(style)), row);
+        let buf = frame.buffer_mut();
+        if max_w > 0 {
+            let prefix_w = 4usize; // marker (2) + key (1) + space (1)
+            let label_w = unicode_width::UnicodeWidthStr::width(label);
+            let mut x = row.x;
+            let (m_str, _) = crate::ui::text::truncate_str_to_width(marker, max_w);
+            let (nx, _) = buf.set_stringn(x, y, m_str, max_w, style);
+            x = nx;
+            let rem = usize::from(row.right().saturating_sub(x));
+            if rem > 0 {
+                let (nx, _) = buf.set_stringn(x, y, key, rem, style);
+                x = nx;
+            }
+            let rem = usize::from(row.right().saturating_sub(x));
+            if rem > 0 {
+                let (nx, _) = buf.set_stringn(x, y, " ", rem, style);
+                x = nx;
+            }
+            let rem = usize::from(row.right().saturating_sub(x));
+            if rem > 0 {
+                if prefix_w + label_w <= max_w {
+                    buf.set_stringn(x, y, label, rem, style);
+                } else if rem == 1 {
+                    buf.set_stringn(x, y, "…", 1, style);
+                } else {
+                    let (head, _) = crate::ui::text::truncate_str_to_width(label, rem - 1);
+                    let (nx, _) = buf.set_stringn(x, y, head, rem - 1, style);
+                    buf.set_stringn(nx, y, "…", 1, style);
+                }
+            }
+        }
         app.register_mouse_button(row, MouseTarget::LocalNav(i));
     }
 }
@@ -399,6 +419,12 @@ fn render_rows(frame: &mut Frame, app: &App, local_rows: &LocalRowsSnapshot, are
             .library_scroll
             .resolve(cursor, area.height, len, crate::ui::scroll::SCROLLOFF);
     let row_width = area.width.saturating_sub(1);
+    let sel_style = crate::ui::selection_highlight(app);
+    let primary_style = app.theme.style(R::TextPrimary);
+    let error_style = app.theme.style(R::Error);
+    let sel_del_style = ratatui::style::Style::default()
+        .fg(app.theme.color(R::SelectionFg))
+        .bg(app.theme.color(R::SelectionBg));
 
     for (vis, (i, song)) in rows
         .iter()
@@ -412,38 +438,52 @@ fn render_rows(frame: &mut Frame, app: &App, local_rows: &LocalRowsSnapshot, are
         let deletable = app.local_import_record_deletable_at(local_rows, i);
         let delete_width = if deletable { 2 } else { 0 };
         let body_w = row_width.saturating_sub(delete_width) as usize;
+        let max_w = body_w.saturating_sub(1);
         let marker = if selected { "> " } else { "  " };
         let text = app.local_row_text_at(local_rows, i);
-        let body = if selected {
-            let mut body = crate::ui::anim::selected_marquee(
-                app,
-                ScrollSurface::Library,
-                i,
-                text.as_ref(),
-                body_w.saturating_sub(3),
-            );
-            body.reserve(marker.len());
-            body.insert_str(0, marker);
-            crate::ui::text::truncate_owned_to_width(body, body_w.saturating_sub(1))
-        } else {
-            let mut body = String::with_capacity(marker.len().saturating_add(text.len()));
-            body.push_str(marker);
-            body.push_str(text.as_ref());
-            // A clipped row ends in `…`; the cursor row's marquee shows the rest.
-            crate::ui::text::ellipsize_owned_to_width(body, body_w.saturating_sub(1))
-        };
-        let style = if selected {
-            crate::ui::selection_highlight(app)
-        } else {
-            app.theme.style(R::TextPrimary)
-        };
+        let style = if selected { sel_style } else { primary_style };
         let row = Rect {
             x: area.x,
             y,
             width: row_width,
             height: 1,
         };
-        frame.render_widget(Paragraph::new(Line::from(body).style(style)), row);
+        let buf = frame.buffer_mut();
+        if max_w > 0 {
+            if selected {
+                let marquee = crate::ui::anim::selected_marquee(
+                    app,
+                    ScrollSurface::Library,
+                    i,
+                    text.as_ref(),
+                    body_w.saturating_sub(3),
+                );
+                let (m_str, m_w) = crate::ui::text::truncate_str_to_width(marker, max_w);
+                let (nx, _) = buf.set_stringn(row.x, y, m_str, max_w, style);
+                let rem = max_w.saturating_sub(m_w);
+                if rem > 0 {
+                    let (head, _) = crate::ui::text::truncate_str_to_width(&marquee, rem);
+                    buf.set_stringn(nx, y, head, rem, style);
+                }
+            } else {
+                let text_ref = text.as_ref();
+                let full_w = 2 + unicode_width::UnicodeWidthStr::width(text_ref);
+                if full_w <= max_w {
+                    let (nx, _) = buf.set_stringn(row.x, y, marker, max_w, style);
+                    buf.set_stringn(nx, y, text_ref, max_w.saturating_sub(2), style);
+                } else if max_w == 1 {
+                    buf.set_stringn(row.x, y, "…", 1, style);
+                } else if max_w == 2 {
+                    buf.set_stringn(row.x, y, " …", 2, style);
+                } else {
+                    let (nx, _) = buf.set_stringn(row.x, y, marker, 2, style);
+                    let rem = max_w - 2;
+                    let (head, _) = crate::ui::text::truncate_str_to_width(text_ref, rem - 1);
+                    let (nx, _) = buf.set_stringn(nx, y, head, rem - 1, style);
+                    buf.set_stringn(nx, y, "…", 1, style);
+                }
+            }
+        }
         let body_rect = Rect {
             width: row.width.saturating_sub(delete_width),
             ..row
@@ -456,16 +496,11 @@ fn render_rows(frame: &mut Frame, app: &App, local_rows: &LocalRowsSnapshot, are
                 ..row
             };
             // Same as the Library list: red on the selection background is nearly invisible.
-            let mut delete_style = app.theme.style(R::Error);
-            if selected {
-                delete_style = ratatui::style::Style::default()
-                    .fg(app.theme.color(R::SelectionFg))
-                    .bg(app.theme.color(R::SelectionBg));
+            let delete_style = if selected { sel_del_style } else { error_style };
+            let buf = frame.buffer_mut();
+            if let Some(cell) = buf.cell_mut((delete_rect.x, y)) {
+                cell.set_symbol("✗").set_style(delete_style);
             }
-            frame.render_widget(
-                Paragraph::new(Line::from("✗").style(delete_style)),
-                delete_rect,
-            );
             if let crate::local::LocalRowId::ImportSession(session_id) = song {
                 app.register_mouse_button(
                     delete_rect,

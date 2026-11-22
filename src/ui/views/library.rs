@@ -101,17 +101,23 @@ fn render_tabs(frame: &mut Frame, app: &App, area: Rect) {
     } else {
         tabs[0]
     };
+    let counts: Vec<usize> = tabs
+        .iter()
+        .copied()
+        .map(|t| app.library_count_for(t))
+        .collect();
     let full_width: u16 = tabs
         .iter()
         .copied()
+        .zip(counts.iter().copied())
         .enumerate()
-        .map(|(i, t)| {
-            let label = format!(" {} ({}) ", t.label(), app.library_count_for(t));
+        .map(|(i, (t, count))| {
+            let label = format!(" {} ({count}) ", t.label());
             buttons::text_width(&label).saturating_add((i > 0) as u16 * 2)
         })
         .sum();
     let compact = full_width > area.width;
-    for (i, t) in tabs.iter().copied().enumerate() {
+    for (i, (t, count)) in tabs.iter().copied().zip(counts).enumerate() {
         if i > 0 {
             spans.push(Span::raw("  "));
             x = x.saturating_add(2);
@@ -121,7 +127,7 @@ fn render_tabs(frame: &mut Frame, app: &App, area: Rect) {
         } else {
             t.label()
         };
-        let label = format!(" {} ({}) ", tab_label, app.library_count_for(t));
+        let label = format!(" {tab_label} ({count}) ");
         let w = buttons::text_width(&label);
         let area_right = area.x.saturating_add(area.width);
         if x < area_right {
@@ -375,16 +381,8 @@ fn render_list(
         } else {
             app.theme.style(R::TextMuted)
         };
-        let mut body = vec![Span::raw(marker), Span::raw(heart)];
-        body.extend(crate::ui::track_row::spans(
-            &app.display_title(song),
-            &app.display_artist(song),
-            &song.duration,
-            row_w,
-            marquee,
-            Style::default(),
-            muted,
-        ));
+        let title = app.display_title(song);
+        let artist = app.display_artist(song);
         // Rows cascade in top-to-bottom right after a tab/view switch (identity when off).
         let base = crate::ui::anim::stagger_style(app, crate::app::Mode::Library, vis, base);
         let row = Rect {
@@ -393,7 +391,23 @@ fn render_list(
             width: area.width,
             height: 1,
         };
-        frame.render_widget(Paragraph::new(Line::from(body).style(base)), row);
+        let buf = frame.buffer_mut();
+        let (x, _) = buf.set_stringn(row.x, y, marker, usize::from(row.width), base);
+        let rem = usize::from(row.right().saturating_sub(x));
+        let (x, _) = buf.set_stringn(x, y, heart, rem, base);
+        let rem = usize::from(row.right().saturating_sub(x));
+        crate::ui::track_row::render_to_buf(
+            buf,
+            x,
+            y,
+            row_w.min(rem),
+            title.as_ref(),
+            artist.as_ref(),
+            &song.duration,
+            marquee.as_deref(),
+            base,
+            muted,
+        );
 
         // The row body selects (single-click) / plays (double-click).
         let body_rect = Rect {
@@ -421,7 +435,10 @@ fn render_list(
                     .fg(app.theme.color(R::SelectionFg))
                     .bg(app.theme.color(R::SelectionBg));
             }
-            frame.render_widget(Paragraph::new(Line::from("✗").style(del_style)), del_rect);
+            let buf = frame.buffer_mut();
+            if let Some(cell) = buf.cell_mut((del_x, y)) {
+                cell.set_symbol("✗").set_style(del_style);
+            }
             app.register_mouse_button(del_rect, MouseTarget::LibraryDel(i));
         }
     }

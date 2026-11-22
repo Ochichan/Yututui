@@ -6,7 +6,7 @@ use ratatui::style::Style;
 use ratatui::text::Span;
 use unicode_width::UnicodeWidthStr;
 
-use crate::ui::text::{pad_to_width, truncate_to_width};
+use crate::ui::text::{pad_to_width, spaces, truncate_str_to_width, truncate_to_width};
 
 /// Separator between the title and the artist.
 pub const ARTIST_SEPARATOR: &str = " — ";
@@ -39,10 +39,225 @@ fn duration_column(duration: &str, width: usize) -> usize {
     if width < column + MIN_BODY { 0 } else { column }
 }
 
+/// Render one track-row body directly into `buf` at `(x, y)` filling `width` cells without
+/// allocating a `Vec<Span>` or intermediate `String`s on the common non-marquee path.
+/// Caller should have already filled the row background with `base`.
+#[allow(clippy::too_many_arguments)]
+pub fn render_to_buf(
+    buf: &mut ratatui::buffer::Buffer,
+    mut x: u16,
+    y: u16,
+    width: usize,
+    title: &str,
+    artist: &str,
+    duration: &str,
+    marquee: Option<&str>,
+    base: Style,
+    muted: Style,
+) {
+    let muted_style = base.patch(muted);
+    let column = duration_column(duration, width);
+    let body = width.saturating_sub(column);
+    let start_x = x;
+    let put = |buf: &mut ratatui::buffer::Buffer,
+               cx: &mut u16,
+               s: &str,
+               max_cells: usize,
+               style: Style| {
+        if !s.is_empty() && max_cells > 0 {
+            let (nx, _) = buf.set_stringn(*cx, y, s, max_cells, style);
+            *cx = nx;
+        }
+    };
+    match marquee {
+        Some(text) => {
+            let (head, head_w) = truncate_str_to_width(text, body);
+            put(buf, &mut x, head, body, base);
+            let pad = body.saturating_sub(head_w);
+            if pad > 0 {
+                put(buf, &mut x, spaces(pad).as_ref(), pad, base);
+            }
+        }
+        None => {
+            let title_w = UnicodeWidthStr::width(title);
+            let sep_w = if artist.is_empty() {
+                0
+            } else {
+                UnicodeWidthStr::width(ARTIST_SEPARATOR)
+            };
+            let artist_w = if artist.is_empty() {
+                0
+            } else {
+                UnicodeWidthStr::width(artist)
+            };
+            let full_w = title_w + sep_w + artist_w;
+            let used = if full_w <= body {
+                put(buf, &mut x, title, title_w, base);
+                if !artist.is_empty() {
+                    put(buf, &mut x, ARTIST_SEPARATOR, sep_w, muted_style);
+                    put(buf, &mut x, artist, artist_w, muted_style);
+                }
+                full_w
+            } else if body == 0 {
+                0
+            } else {
+                let budget = body - 1;
+                if title_w > budget {
+                    let (head, head_w) = truncate_str_to_width(title, budget);
+                    let ellipsis_style = if head.len() + '…'.len_utf8() <= title.len() {
+                        base
+                    } else {
+                        muted_style
+                    };
+                    put(buf, &mut x, head, head_w, base);
+                    put(buf, &mut x, "…", 1, ellipsis_style);
+                    head_w + 1
+                } else {
+                    put(buf, &mut x, title, title_w, base);
+                    let rem = budget - title_w;
+                    let used_after_title = if !artist.is_empty() && rem > 0 {
+                        if sep_w > rem {
+                            let (sep_part, sep_part_w) =
+                                truncate_str_to_width(ARTIST_SEPARATOR, rem);
+                            put(buf, &mut x, sep_part, sep_part_w, muted_style);
+                            sep_part_w
+                        } else {
+                            put(buf, &mut x, ARTIST_SEPARATOR, sep_w, muted_style);
+                            let (art_part, art_part_w) = truncate_str_to_width(artist, rem - sep_w);
+                            put(buf, &mut x, art_part, art_part_w, muted_style);
+                            sep_w + art_part_w
+                        }
+                    } else {
+                        0
+                    };
+                    put(buf, &mut x, "…", 1, muted_style);
+                    title_w + used_after_title + 1
+                }
+            };
+            let pad = body.saturating_sub(used);
+            if pad > 0 {
+                put(buf, &mut x, spaces(pad).as_ref(), pad, base);
+            }
+        }
+    }
+    if column > 0 {
+        // Align duration flush to `start_x + body` even if wide glyphs stopped short.
+        let mut dur_x = start_x.saturating_add(body as u16);
+        put(
+            buf,
+            &mut dur_x,
+            spaces(DURATION_GAP).as_ref(),
+            DURATION_GAP,
+            muted_style,
+        );
+        put(
+            buf,
+            &mut dur_x,
+            duration,
+            column.saturating_sub(DURATION_GAP),
+            muted_style,
+        );
+    }
+}
+
+/// Push spans filling exactly `width` cells into `out`, borrowing `title`, `artist`, and
+/// `duration` directly so non-marquee rows perform zero heap allocations.
+#[allow(clippy::too_many_arguments)]
+pub fn push_spans<'a>(
+    out: &mut Vec<Span<'a>>,
+    title: &'a str,
+    artist: &'a str,
+    duration: &'a str,
+    width: usize,
+    marquee: Option<String>,
+    title_style: Style,
+    muted: Style,
+) {
+    let column = duration_column(duration, width);
+    let body = width.saturating_sub(column);
+    match marquee {
+        Some(text) => out.push(Span::styled(
+            pad_to_width(&truncate_to_width(&text, body), body),
+            title_style,
+        )),
+        None => {
+            let title_w = UnicodeWidthStr::width(title);
+            let sep_w = if artist.is_empty() {
+                0
+            } else {
+                UnicodeWidthStr::width(ARTIST_SEPARATOR)
+            };
+            let artist_w = if artist.is_empty() {
+                0
+            } else {
+                UnicodeWidthStr::width(artist)
+            };
+            let full_w = title_w + sep_w + artist_w;
+            let used = if full_w <= body {
+                out.push(Span::styled(title, title_style));
+                if !artist.is_empty() {
+                    out.push(Span::styled(ARTIST_SEPARATOR, muted));
+                    out.push(Span::styled(artist, muted));
+                }
+                full_w
+            } else if body == 0 {
+                0
+            } else {
+                let budget = body - 1;
+                if title_w > budget {
+                    let (head, head_w) = truncate_str_to_width(title, budget);
+                    // Preserve the legacy style boundary when `…` falls past `title.len()`.
+                    let ellipsis_style = if head.len() + '…'.len_utf8() <= title.len() {
+                        title_style
+                    } else {
+                        muted
+                    };
+                    out.push(Span::styled(head, title_style));
+                    out.push(Span::styled("…", ellipsis_style));
+                    head_w + 1
+                } else {
+                    out.push(Span::styled(title, title_style));
+                    let rem = budget - title_w;
+                    let used_after_title = if !artist.is_empty() && rem > 0 {
+                        if sep_w > rem {
+                            let (sep_part, sep_part_w) =
+                                truncate_str_to_width(ARTIST_SEPARATOR, rem);
+                            if !sep_part.is_empty() {
+                                out.push(Span::styled(sep_part, muted));
+                            }
+                            sep_part_w
+                        } else {
+                            out.push(Span::styled(ARTIST_SEPARATOR, muted));
+                            let (art_part, art_part_w) = truncate_str_to_width(artist, rem - sep_w);
+                            if !art_part.is_empty() {
+                                out.push(Span::styled(art_part, muted));
+                            }
+                            sep_w + art_part_w
+                        }
+                    } else {
+                        0
+                    };
+                    out.push(Span::styled("…", muted));
+                    title_w + used_after_title + 1
+                }
+            };
+            let pad = body.saturating_sub(used);
+            if pad > 0 {
+                out.push(Span::raw(spaces(pad)));
+            }
+        }
+    }
+    if column > 0 {
+        out.push(Span::styled(spaces(DURATION_GAP), muted));
+        out.push(Span::styled(duration, muted));
+    }
+}
+
 /// Spans filling exactly `width` cells: the body, padding, then the duration. `marquee` is the
 /// already-scrolled body text for a clipped cursor row; it replaces the title/artist split
 /// because its visible window can start anywhere. `title_style` colors the title (and the
 /// marquee), `muted` the artist and duration; pass the same style twice on a highlighted row.
+#[cfg(test)]
 pub fn spans(
     title: &str,
     artist: &str,
@@ -52,45 +267,21 @@ pub fn spans(
     title_style: Style,
     muted: Style,
 ) -> Vec<Span<'static>> {
-    let column = duration_column(duration, width);
-    let body = width.saturating_sub(column);
-    let mut out = Vec::with_capacity(4);
-    match marquee {
-        Some(text) => out.push(Span::styled(
-            pad_to_width(&truncate_to_width(&text, body), body),
-            title_style,
-        )),
-        None => {
-            let full = body_text(title, artist);
-            let clipped = if UnicodeWidthStr::width(full.as_str()) > body && body > 0 {
-                format!("{}…", truncate_to_width(&full, body - 1))
-            } else {
-                full
-            };
-            // The title keeps its color up to where it ends in the (possibly clipped) text.
-            let split = clipped
-                .char_indices()
-                .map(|(i, _)| i)
-                .chain(std::iter::once(clipped.len()))
-                .take_while(|&i| i <= title.len())
-                .last()
-                .unwrap_or(0);
-            let (head, tail) = clipped.split_at(split.min(clipped.len()));
-            let used = UnicodeWidthStr::width(clipped.as_str());
-            out.push(Span::styled(head.to_owned(), title_style));
-            if !tail.is_empty() {
-                out.push(Span::styled(tail.to_owned(), muted));
-            }
-            out.push(Span::raw(" ".repeat(body.saturating_sub(used))));
-        }
-    }
-    if column > 0 {
-        out.push(Span::styled(
-            format!("{}{duration}", " ".repeat(DURATION_GAP)),
-            muted,
-        ));
-    }
-    out
+    let mut borrowed = Vec::with_capacity(6);
+    push_spans(
+        &mut borrowed,
+        title,
+        artist,
+        duration,
+        width,
+        marquee,
+        title_style,
+        muted,
+    );
+    borrowed
+        .into_iter()
+        .map(|s| Span::styled(s.content.into_owned(), s.style))
+        .collect()
 }
 
 #[cfg(test)]
@@ -130,7 +321,8 @@ mod tests {
             Style::default(),
         );
         assert_eq!(spans[0].content, "Lovely");
-        assert_eq!(spans[1].content, " — Billie");
+        assert_eq!(spans[1].content, " — ");
+        assert_eq!(spans[2].content, "Billie");
         assert_eq!(UnicodeWidthStr::width(text(&spans).as_str()), 30);
         assert!(text(&spans).ends_with("  0:10"));
     }
