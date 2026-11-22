@@ -644,7 +644,7 @@ pub fn render_playlist_create(frame: &mut Frame, app: &App, area: Rect) {
         return;
     };
     let popup = centered_fixed(area, 56, 8);
-    crate::ui::render_popup_background(frame, app, popup);
+    crate::ui::render_modal_background(frame, app, popup);
 
     let block = Block::default()
         .title(t!(
@@ -723,7 +723,7 @@ pub fn render_playlist_picker(frame: &mut Frame, app: &App, area: Rect) {
     let visible = rows_total.min(8);
     let h = (visible as u16 + 6).min(area.height);
     let popup = centered_fixed(area, 56, h);
-    crate::ui::render_popup_background(frame, app, popup);
+    crate::ui::render_modal_background(frame, app, popup);
 
     let block = Block::default()
         .title(t!(
@@ -884,7 +884,7 @@ pub fn render_confirm_playlist_delete(frame: &mut Frame, app: &App, area: Rect) 
         .map(|p| (p.name.clone(), p.songs.len()))
         .unwrap_or_else(|| (key.clone(), 0));
     let popup = centered_fixed(area, 56, 9);
-    crate::ui::render_popup_background(frame, app, popup);
+    crate::ui::render_modal_background(frame, app, popup);
 
     let block = Block::default()
         .title(t!(
@@ -964,7 +964,7 @@ pub fn render_confirm_playlist_delete(frame: &mut Frame, app: &App, area: Rect) 
 pub fn render_confirm_delete(frame: &mut Frame, app: &App, area: Rect) {
     let count = app.library_ui.confirm_delete.as_ref().map_or(0, Vec::len);
     let popup = centered_fixed(area, 56, 9);
-    crate::ui::render_popup_background(frame, app, popup);
+    crate::ui::render_modal_background(frame, app, popup);
 
     let block = Block::default()
         .title(t!(
@@ -1046,7 +1046,7 @@ pub fn render_confirm_delete(frame: &mut Frame, app: &App, area: Rect) {
 pub fn render_confirm_download(frame: &mut Frame, app: &App, area: Rect) {
     let count = app.library_ui.confirm_download.as_ref().map_or(0, Vec::len);
     let popup = centered_fixed(area, 56, 9);
-    crate::ui::render_popup_background(frame, app, popup);
+    crate::ui::render_modal_background(frame, app, popup);
 
     let block = Block::default()
         .title(t!(

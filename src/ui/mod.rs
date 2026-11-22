@@ -300,7 +300,7 @@ pub fn popup_style(app: &App, role: R) -> Style {
 }
 
 pub fn confirm_border_style(app: &App) -> Style {
-    popup_style(app, R::BorderPrimary).add_modifier(ratatui::style::Modifier::BOLD)
+    popup_style(app, R::BorderFocused).add_modifier(ratatui::style::Modifier::BOLD)
 }
 
 pub fn confirm_button_style(app: &App) -> Style {
@@ -317,6 +317,28 @@ pub fn render_popup_background(frame: &mut Frame, app: &App, area: Rect) {
         Block::default().style(Style::default().bg(popup_bg(app))),
         area,
     );
+}
+
+/// Dim the underlying terminal surface outside `area` to visually separate a centered modal
+/// from background views, then paint the modal's opaque background. Retro mode skips the scrim
+/// to keep its flat high-contrast palette untouched.
+pub fn render_modal_background(frame: &mut Frame, app: &App, area: Rect) {
+    if !app.retro_mode() {
+        let full = frame.area();
+        let buf = frame.buffer_mut();
+        for y in full.top()..full.bottom() {
+            let in_y = y >= area.top() && y < area.bottom();
+            for x in full.left()..full.right() {
+                if in_y && x >= area.left() && x < area.right() {
+                    continue;
+                }
+                if let Some(cell) = buf.cell_mut((x, y)) {
+                    cell.modifier.insert(ratatui::style::Modifier::DIM);
+                }
+            }
+        }
+    }
+    render_popup_background(frame, app, area);
 }
 
 pub fn seal_popup_background(frame: &mut Frame, app: &App, area: Rect) {

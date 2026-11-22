@@ -124,14 +124,14 @@ pub(in crate::ui) fn render_queue_popup(frame: &mut Frame, app: &App, area: Rect
     }
     app.queue_popup.rect.set(Some(popup));
 
-    crate::ui::render_popup_background(frame, app, popup);
+    crate::ui::render_modal_background(frame, app, popup);
     let block = Block::default()
         .title(format!(
             " {} {pos}/{total} ",
             t!("Queue", "대기열", "キュー")
         ))
         .borders(Borders::ALL)
-        .border_style(crate::ui::popup_style(app, R::BorderPrimary))
+        .border_style(crate::ui::popup_style(app, R::BorderFocused))
         .style(crate::ui::popup_style(app, R::TextPrimary));
     let list = block.inner(popup);
     frame.render_widget(block, popup);
@@ -594,7 +594,7 @@ pub fn render_radio_mode_confirm(
     confirm: RadioModeConfirm,
 ) {
     let popup = centered_fixed(area, 60, 11);
-    crate::ui::render_popup_background(frame, app, popup);
+    crate::ui::render_modal_background(frame, app, popup);
 
     let block = Block::default()
         .title(confirm.title())

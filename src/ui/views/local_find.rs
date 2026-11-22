@@ -1199,7 +1199,7 @@ fn render_refine_popup(frame: &mut Frame, app: &App, area: Rect) {
         return;
     }
     app.local_mode.find.refine_popup.rect.set(Some(popup));
-    crate::ui::render_popup_background(frame, app, popup);
+    crate::ui::render_modal_background(frame, app, popup);
     let block = Block::default()
         .title(t!(
             " Refine Local Find ",
@@ -1378,7 +1378,7 @@ fn render_rebuild_confirm(frame: &mut Frame, app: &App, area: Rect) {
         return;
     }
     frame.render_widget(Clear, popup);
-    crate::ui::render_popup_background(frame, app, popup);
+    crate::ui::render_modal_background(frame, app, popup);
     let block = Block::default()
         .title(t!(
             " Full Local index rebuild ",
@@ -1437,7 +1437,7 @@ fn render_bulk_confirm(frame: &mut Frame, app: &App, area: Rect, confirm: &Local
         return;
     }
     frame.render_widget(Clear, popup);
-    crate::ui::render_popup_background(frame, app, popup);
+    crate::ui::render_modal_background(frame, app, popup);
     let block = Block::default()
         .title(t!(" Queue capacity ", " 큐 용량 ", " キュー容量 "))
         .borders(Borders::ALL)

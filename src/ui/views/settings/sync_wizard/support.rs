@@ -188,7 +188,7 @@ pub(super) fn shell(
     title: &str,
     border_role: R,
 ) -> Rect {
-    crate::ui::render_popup_background(frame, app, popup);
+    crate::ui::render_modal_background(frame, app, popup);
     let block = Block::default()
         .title(title)
         .borders(Borders::ALL)

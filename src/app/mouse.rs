@@ -414,10 +414,26 @@ impl App {
         row: u16,
         ctrl: bool,
     ) -> Vec<Cmd> {
-        if self.overlays.why_gem_video_id.is_some()
-            || self.overlays.station_card.is_some()
-            || self.overlays.listening.is_some()
-        {
+        if self.overlays.why_gem_video_id.is_some() || self.overlays.station_card.is_some() {
+            return Vec::new();
+        }
+        if let Some(dialog) = self.overlays.listening.as_mut() {
+            if dialog.error.is_some() || matches!(dialog.editing, Some(ListeningEdit::Inspect(_))) {
+                let step = MOUSE_SCROLL_LINES as u16;
+                dialog.detail_scroll = if up {
+                    dialog.detail_scroll.saturating_sub(step)
+                } else {
+                    dialog
+                        .detail_scroll
+                        .saturating_add(step)
+                        .min(dialog.detail_max_scroll.get())
+                };
+            } else if dialog.editing.is_none() {
+                dialog
+                    .scroll
+                    .wheel(up, MOUSE_SCROLL_LINES, dialog.rows.len());
+            }
+            self.dirty = true;
             return Vec::new();
         }
         if self.local_find_mouse_scroll_modal(up, MOUSE_SCROLL_LINES) {

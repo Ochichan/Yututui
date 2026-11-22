@@ -28,7 +28,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         return;
     }
 
-    crate::ui::render_popup_background(frame, app, popup);
+    crate::ui::render_modal_background(frame, app, popup);
     let block = Block::default()
         .title(t!(" Audio output ", " 오디오 출력 ", " オーディオ出力 "))
         .borders(Borders::ALL)

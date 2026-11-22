@@ -66,7 +66,11 @@ pub fn render_beginner_coach(frame: &mut Frame, app: &App, area: Rect) {
         if confirming { area } else { popup },
         MouseTarget::Onboarding(OnboardingAction::Noop),
     );
-    crate::ui::render_popup_background(frame, app, popup);
+    if confirming {
+        crate::ui::render_modal_background(frame, app, popup);
+    } else {
+        crate::ui::render_popup_background(frame, app, popup);
+    }
     let title = if confirming {
         t!(
             " Skip Beginner Mode? ",
@@ -889,7 +893,7 @@ pub fn render_tool_setup(frame: &mut Frame, app: &App, area: Rect) {
         width,
         height,
     };
-    crate::ui::render_popup_background(frame, app, popup);
+    crate::ui::render_modal_background(frame, app, popup);
     let title = match prompt.context {
         ToolSetupContext::Startup => {
             t!(

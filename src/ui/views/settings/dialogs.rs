@@ -19,7 +19,7 @@ use crate::ui::buttons;
 /// failure is loud and actionable rather than a silently-dropped remap.
 pub fn render_conflict(frame: &mut Frame, app: &App, area: Rect, conflict: &Conflict) {
     let popup = centered_fixed(area, 54, 9);
-    crate::ui::render_popup_background(frame, app, popup);
+    crate::ui::render_modal_background(frame, app, popup);
 
     let block = Block::default()
         .title(t!(
@@ -86,7 +86,7 @@ pub fn render_conflict(frame: &mut Frame, app: &App, area: Rect, conflict: &Conf
 /// A modal confirmation for settings actions that have broad side effects.
 pub fn render_confirm(frame: &mut Frame, app: &App, area: Rect, confirm: SettingsConfirm) {
     let popup = centered_fixed(area, 56, 9);
-    crate::ui::render_popup_background(frame, app, popup);
+    crate::ui::render_modal_background(frame, app, popup);
 
     let block = Block::default()
         .title(confirm.title())

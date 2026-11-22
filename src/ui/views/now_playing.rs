@@ -25,7 +25,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     };
 
     let popup = centered_fixed(area, 58, 11);
-    crate::ui::render_popup_background(frame, app, popup);
+    crate::ui::render_modal_background(frame, app, popup);
 
     let block = Block::default()
         .title(t!(
@@ -34,7 +34,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
             " いま流れている曲 "
         ))
         .borders(Borders::ALL)
-        .border_style(crate::ui::popup_style(app, R::BorderPrimary))
+        .border_style(crate::ui::popup_style(app, R::BorderFocused))
         .style(crate::ui::popup_style(app, R::TextPrimary));
     let inner = block.inner(popup);
     frame.render_widget(block, popup);

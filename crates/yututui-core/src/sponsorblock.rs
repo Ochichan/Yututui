@@ -116,6 +116,14 @@ impl SkipPolicy {
         self.segments = Some((youtube_id, segments));
     }
 
+    /// Sanitized segments currently loaded for `track_id`, or an empty slice.
+    pub fn segments_for(&self, track_id: &str) -> &[Segment] {
+        match self.segments.as_ref() {
+            Some((id, segments)) if id == track_id => segments.as_slice(),
+            _ => &[],
+        }
+    }
+
     /// The skip's seek was admitted. The one epoch increment that follows is its own, not a
     /// foreign discontinuity.
     pub fn skip_committed(&mut self) {

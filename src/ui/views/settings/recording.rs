@@ -28,7 +28,7 @@ pub fn render_recording_settings(frame: &mut Frame, app: &App, area: Rect) {
     };
     let d = &st.draft;
     let popup_rect = centered_fixed(area, 60, 13);
-    crate::ui::render_popup_background(frame, app, popup_rect);
+    crate::ui::render_modal_background(frame, app, popup_rect);
 
     let block = Block::default()
         .title(t!(" Radio recording ", " 라디오 녹음 ", " ラジオ録音 "))
@@ -229,7 +229,7 @@ pub fn render_recordings_browser(frame: &mut Frame, app: &App, area: Rect) {
     let popup = centered_fixed(area, 64, h);
     // Publish the browser rect so a click outside closes it (mirrors the queue window).
     browser.rect.set(Some(popup));
-    crate::ui::render_popup_background(frame, app, popup);
+    crate::ui::render_modal_background(frame, app, popup);
     let block = Block::default()
         .title(t!(
             " Radio recordings ",

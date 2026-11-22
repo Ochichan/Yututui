@@ -577,7 +577,7 @@ pub fn render_local_mode_confirm(
     confirm: LocalModeConfirm,
 ) {
     let popup = centered_fixed(area, 64, 11);
-    crate::ui::render_popup_background(frame, app, popup);
+    crate::ui::render_modal_background(frame, app, popup);
 
     let import_search =
         matches!(confirm, LocalModeConfirm::Exit) && app.local_import_search_pending();
@@ -673,7 +673,7 @@ pub fn render_local_organize_confirm(
     confirm: &LocalOrganizeConfirm,
 ) {
     let popup = centered_fixed(area, 72, 11);
-    crate::ui::render_popup_background(frame, app, popup);
+    crate::ui::render_modal_background(frame, app, popup);
 
     let block = Block::default()
         .title(confirm.title())
@@ -739,7 +739,7 @@ pub fn render_local_accept_all_confirm(
     confirm: &LocalImportAcceptAllConfirm,
 ) {
     let popup = centered_fixed(area, 72, 9);
-    crate::ui::render_popup_background(frame, app, popup);
+    crate::ui::render_modal_background(frame, app, popup);
 
     let block = Block::default()
         .title(confirm.title())
@@ -807,7 +807,7 @@ pub fn render_local_import_delete_confirm(
     session_id: &str,
 ) {
     let popup = centered_fixed(area, 72, 9);
-    crate::ui::render_popup_background(frame, app, popup);
+    crate::ui::render_modal_background(frame, app, popup);
     let block = Block::default()
         .title(t!(
             " ⚠ Delete import record ",
