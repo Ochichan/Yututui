@@ -108,10 +108,59 @@ fn ime_scrub_interval() -> tokio::time::Interval {
     interval
 }
 
-fn lyrics_interval() -> tokio::time::Interval {
-    let mut interval = tokio::time::interval(Duration::from_millis(100));
-    interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
-    interval
+/// Cap on immediately-ready local input events drained in a single owner turn before drawing.
+/// Keeps key-repeat scrolling, wheel bursts, and pointer drags responsive without starving
+/// redraws or worker messages.
+const MAX_COALESCED_LOCAL_INPUTS: usize = 16;
+
+fn is_coalesceable_local_msg(msg: &Msg) -> bool {
+    match msg {
+        Msg::MouseMove { .. } | Msg::MouseDrag { .. } | Msg::MouseScroll { ctrl: false, .. } => {
+            true
+        }
+        Msg::Key(key) => {
+            key.modifiers.is_empty()
+                && matches!(
+                    key.code,
+                    crossterm::event::KeyCode::Up
+                        | crossterm::event::KeyCode::Down
+                        | crossterm::event::KeyCode::PageUp
+                        | crossterm::event::KeyCode::PageDown
+                )
+        }
+        _ => false,
+    }
+}
+
+fn drain_coalesced_local_inputs(
+    first: &Msg,
+    try_next: &mut impl FnMut() -> Option<crossterm::event::Event>,
+    translator: &mut event::Translator,
+    scale: (u8, u8),
+    app: &mut App,
+    deferred_local_msg: &mut Option<Msg>,
+) -> Vec<Msg> {
+    if !is_coalesceable_local_msg(first) || deferred_local_msg.is_some() {
+        return Vec::new();
+    }
+    let mut batch = Vec::new();
+    while batch.len() < MAX_COALESCED_LOCAL_INPUTS {
+        let Some(ev) = try_next() else {
+            break;
+        };
+        app.arm_ime_scrub_burst();
+        let Some(next_msg) = translator.translate_with_keymap(ev, scale.0, scale.1, &app.keymap)
+        else {
+            continue;
+        };
+        if is_coalesceable_local_msg(&next_msg) {
+            batch.push(next_msg);
+        } else {
+            *deferred_local_msg = Some(next_msg);
+            break;
+        }
+    }
+    batch
 }
 
 /// Take only an immediately-adjacent time/cache pair. Both messages still pass through
@@ -839,13 +888,8 @@ pub async fn run(
     let mut media_pump = tokio::time::interval(Duration::from_millis(100));
     media_pump.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
-    let mut input = event::Translator::default();
+    let mut translator = event::Translator::default();
     let mut ime_scrub = ime_scrub_interval();
-    // Polled only while transient status or the lyric-delay OSD has a deadline; lets the reducer
-    // restore the title and collapse the control after their respective TTLs. Idle otherwise.
-    let mut status_tick = tokio::time::interval(Duration::from_millis(250));
-    status_tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
-    let mut lyrics_tick = lyrics_interval();
 
     // 1 Hz while a radio recording is in progress; parked otherwise (like the other guarded
     // ticks). Drives the max-duration force-split.
@@ -887,6 +931,7 @@ pub async fn run(
 
     let mut pending_worker_events = BufferedWorkerEvents::default();
     let mut pending_shutdown_events: VecDeque<RuntimeEvent> = VecDeque::new();
+    let mut deferred_local_msg: Option<Msg> = None;
     let mut owner_error = None;
     // Startup mutates App after the first paint. Until a later successful full render proves the
     // terminal matches all reducer-owned state, the IME clock must take the normal draw path.
@@ -949,7 +994,12 @@ pub async fn run(
             // newer input mutation. Otherwise a terminal event buffered before `Next` could be
             // reduced against the track selected by `Next` and double-advance the queue.
             OwnerTurnInput::BufferedWorker(pending)
+        } else if let Some(local) = deferred_local_msg.take() {
+            OwnerTurnInput::Local(local)
         } else {
+            let now = Instant::now();
+            let status_deadline = app.status_tick_deadline_at(now);
+            let lyrics_deadline = app.next_lyrics_deadline_at(now);
             tokio::select! {
                 biased;
                 _ = shutdown.wait() => {
@@ -975,7 +1025,7 @@ pub async fn run(
                         // key release) — re-arms the bounded IME scrub burst.
                         app.arm_ime_scrub_burst();
                         let (cs, rs) = zoom.mouse_scale();
-                        match input.translate_with_keymap(ev, cs, rs, &app.keymap) {
+                        match translator.translate_with_keymap(ev, cs, rs, &app.keymap) {
                             Some(m) => OwnerTurnInput::Local(m),
                             None => continue,
                         }
@@ -1073,8 +1123,12 @@ pub async fn run(
                 _ = tokio::time::sleep_until(tokio::time::Instant::from_std(
                     app.automatic_sync_deadline().unwrap_or_else(Instant::now)
                 )), if app.automatic_sync_deadline().is_some() => OwnerTurnInput::Local(Msg::AutomaticSyncTick),
-                _ = status_tick.tick(), if app.status_visible() || app.lyrics.delay_osd_until.is_some() => OwnerTurnInput::Local(Msg::StatusTick),
-                _ = lyrics_tick.tick(), if app.lyrics_clock_active() => OwnerTurnInput::Local(Msg::LyricsTick),
+                _ = tokio::time::sleep_until(tokio::time::Instant::from_std(
+                    status_deadline.unwrap_or(now)
+                )), if status_deadline.is_some() => OwnerTurnInput::Local(Msg::StatusTick),
+                _ = tokio::time::sleep_until(tokio::time::Instant::from_std(
+                    lyrics_deadline.unwrap_or(now)
+                )), if lyrics_deadline.is_some() => OwnerTurnInput::Local(Msg::LyricsTick),
                 _ = anim_tick.tick(), if app.animation_active() => OwnerTurnInput::Local(Msg::AnimTick),
                 _ = recording_tick.tick(), if app.recorder_active() => OwnerTurnInput::Local(Msg::RecordingTick),
                 _ = sleep_tick.tick(), if app.sleep_timer_active() => OwnerTurnInput::Local(Msg::SleepTick),
@@ -1188,6 +1242,14 @@ pub async fn run(
             take_adjacent_player_progress_pair(&msg, &mut pending_worker_events, |event| {
                 handles.player_event_is_current(event)
             });
+        let coalesced_local = drain_coalesced_local_inputs(
+            &msg,
+            &mut || events.try_recv().ok(),
+            &mut translator,
+            zoom.mouse_scale(),
+            &mut app,
+            &mut deferred_local_msg,
+        );
         let observer_plan = ObserverPlan::for_messages(&msg, paired_progress.as_ref());
 
         let resized_artwork = matches!(&msg, Msg::ArtworkResized(_))
@@ -1197,7 +1259,10 @@ pub async fn run(
         // `position_epoch` through a different message. Skip both hashes on this high-rate path.
         let media_before = observer_plan.project_state.then(|| app.media_fingerprint());
         arm_unrendered_reducer_turn(&mut reducer_turn_unrendered, &msg);
-        for msg in std::iter::once(msg).chain(paired_progress) {
+        for msg in std::iter::once(msg)
+            .chain(paired_progress)
+            .chain(coalesced_local)
+        {
             if shutdown.is_triggered() {
                 handles.begin_player_shutdown(&mut app);
                 break 'owner;
