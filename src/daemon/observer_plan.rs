@@ -24,6 +24,28 @@ impl ObserverPlan {
     };
 }
 
+/// Pre-dispatch snapshot captured for the daemon owner loop's post-turn observer decision.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct ObserverContext {
+    pub(super) plan: ObserverPlan,
+    pub(super) position_turn: bool,
+    fingerprint_before: Option<u64>,
+    position_epoch_before: Option<u64>,
+}
+
+impl ObserverContext {
+    pub(super) fn position_epoch_changed(&self, engine: &DaemonEngine) -> bool {
+        self.position_epoch_before
+            .is_some_and(|before| before != engine.media_position_epoch())
+    }
+
+    pub(super) fn media_changed(&self, engine: &DaemonEngine) -> bool {
+        self.fingerprint_before
+            .is_some_and(|before| before != engine.media_fingerprint())
+            || self.position_epoch_changed(engine)
+    }
+}
+
 impl DaemonEvent {
     pub(super) fn observer_plan(&self) -> ObserverPlan {
         match self {
@@ -52,18 +74,25 @@ impl DaemonEvent {
         }
     }
 
-    pub(super) fn observer_context(
-        &self,
-        engine: &DaemonEngine,
-    ) -> (ObserverPlan, bool, Option<u64>) {
+    pub(super) fn observer_context(&self, engine: &DaemonEngine) -> ObserverContext {
         let plan = self.observer_plan();
         let position_turn = matches!(
             self,
             DaemonEvent::Player(event)
                 if matches!(event.unscoped(), crate::player::PlayerEvent::TimePos(_))
         );
-        let fingerprint = plan.project_state.then(|| engine.media_fingerprint());
-        (plan, position_turn, fingerprint)
+        let fingerprint_before = plan.project_state.then(|| engine.media_fingerprint());
+        // Track the u64 discontinuity epoch on fingerprint-free progress turns so a
+        // SponsorBlock skip (`note_seek`) still triggers a full media snapshot publish
+        // without hashing metadata on ordinary progress samples.
+        let position_epoch_before =
+            (!plan.project_state && position_turn).then(|| engine.media_position_epoch());
+        ObserverContext {
+            plan,
+            position_turn,
+            fingerprint_before,
+            position_epoch_before,
+        }
     }
 }
 
@@ -109,20 +138,22 @@ mod tests {
                 false,
             ),
         ] {
-            let (plan, position_turn, fingerprint) = event.observer_context(&engine);
-            assert!(!plan.project_state, "progress must skip projection");
+            let ctx = event.observer_context(&engine);
+            assert!(!ctx.plan.project_state, "progress must skip projection");
             assert!(
-                plan.drive_scrobble_heartbeat,
+                ctx.plan.drive_scrobble_heartbeat,
                 "progress must retain the 1 Hz scrobble clock"
             );
             assert_eq!(
-                position_turn, expect_position_turn,
+                ctx.position_turn, expect_position_turn,
                 "TimePos must arm media position rebasing even when file-scoped"
             );
             assert!(
-                fingerprint.is_none(),
+                ctx.fingerprint_before.is_none(),
                 "progress turns must not hash media state before dispatch"
             );
+            assert_eq!(ctx.position_epoch_before.is_some(), expect_position_turn);
+            assert!(!ctx.media_changed(&engine));
         }
 
         for duration in [
@@ -132,14 +163,15 @@ mod tests {
                 PlayerEvent::Duration(Some(180.0)),
             )),
         ] {
-            let (plan, position_turn, fingerprint) = duration.observer_context(&engine);
+            let ctx = duration.observer_context(&engine);
             assert_eq!(
-                plan,
+                ctx.plan,
                 ObserverPlan::PROJECTED,
                 "a real media facet still runs media/remote observers"
             );
-            assert!(!position_turn);
-            assert!(fingerprint.is_some());
+            assert!(!ctx.position_turn);
+            assert!(ctx.fingerprint_before.is_some());
+            assert!(ctx.position_epoch_before.is_none());
         }
 
         assert_eq!(
@@ -155,5 +187,59 @@ mod tests {
             .observer_plan(),
             ObserverPlan::INERT
         );
+    }
+
+    #[tokio::test]
+    async fn progress_turn_marks_media_changed_only_when_sponsorblock_seek_succeeds() {
+        let mut engine = crate::daemon::engine::tests::engine_with_queue(&["dQw4w9WgXcQ"]);
+        let mut player_rx = engine.install_seek_parity_player("dQw4w9WgXcQ", 10.0, 180.0);
+        engine.install_sponsorblock_parity_state(&[(60.0, 90.0)]);
+
+        // Ordinary progress samples before the segment stay fingerprint-free and unchanged.
+        for pos in [57.0, 58.0, 59.0] {
+            let ev = DaemonEvent::Player(PlayerEvent::file_scoped(0, PlayerEvent::TimePos(pos)));
+            let ctx = ev.observer_context(&engine);
+            assert!(ctx.fingerprint_before.is_none());
+            let DaemonEvent::Player(player_ev) = ev else {
+                unreachable!()
+            };
+            let _ = engine.handle_player_event(player_ev).await;
+            assert!(!ctx.position_epoch_changed(&engine));
+            assert!(!ctx.media_changed(&engine));
+        }
+
+        // Entering the segment applies `note_seek` -> epoch bumps -> media publish required.
+        let epoch_before = engine.media_position_epoch();
+        let skip_ev = DaemonEvent::Player(PlayerEvent::file_scoped(0, PlayerEvent::TimePos(60.4)));
+        let ctx = skip_ev.observer_context(&engine);
+        assert!(ctx.fingerprint_before.is_none());
+        let DaemonEvent::Player(player_ev) = skip_ev else {
+            unreachable!()
+        };
+        let _ = engine.handle_player_event(player_ev).await;
+        assert!(player_rx.try_recv().is_ok(), "seek command should be sent");
+        assert!(ctx.position_epoch_changed(&engine));
+        assert!(ctx.media_changed(&engine));
+        assert_eq!(engine.media_snapshot().position_epoch, epoch_before + 1);
+
+        // When the seek fails before `note_seek` (closed player command channel), state stays clean.
+        let mut failing_engine = crate::daemon::engine::tests::engine_with_queue(&["dQw4w9WgXcQ"]);
+        let failing_rx = failing_engine.install_seek_parity_player("dQw4w9WgXcQ", 10.0, 180.0);
+        failing_engine.install_sponsorblock_parity_state(&[(60.0, 90.0)]);
+        for pos in [57.0, 58.0, 59.0] {
+            let _ = failing_engine
+                .handle_player_event(PlayerEvent::file_scoped(0, PlayerEvent::TimePos(pos)))
+                .await;
+        }
+        drop(failing_rx);
+        let failed_ev =
+            DaemonEvent::Player(PlayerEvent::file_scoped(0, PlayerEvent::TimePos(60.4)));
+        let ctx = failed_ev.observer_context(&failing_engine);
+        let DaemonEvent::Player(player_ev) = failed_ev else {
+            unreachable!()
+        };
+        let _ = failing_engine.handle_player_event(player_ev).await;
+        assert!(!ctx.position_epoch_changed(&failing_engine));
+        assert!(!ctx.media_changed(&failing_engine));
     }
 }
