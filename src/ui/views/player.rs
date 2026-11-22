@@ -215,7 +215,16 @@ pub(in crate::ui) fn render_queue_popup(frame: &mut Frame, app: &App, area: Rect
             height: 1,
         };
         let buf = frame.buffer_mut();
-        buf.set_style(row, base);
+        // Action slots are drawn afterwards, one glyph in a two-cell rect. `set_style` patches,
+        // so painting `base` across them leaves the now-playing bold and the row colors on the
+        // button and on the unused cell. Keep those cells on the popup chrome.
+        buf.set_style(
+            Rect {
+                width: row.width.saturating_sub(actions_w),
+                ..row
+            },
+            base,
+        );
         let (x, _) = buf.set_stringn(
             row.x,
             y,
