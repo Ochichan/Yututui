@@ -188,7 +188,7 @@ pub async fn refresh_selection(cfg: &ToolsConfig) {
     }
     let supports_js_runtimes = match &sel {
         Some(selection) => {
-            let supported = probe_js_runtimes_option(&selection.path.to_string_lossy()).await;
+            let supported = ytdlp::cached_js_runtimes_support(&selection.path).await;
             if !supported {
                 tracing::warn!(
                     path = %selection.path.display(),
@@ -221,23 +221,24 @@ fn selected_supports_js_runtimes() -> bool {
         .unwrap_or(false)
 }
 
-/// Probe `<program> --help` for the `--js-runtimes` option.
-async fn probe_js_runtimes_option(program: &str) -> bool {
+/// Probe `<program> --help` for the `--js-runtimes` option. Returns `None` if the subprocess
+/// failed to execute or exited non-zero so transient failures are never cached.
+pub(crate) async fn probe_js_runtimes_option(program: &str) -> Option<bool> {
     let mut cmd = process::tokio_command(program, process::ProcessProfile::YtDlp);
     cmd.arg("--ignore-config")
         .arg("--help")
         .stdin(Stdio::null());
-    let Ok(out) = process::tokio_output_limited(
+    let out = process::tokio_output_limited(
         cmd,
         process::ProcessProfile::YtDlp,
         Duration::from_secs(30),
         JS_RUNTIMES_HELP_MAX,
     )
     .await
-    else {
-        return false;
-    };
-    out.status.success() && String::from_utf8_lossy(&out.stdout).contains("--js-runtimes")
+    .ok()?;
+    out.status
+        .success()
+        .then(|| String::from_utf8_lossy(&out.stdout).contains("--js-runtimes"))
 }
 
 /// The current selection, if any.

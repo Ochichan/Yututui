@@ -387,25 +387,6 @@ pub async fn run(
     app.library = Arc::new(library);
     app.signals = Arc::new(signals);
     app.download_store = download_store;
-    // Enrich the bare disk scan with each track's remembered
-    // YouTube identity (+ real artist) so a downloaded-and-online track keeps its share link
-    // after a restart; files the manifest doesn't know are recovered from their `[id]` filename.
-    let scanned = library::scan_downloads(&download_runtime.dir);
-    let scan_truncated = scanned.truncated;
-    let scan_limit = scanned.limit;
-    app.library_ui.downloaded_rev = app.library_ui.downloaded_rev.wrapping_add(1);
-    app.library_ui.downloaded = app.enrich_downloads(scanned.songs);
-    if scan_truncated {
-        app.status.text = format!(
-            "{} {scan_limit} {}",
-            crate::t!("Showing first", "처음", "先頭"),
-            crate::t!(
-                "download files; more are hidden",
-                "개 다운로드 파일만 표시됨; 일부는 숨김",
-                "件のダウンロードファイルのみ表示; 一部は非表示"
-            )
-        );
-    }
     // Load local playlists (the DJ Gem playlist tools read/write these). Hand-edited or old
     // files are count-repaired on load; persist the repaired snapshot so startup does not keep
     // redoing the same repair every run.
@@ -504,10 +485,32 @@ pub async fn run(
     let (worker_tx, mut worker_rx) = runtime::channel(crate::util::backpressure::OWNER_EVENT_QUEUE);
     persist.set_event_sink(runtime::sink(worker_tx.clone(), RuntimeEvent::Persist));
 
-    // Resolve which yt-dlp (managed vs system vs override) and mpv this process runs.
-    // After first draw (a cold probe spawns `yt-dlp --version`, several hundred ms),
-    // but before the deps preflight and the mpv spawn below, which both consume it.
-    tools::init(&cfg.tools).await;
+    // Resolve which yt-dlp (managed vs system vs override) and mpv this process runs, overlapping
+    // the download directory scan with tool selection after first draw so large download folders
+    // never delay the initial paint.
+    let download_dir = download_runtime.dir.clone();
+    let (_, scanned_downloads) = tokio::join!(
+        tools::init(&cfg.tools),
+        tokio::task::spawn_blocking(move || library::scan_downloads(&download_dir)),
+    );
+    if let Ok(scanned) = scanned_downloads {
+        let scan_truncated = scanned.truncated;
+        let scan_limit = scanned.limit;
+        app.library_ui.downloaded_rev = app.library_ui.downloaded_rev.wrapping_add(1);
+        app.library_ui.downloaded = app.enrich_downloads(scanned.songs);
+        if scan_truncated && !persistence_read_only && app.status.text.is_empty() {
+            app.status.text = format!(
+                "{} {scan_limit} {}",
+                crate::t!("Showing first", "처음", "先頭"),
+                crate::t!(
+                    "download files; more are hidden",
+                    "개 다운로드 파일만 표시됨; 일부는 숨김",
+                    "件のダウンロードファイルのみ表示; 一部は非表示"
+                )
+            );
+            app.dirty = true;
+        }
+    }
     startup.mark("tools_selected");
     if shutdown.is_triggered() {
         // The terminal watchdog or an OS signal may win while tool discovery is awaiting. Close
@@ -520,13 +523,15 @@ pub async fn run(
         return finish_interrupted_startup(&app, &persist, terminal_error).await;
     }
 
-    // Probe after `tools::init` so it hits the selected mpv. Recovery-aware temp cleanup is
-    // deferred until the tracked runtime task set exists below.
-    app.recorder.supported = !persistence_read_only && player::mpv::stream_record_supported();
-    // Warm the media-controls probe here too (same one-time subprocess cost as the line above)
-    // so the mid-session mpv respawn path hits the cache instead of blocking a worker on the
-    // first play. Both probes are cached per (process, flag) after this.
-    let _ = player::mpv::media_controls_flag_supported();
+    // Probe after `tools::init` so it hits the selected mpv. Warm both optional flag probes off
+    // the async worker; warm starts hit the disk probe cache with zero subprocess spawns.
+    app.recorder.supported = tokio::task::spawn_blocking(move || {
+        let supported = !persistence_read_only && player::mpv::stream_record_supported();
+        let _ = player::mpv::media_controls_flag_supported();
+        supported
+    })
+    .await
+    .unwrap_or(false);
 
     // Preflight the external tools. If mpv/yt-dlp are missing, show an install hint up
     // front rather than surfacing an opaque spawn failure later.

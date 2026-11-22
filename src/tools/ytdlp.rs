@@ -42,17 +42,16 @@ use super::{ToolsEvent, YtdlpChannel};
 #[cfg(test)]
 mod background_tests;
 mod download_temp;
+mod probe_cache;
 mod rollback;
 mod signature;
 #[cfg(test)]
 mod update_lock_tests;
 
 use download_temp::DownloadTemp;
+pub use probe_cache::ProbeEntry;
+pub(crate) use probe_cache::{cached_js_runtimes_support, cached_probe};
 use signature::verify_sha256sums_signature;
-
-/// Upper bound on probe-cache entries (override + managed + system is 3; a few
-/// spares for paths that moved).
-const PROBE_CACHE_MAX: usize = 8;
 
 /// Persisted managed-binary state. Every field `#[serde(default)]` so the file
 /// forward-migrates; a corrupt file loads as default (worst case: one redundant
@@ -91,14 +90,6 @@ pub struct ManagedState {
     /// startups spawn zero yt-dlp subprocesses (a PyInstaller binary takes several
     /// hundred ms just to print its version).
     pub probe_cache: Vec<ProbeEntry>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ProbeEntry {
-    pub path: String,
-    pub mtime_unix: u64,
-    pub len: u64,
-    pub version: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -339,43 +330,6 @@ fn remove_probe_cache_for(path: &Path, state: &mut ManagedState) {
 /// (path, mtime, len) returns without spawning anything; a miss runs
 /// `--version` and records the result. Failed probes are never cached, so a
 /// binary that gets fixed in place re-probes next time.
-pub(crate) async fn cached_probe(path: &Path) -> Option<String> {
-    let path_str = path.to_string_lossy().into_owned();
-    let stamp = file_stamp(path);
-
-    if let Some((mtime, len)) = stamp {
-        let state = load_state();
-        if let Some(hit) = state
-            .probe_cache
-            .iter()
-            .find(|e| e.path == path_str && e.mtime_unix == mtime && e.len == len)
-        {
-            return Some(hit.version.clone());
-        }
-    }
-
-    let version = super::probe_version(&path_str).await?;
-
-    if let Some((mtime, len)) = stamp
-        && !crate::persist::persistence_access().is_read_only()
-    {
-        let mut state = load_state();
-        state.probe_cache.retain(|e| e.path != path_str);
-        state.probe_cache.push(ProbeEntry {
-            path: path_str,
-            mtime_unix: mtime,
-            len,
-            version: version.clone(),
-        });
-        if state.probe_cache.len() > PROBE_CACHE_MAX {
-            let excess = state.probe_cache.len() - PROBE_CACHE_MAX;
-            state.probe_cache.drain(..excess);
-        }
-        save_state(&state);
-    }
-    Some(version)
-}
-
 /// The official release asset for this build's platform, or `None` where upstream
 /// publishes no standalone binary (then the managed feature quietly disables itself
 /// and the system binary is used). Names verified against the 2026-07 nightly
@@ -986,6 +940,7 @@ mod tests {
                 mtime_unix: 1,
                 len: 2,
                 version: "2026.07.03.234421".to_owned(),
+                supports_js_runtimes: Some(true),
             }],
         };
         let json = serde_json::to_string(&state).unwrap();
@@ -1003,6 +958,14 @@ mod tests {
         let empty: ManagedState = serde_json::from_str("{}").unwrap();
         assert!(empty.version.is_none());
         assert!(empty.probe_cache.is_empty());
+
+        // Legacy probe_cache entries lacking supports_js_runtimes deserialize cleanly as None.
+        let legacy: ManagedState = serde_json::from_str(
+            r#"{"probe_cache":[{"path":"/x/yt-dlp","mtime_unix":1,"len":2,"version":"2026.07.03"}]}"#,
+        )
+        .unwrap();
+        assert_eq!(legacy.probe_cache.len(), 1);
+        assert_eq!(legacy.probe_cache[0].supports_js_runtimes, None);
     }
 
     #[test]
