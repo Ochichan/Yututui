@@ -94,11 +94,11 @@ pub(super) fn payload_for_update_with_language(
     update: &PollUpdate,
     language: Language,
 ) -> PanelPayload {
-    let model = menu_model::build_menu(&update.state);
     let status = update.state.status();
     let connected = status.is_some();
     let idle = matches!(update.state.kind(), TrayStateKind::ConnectedIdle);
     let repeat = status.map(|status| status.repeat).unwrap_or_default();
+    let can_playback = menu_model::action_enabled(&update.state, MenuAction::PlayPause);
 
     PanelPayload {
         locale: language_code(language),
@@ -118,8 +118,7 @@ pub(super) fn payload_for_update_with_language(
         is_live: status.is_some_and(|status| status.is_live),
         queue_rev: status.and_then(|status| status.queue_rev),
         track_identity: track_identity(&update.state),
-        can_seek: action_enabled(&model, MenuAction::PlayPause)
-            && status.is_some_and(|status| status.duration_ms.is_some()),
+        can_seek: can_playback && status.is_some_and(|status| status.duration_ms.is_some()),
         queue: queue_payload(&update.state),
         shuffle: status.map(|status| status.shuffle).unwrap_or(false),
         repeat: repeat_id(repeat).to_string(),
@@ -131,23 +130,26 @@ pub(super) fn payload_for_update_with_language(
             .error
             .as_ref()
             .map(|error| control_error_label(error, language)),
-        can_playback: action_enabled(&model, MenuAction::PlayPause),
-        can_volume: action_enabled(&model, MenuAction::VolumeUp)
-            || action_enabled(&model, MenuAction::VolumeDown),
+        can_playback,
+        can_volume: menu_model::action_enabled(&update.state, MenuAction::VolumeUp)
+            || menu_model::action_enabled(&update.state, MenuAction::VolumeDown),
         // Queue mutation is only safe when the core supplied the revision token used by the
         // v8 checked commands.  A legacy v7 snapshot has no revision, so keep playback visible
         // but do not offer a racy play/remove action that could target a different row.
         can_manage_queue: status
             .is_some_and(|status| !status.queue.is_empty() && status.queue_rev.is_some()),
-        can_toggle_streaming: action_enabled(&model, MenuAction::ToggleStreaming),
-        can_start_daemon: action_enabled(&model, MenuAction::StartDaemon),
+        can_toggle_streaming: menu_model::action_enabled(
+            &update.state,
+            MenuAction::ToggleStreaming,
+        ),
+        can_start_daemon: menu_model::action_enabled(&update.state, MenuAction::StartDaemon),
         // Trust the menu model: disconnected Resume is gated by the locally verified session
         // capability, while an idle daemon can ask its live owner to restore the cache. Adding a
         // blanket `|| idle` here would light the button up for an idle *standalone TUI*, where
         // resume is always rejected (StandaloneOwner).
-        can_resume_daemon: action_enabled(&model, MenuAction::ResumeDaemon)
+        can_resume_daemon: menu_model::action_enabled(&update.state, MenuAction::ResumeDaemon)
             || (idle && status.is_some_and(|status| status.owner_mode == InstanceMode::Daemon)),
-        can_stop_daemon: action_enabled(&model, MenuAction::StopDaemon),
+        can_stop_daemon: menu_model::action_enabled(&update.state, MenuAction::StopDaemon),
     }
 }
 
@@ -298,13 +300,6 @@ fn repeat_label(repeat: Repeat, language: Language) -> &'static str {
         Repeat::All => tr(language, "All", "전체", "すべて"),
         Repeat::One => tr(language, "One", "한 곡", "1曲"),
     }
-}
-
-fn action_enabled(model: &menu_model::MenuModel, action: MenuAction) -> bool {
-    model
-        .action_item(action)
-        .map(|item| item.enabled)
-        .unwrap_or(false)
 }
 
 fn title_for_state(state: &TrayState, language: Language) -> String {
