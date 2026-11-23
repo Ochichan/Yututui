@@ -1206,21 +1206,34 @@
       return true;
     }
 
+    function queueRowsMatch(prev, next) {
+      if (!prev || prev.length !== next.length) return false;
+      for (let i = 0; i < next.length; i += 1) {
+        const a = prev[i];
+        const b = next[i];
+        if (a.index !== b.index
+            || a.title !== b.title
+            || a.artist !== b.artist
+            || a.duration !== b.duration) {
+          return false;
+        }
+      }
+      return true;
+    }
+
     function renderQueue(payload) {
       els.queueSummary.textContent = payload.queueLabel;
-      // Track queue structure separately from the active cursor so advancing tracks within the
-      // same queueRev updates only the previous and next rows in-place (preserving focus and
-      // avoiding full-list JSON serialization / innerHTML rebuilds on every poll).
+      // Track displayed row metadata separately from the active cursor so advancing tracks
+      // updates only the previous and next rows in-place (preserving focus and avoiding
+      // full-list JSON serialization / innerHTML rebuilds), while still rebuilding whenever
+      // titles/artists change (e.g. romanization updates that do not bump queueRev).
       const currentIndex = payload.queue.findIndex(item => item.current);
-      const hasRev = payload.queueRev != null;
-      const legacyKey = hasRev ? null : JSON.stringify(payload.queue);
+      const rev = payload.queueRev ?? null;
       const sameStructure = lastQueueState != null
         && lastQueueState.locale === locale
         && lastQueueState.canManage === payload.canManageQueue
-        && lastQueueState.length === payload.queue.length
-        && (hasRev
-          ? lastQueueState.rev === payload.queueRev
-          : lastQueueState.rev == null && lastQueueState.legacyKey === legacyKey);
+        && lastQueueState.rev === rev
+        && queueRowsMatch(lastQueueState.items, payload.queue);
       if (sameStructure) {
         if (lastQueueState.currentIndex === currentIndex) return;
         if (setQueueRowCurrent(lastQueueState.currentIndex, false)
@@ -1235,12 +1248,11 @@
         : null;
       clearRemoveConfirmation();
       lastQueueState = {
-        rev: payload.queueRev ?? null,
-        length: payload.queue.length,
+        rev,
         canManage: payload.canManageQueue,
         locale,
         currentIndex,
-        legacyKey,
+        items: payload.queue,
       };
 
       if (!payload.queue.length) {
