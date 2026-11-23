@@ -16,6 +16,7 @@ ignore = [
     { id = "RUSTSEC-2026-0372", reason = "zvariant_derive unmaintained (merged into zbus 6), same zbus 5 path as RUSTSEC-2026-0370. Remove when mpris-server and notify-rust move to zbus 6. Review 2027-01" },
     { id = "RUSTSEC-2026-0374", reason = "basic-toml unmaintained, via i18n-config 0.4.8 in age 0.12.1's localized error strings; age and i18n-config have no newer release. Remove when age drops it. Review 2027-01" },
     { id = "RUSTSEC-2026-0387", reason = "crypto-bigint 0.5.5 timing side channels, via p256 0.13 in age 0.12.1 (latest). The app only uses age x25519 and scrypt recipients, never p256 tag recipients, so the affected arithmetic is not reached. Remove when age moves to crypto-bigint >=0.7.6. Review 2027-01" },
+    { id = "RUSTSEC-2026-0543", reason = "chrono unmaintained, via ytmapi-rs 0.3.2 (latest ytmapi-rs 0.3.4 still requires chrono ^0.4.44); RUSTSEC lists no safe upgrade. Remove when ytmapi-rs migrates off chrono. Review 2027-01" },
 ]
 yanked = "warn"
 

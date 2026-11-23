@@ -17,7 +17,9 @@ pub struct StartupStoreSet {
     pub(crate) romanization: crate::romanize::RomanizeCache,
 }
 
-fn load_startup_store_set_after_preflight() -> Result<StartupStoreSet, StartupRecoveryError> {
+fn load_startup_store_set_after_preflight(
+    sync_private_store: Option<crate::sync::PrivateStoreSnapshot>,
+) -> Result<StartupStoreSet, StartupRecoveryError> {
     let library = crate::library::Library::load();
     let session_cache = crate::session::SessionCache::load();
     let signals = crate::signals::Signals::load();
@@ -57,7 +59,6 @@ fn load_startup_store_set_after_preflight() -> Result<StartupStoreSet, StartupRe
             }
         }
     };
-    let sync_private_store = load_sync_private_store_if_present()?;
     let personal_state_device_id =
         active_personal_state_device_id(sync_private_store.as_ref(), &personal_state)?;
     let projection =
@@ -83,6 +84,11 @@ fn load_startup_store_set_after_preflight() -> Result<StartupStoreSet, StartupRe
 /// This phase deliberately never invokes `Config::load` or a store's normal `load`. Each call only
 /// acquires that store's intent lock and validates its journal/sidecar/checksum/decoded candidate.
 pub fn preflight_all_startup_stores() -> Result<(), StartupRecoveryError> {
+    preflight_all_startup_stores_inner().map(|_| ())
+}
+
+fn preflight_all_startup_stores_inner()
+-> Result<Option<crate::sync::PrivateStoreSnapshot>, StartupRecoveryError> {
     ensure_startup_recovery_coherent()?;
     if let Some(data_root) = crate::paths::data_dir() {
         let paths = crate::personal_state::PersonalStatePaths::for_data_root(data_root);
@@ -92,7 +98,7 @@ pub fn preflight_all_startup_stores() -> Result<(), StartupRecoveryError> {
         crate::sync::service::recover_pending_anchor_transition(&paths, &sync_paths)
             .map_err(sync_private_store_startup_error)?;
     }
-    let _ = load_sync_private_store_if_present()?;
+    let sync_private_store = load_sync_private_store_if_present()?;
     crate::config::Config::preflight_persistence_recovery()?;
     crate::library::Library::preflight_persistence_recovery()?;
     crate::session::SessionCache::preflight_persistence_recovery()?;
@@ -101,13 +107,14 @@ pub fn preflight_all_startup_stores() -> Result<(), StartupRecoveryError> {
     crate::playlists::Playlists::preflight_persistence_recovery()?;
     crate::station::StationStore::preflight_persistence_recovery()?;
     crate::romanize::RomanizeCache::preflight_persistence_recovery()?;
-    ensure_startup_recovery_coherent()
+    ensure_startup_recovery_coherent()?;
+    Ok(sync_private_store)
 }
 
 /// Load the non-config startup stores through the mandatory inspect-only phase.
 pub fn load_startup_store_set() -> Result<StartupStoreSet, StartupRecoveryError> {
-    preflight_all_startup_stores()?;
-    let stores = load_startup_store_set_after_preflight()?;
+    let sync_private_store = preflight_all_startup_stores_inner()?;
+    let stores = load_startup_store_set_after_preflight(sync_private_store)?;
     ensure_startup_recovery_coherent()?;
     Ok(stores)
 }
@@ -116,10 +123,10 @@ pub fn load_startup_store_set() -> Result<StartupStoreSet, StartupRecoveryError>
 /// then run loaders which may perform recoverable backup/migration work.
 pub fn load_verified_startup_state()
 -> Result<(crate::config::Config, StartupStoreSet), StartupRecoveryError> {
-    preflight_all_startup_stores()?;
+    let sync_private_store = preflight_all_startup_stores_inner()?;
     let config = crate::config::Config::load();
     ensure_startup_recovery_coherent()?;
-    let stores = load_startup_store_set_after_preflight()?;
+    let stores = load_startup_store_set_after_preflight(sync_private_store)?;
     ensure_startup_recovery_coherent()?;
     Ok((config, stores))
 }

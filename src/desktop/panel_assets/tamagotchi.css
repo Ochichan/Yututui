@@ -464,6 +464,12 @@
     html[data-theme="tamagotchi"]:not(.shared-sheet) .bar .track { background: var(--tama-lcd-dk); }
     html[data-theme="tamagotchi"]:not(.shared-sheet) .bar .fill,
     html[data-theme="tamagotchi"]:not(.shared-sheet) .bar .knob { background: var(--tama-ink); box-shadow: none; }
+    html[data-theme="tamagotchi"]:not(.shared-sheet) .bar[data-preview]::after {
+      border-color: var(--tama-bezel-dk);
+      background: var(--tama-ink);
+      color: var(--tama-lcd);
+      box-shadow: none;
+    }
 
     /* The error reads as a line on the LCD, over the marquee row, instead of a strip across
        the shell that covered the ⋯ button. */

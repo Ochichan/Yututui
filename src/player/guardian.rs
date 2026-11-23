@@ -57,9 +57,18 @@ enum GuardianMode {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "result", rename_all = "snake_case")]
 enum GuardianResponse {
-    Ready { mpv_pid: u32 },
-    Probe { success: bool, stdout: Vec<u8> },
-    Error { message: String },
+    Ready {
+        mpv_pid: u32,
+    },
+    Probe {
+        #[serde(default)]
+        exited: bool,
+        success: bool,
+        stdout: Vec<u8>,
+    },
+    Error {
+        message: String,
+    },
 }
 
 #[derive(Debug)]
@@ -198,6 +207,9 @@ impl Drop for ProtectedChild {
 
 /// Bounded output from a probe executed under the same guardian boundary as playback.
 pub(crate) struct ProbeOutput {
+    /// True when the probed process exited on its own; false when terminated by timeout or lease
+    /// teardown so callers never persist an indeterminate probe failure to disk.
+    pub(crate) exited: bool,
     pub(crate) success: bool,
     pub(crate) stdout: Vec<u8>,
 }
@@ -488,7 +500,15 @@ pub(crate) fn probe(
     let mut pending = start_guardian(request, false)?;
     let response = pending.response(timeout.saturating_add(Duration::from_secs(3)))?;
     let result = match response {
-        GuardianResponse::Probe { success, stdout } => ProbeOutput { success, stdout },
+        GuardianResponse::Probe {
+            exited,
+            success,
+            stdout,
+        } => ProbeOutput {
+            exited,
+            success,
+            stdout,
+        },
         GuardianResponse::Error { message } => bail!("mpv guardian probe failed: {message}"),
         GuardianResponse::Ready { .. } => bail!("mpv guardian returned an invalid probe reply"),
     };
@@ -954,11 +974,18 @@ fn run_guardian(mut input: std::io::Stdin) -> Result<i32> {
             if stdout.len() > stdout_max {
                 bail!("mpv probe output exceeded its bound");
             }
-            let success = result?.unwrap_or(false);
+            let (exited, success) = match result? {
+                Some(success) => (true, success),
+                None => (false, false),
+            };
             #[cfg(unix)]
             mpv_lease.close();
             debug_assert!(child.is_reaped());
-            write_response(&GuardianResponse::Probe { success, stdout })?;
+            write_response(&GuardianResponse::Probe {
+                exited,
+                success,
+                stdout,
+            })?;
             Ok(0)
         }
     }

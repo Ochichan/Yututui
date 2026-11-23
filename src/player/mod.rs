@@ -17,6 +17,7 @@ pub mod ipc;
 pub mod lifetime;
 pub mod long_form_seek;
 pub mod mpv;
+mod mpv_probe_cache;
 pub(crate) mod pending;
 pub mod proto;
 pub mod recovery;

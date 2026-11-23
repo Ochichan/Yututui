@@ -79,6 +79,10 @@ impl TerminalEventReceiver {
         self.events.recv().await
     }
 
+    pub(super) fn try_recv(&mut self) -> Result<Event, tokio::sync::mpsc::error::TryRecvError> {
+        self.events.try_recv()
+    }
+
     /// Return a non-consuming snapshot of the immutable first failure plus any teardown details.
     pub(super) fn take_failure(&self) -> Option<io::Error> {
         self.failure.error_snapshot()
