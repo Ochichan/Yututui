@@ -28,6 +28,7 @@ use crate::tools::PlaybackFailureClass;
 use crate::util::sanitize;
 use yututui_core::sleep_timer::{SLEEP_MAX_MINUTES, SleepStep, SleepTimer};
 
+mod ab_loop;
 mod chapters;
 mod crossfade;
 mod delivery;
@@ -237,6 +238,9 @@ struct DaemonPlayback {
     duration: Option<f64>,
     /// Live playback speed (session-scoped, seeded from config; MPRIS `Rate` writes it).
     speed: f64,
+    /// Track-scoped A–B loop. Ordinary loads and stop clear it; transport recovery keeps it
+    /// and writes the same bounds to the replacement player.
+    ab_loop: yututui_core::ab_loop::AbLoopState,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -345,6 +349,7 @@ impl DaemonEngine {
                 position_epoch: 0,
                 duration: None,
                 speed: config.effective_speed(),
+                ab_loop: yututui_core::ab_loop::AbLoopState::Off,
             },
             crossfade: crossfade::DaemonCrossfade::new(config.effective_local_crossfade()),
             // Music-mode invariant: never start with both autoplay and repeat on (drop
@@ -507,9 +512,13 @@ impl DaemonEngine {
             PlayerEvent::TimePos(t) => {
                 // Normalize at the mpv trust boundary (parity with the TUI reducer): a
                 // NaN/inf/negative time-pos must not reach the position clock or media session.
+                let prev_pos = self.playback.time_pos;
                 let t = crate::playback_policy::norm_position(t);
                 self.playback.time_pos = Some(t);
                 self.playback.time_pos_at = Some(Instant::now());
+                if self.playback.ab_loop.is_loop_wrap(prev_pos, t) {
+                    self.bump_position_epoch(PositionEpochReason::Seek);
+                }
                 if t > 0.0 {
                     self.consecutive_play_errors = 0;
                     if let Some(song) = self.queue.current() {
@@ -735,6 +744,7 @@ impl DaemonEngine {
             banned_tracks: self.taste.banned_track_count(),
             banned_artists: self.taste.banned_artist_count(),
             seed_terms: self.taste.seed_term_count(),
+            ab_loop: crate::remote::proto::AbLoopModel::from_state(self.playback.ab_loop),
         }
     }
 
@@ -787,6 +797,7 @@ impl DaemonEngine {
                     self.playback.time_pos,
                 )
             }),
+            ab_loop: crate::remote::proto::AbLoopModel::from_state(self.playback.ab_loop),
             owner_mode: crate::remote::proto::InstanceMode::Daemon,
             eq_preset: self.config.eq_preset.label(),
             eq_bands: self.config.effective_eq_bands(),
@@ -1396,6 +1407,7 @@ impl DaemonEngine {
         self.clear_listening_track();
         self.source_recovery.supersede_transport();
         if let Some(player) = self.player.take() {
+            self.clear_ab_loop_on_stop(&player.handle);
             record_player_delivery("stop", player.handle.send(PlayerCmd::Stop));
         }
         self.reset_idle_playback();
@@ -1409,6 +1421,7 @@ impl DaemonEngine {
         self.playback.time_pos_at = None;
         self.bump_position_epoch(PositionEpochReason::IdleReset);
         self.playback.duration = None;
+        self.playback.ab_loop = yututui_core::ab_loop::AbLoopState::Off;
     }
 
     // INVARIANT(PLAY-EPOCH-001): every daemon position discontinuity bumps through this helper.

@@ -548,6 +548,7 @@ fn default_capabilities() -> Vec<String> {
         super::WEB_DAV_SYNC_CAPABILITY.to_string(),
         super::OPEN_SUBSONIC_CAPABILITY.to_string(),
         super::CHAPTER_JUMP_CAPABILITY.to_string(),
+        super::AB_LOOP_CAPABILITY.to_string(),
         RETAINED_REQUEST_OUTCOMES_CAPABILITY.to_string(),
         // v8 sessions with live push — advertised now that subscribe
         // delivers initial snapshots through the owner-lane Publisher.

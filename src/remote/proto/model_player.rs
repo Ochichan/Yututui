@@ -36,6 +36,9 @@ pub struct PlayerModel {
     /// snapshot of an ordinary track keeps its established bytes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub chapter: Option<ChapterModel>,
+    /// Active track-scoped A–B loop bounds. Absent when off so legacy bytes stay identical.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ab_loop: Option<AbLoopModel>,
     pub owner_mode: InstanceMode,
     pub eq: EqModel,
     /// Queue cursor (order position). The cursor rides the player topic — a track
@@ -51,6 +54,21 @@ pub struct ChapterModel {
     /// One-based position in the chapter list.
     pub index: u32,
     pub count: u32,
+}
+
+/// Active A–B loop bounds for the loaded track in whole milliseconds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AbLoopModel {
+    pub a_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub b_ms: Option<u64>,
+}
+
+impl AbLoopModel {
+    pub fn from_state(state: yututui_core::ab_loop::AbLoopState) -> Option<Self> {
+        let (a_ms, b_ms) = state.to_ms()?;
+        Some(Self { a_ms, b_ms })
+    }
 }
 
 /// Full queue contents, pushed on membership/order change only. `rev` is assigned from
@@ -115,6 +133,7 @@ mod tests {
             radio_mode: false,
             stream_now_playing: Some("ICY Title".to_string()),
             chapter: None,
+            ab_loop: None,
             owner_mode: InstanceMode::Daemon,
             eq: EqModel {
                 preset: "Rock".to_string(),

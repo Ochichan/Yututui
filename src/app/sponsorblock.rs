@@ -74,7 +74,8 @@ impl App {
         let blocked = self.personal_state.listening.has_pending_seek()
             || self.interaction.seekbar_scrub.is_some()
             || self.prefetch.source_recovery.active_ticket().is_some()
-            || self.recorder.transport_recovery_active;
+            || self.recorder.transport_recovery_active
+            || self.playback.ab_loop.is_active();
         let Some(target) = self.playback.skip_policy.observe(Observation {
             position,
             duration: self.playback.duration,

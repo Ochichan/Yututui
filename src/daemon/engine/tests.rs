@@ -74,6 +74,7 @@ pub(in crate::daemon) fn engine_with_queue(ids: &[&str]) -> DaemonEngine {
             position_epoch: 0,
             duration: None,
             speed: 1.0,
+            ab_loop: yututui_core::ab_loop::AbLoopState::Off,
         },
         crossfade: crossfade::DaemonCrossfade::new(crate::crossfade::LocalCrossfade::Off),
         // An explicit missing path: the default one may hold the developer's real cookies, and

@@ -60,6 +60,10 @@ pub const LONG_FORM_SEEK_OPTIMIZATION_CAPABILITY: &str = "long-form-seek-optimiz
 /// on the player snapshot. An older owner rejects the unknown command as `bad_request`.
 pub const CHAPTER_JUMP_CAPABILITY: &str = "chapter-jump-v1";
 
+/// Advertised by every owner that accepts `ab-loop` commands and publishes the active loop on
+/// player and status snapshots.
+pub const AB_LOOP_CAPABILITY: &str = "ab-loop-v1";
+
 /// An owner reply first crosses an internal oneshot (or a bounded session queue), then a socket
 /// task serializes and flushes it. Hub shutdown cancels those tasks, so hosts which settled
 /// pre-close requests wait this bounded handoff window before latching the hub.

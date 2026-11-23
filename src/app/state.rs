@@ -356,6 +356,8 @@ pub struct Playback {
     pub speed: f64,
     /// Edge-triggered non-music skip decisions for the loaded track.
     pub(in crate::app) skip_policy: yututui_core::sponsorblock::SkipPolicy,
+    /// Track-scoped A–B loop state; cleared whenever a track loads or playback stops.
+    pub(in crate::app) ab_loop: yututui_core::ab_loop::AbLoopState,
     /// Current live-radio now-playing metadata, when the active stream exposes it.
     pub stream_now_playing: Option<StreamNowPlaying>,
     /// mpv `audio-codec-name` for the active stream (e.g. `mp3`, `aac`); the radio recorder
