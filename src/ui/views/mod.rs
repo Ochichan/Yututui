@@ -6,6 +6,7 @@ pub mod artist;
 pub mod atlas;
 pub mod audio_output_picker;
 pub mod color_picker;
+pub mod command_palette;
 pub mod context_menu;
 pub mod help;
 pub mod library;

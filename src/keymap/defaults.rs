@@ -135,6 +135,7 @@ pub fn default_bindings() -> Vec<(KeyContext, Action, Chord)> {
         (C::Global, A::Home, ctrl('h')),
         (C::Global, A::ToggleStreaming, ctrl('r')),
         (C::Global, A::ToggleHelp, ch('?')),
+        (C::Global, A::OpenCommandPalette, ctrl('k')),
         (C::Global, A::OpenContextMenu, shift(KeyCode::F(10))),
         (C::Global, A::ToggleAbout, key(KeyCode::F(1))),
         (C::Global, A::ToggleAnimations, ch('A')),

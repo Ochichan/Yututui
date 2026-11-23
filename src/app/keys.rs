@@ -58,6 +58,10 @@ impl App {
         if self.sleep.popup.is_some() {
             return self.on_key_sleep_popup(k);
         }
+        // The fuzzy command & jump palette owns all input while open.
+        if self.overlays.command_palette.is_some() {
+            return self.on_key_command_palette(k);
+        }
         if self.server.library.playlist_recovery.is_some() {
             return self.on_key_server_playlist_recovery(k);
         }
@@ -524,7 +528,7 @@ impl App {
         None
     }
 
-    fn route_global_key_context(&mut self, chord: Chord) -> Option<Vec<Cmd>> {
+    pub(in crate::app) fn route_global_key_context(&mut self, chord: Chord) -> Option<Vec<Cmd>> {
         // Global shortcuts (help, streaming). Suppressed only when a *typeable* key would feed
         // a focused text field — so `?` types into the search box but opens help elsewhere,
         // while Ctrl-based globals (streaming) keep working everywhere as before.
@@ -539,6 +543,10 @@ impl App {
                     self.overlays.help_visible = true;
                     self.bridges.help_scroll.reset();
                     self.dirty = true;
+                    return Some(Vec::new());
+                }
+                Action::OpenCommandPalette => {
+                    self.open_command_palette();
                     return Some(Vec::new());
                 }
                 Action::ToggleAbout => {

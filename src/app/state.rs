@@ -1273,6 +1273,8 @@ impl Default for Animation {
 pub struct Overlays {
     /// Row-scoped TUI context menu opened by right click or the keyboard fallback.
     pub context_menu: Option<ContextMenuState>,
+    /// Fuzzy command & jump palette (`Ctrl+K`).
+    pub command_palette: Option<crate::app::command_palette::CommandPaletteState>,
     /// Whether the `?` help / cheat-sheet overlay is shown.
     pub help_visible: bool,
     /// Whether the mouse cheat-sheet overlay is shown. Opened only from the footer mouse icon.

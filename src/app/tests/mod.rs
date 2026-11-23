@@ -17,6 +17,7 @@ mod atlas;
 mod audio_output;
 mod audio_output_picker;
 mod beginner_settings;
+mod command_palette;
 mod context_menu;
 mod docked_bar;
 mod downloads;
