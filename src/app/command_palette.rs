@@ -267,12 +267,8 @@ impl App {
             Some(PaletteTarget::Animation(field)) => {
                 self.theme = orig_theme;
                 let mut next_anim = orig_anim;
-                if let Some(flag) = field.anim_flag(&mut next_anim) {
-                    *flag = !*flag;
-                    if field != Field::AnimMaster && *flag {
-                        next_anim.master = true;
-                    }
-                }
+                // Radio renders `radio_master`, not the music-mode `master` flag.
+                toggle_palette_animation_field(&mut next_anim, field, self.radio_dedicated_mode);
                 self.config.animations = next_anim;
                 active = true;
             }
@@ -550,6 +546,12 @@ impl App {
         } else {
             self.config.theme = self.theme.clone();
         }
+        // An open Settings draft is what Save writes back. Mirror the committed theme or
+        // closing Settings restores the pre-palette preset.
+        let committed = self.theme.clone();
+        if let Some(settings) = self.settings.as_mut() {
+            settings.draft.theme = committed;
+        }
         self.set_status_info(format!(
             "{}: {}",
             t!("Theme", "테마", "テーマ"),
@@ -561,14 +563,11 @@ impl App {
     }
 
     fn commit_palette_animation(&mut self, field: Field) -> Vec<Cmd> {
-        let mut enabled_after = false;
-        if let Some(flag) = field.anim_flag(&mut self.config.animations) {
-            *flag = !*flag;
-            enabled_after = *flag;
-            if field != Field::AnimMaster && enabled_after {
-                self.config.animations.master = true;
-            }
-        }
+        let radio = self.radio_dedicated_mode;
+        let before = self.config.animations;
+        let enabled_after =
+            toggle_palette_animation_field(&mut self.config.animations, field, radio);
+        self.mirror_palette_animation_into_settings_draft(field, before, enabled_after);
         self.set_status_info(format!(
             "{}: {}",
             field.label(),
@@ -577,6 +576,33 @@ impl App {
         vec![Cmd::Persist(PersistCmd::Config(Box::new(
             self.config.clone(),
         )))]
+    }
+
+    /// `SettingsDraft::apply_to` copies `draft.animations` wholesale, so a palette commit
+    /// made while Settings is open has to land in the draft or Save reverts it. Only the
+    /// fields this commit actually changed are copied, leaving other unsaved draft edits.
+    fn mirror_palette_animation_into_settings_draft(
+        &mut self,
+        field: Field,
+        before: AnimationsConfig,
+        enabled_after: bool,
+    ) {
+        let after = self.config.animations;
+        let Some(settings) = self.settings.as_mut() else {
+            return;
+        };
+        let draft = &mut settings.draft.animations;
+        if before.master != after.master {
+            draft.master = after.master;
+        }
+        if before.radio_master != after.radio_master {
+            draft.radio_master = after.radio_master;
+        }
+        if field != Field::AnimMaster
+            && let Some(flag) = field.anim_flag(draft)
+        {
+            *flag = enabled_after;
+        }
     }
 
     fn execute_global_palette_action(&mut self, action: Action) -> Vec<Cmd> {
@@ -606,6 +632,10 @@ impl App {
             Action::ToggleAnimations => self.toggle_animations(),
             Action::ToggleControlBox => self.toggle_control_box(),
             Action::ToggleZoomWheelLock => self.toggle_zoom_wheel_lock(),
+            // Zoom is dispatched in `on_key` before `route_global_key_context`, so the
+            // chord replay above never sees it. Run the same step the key uses.
+            Action::TextZoomIn => self.zoom_step(true),
+            Action::TextZoomOut => self.zoom_step(false),
             Action::Home => self.go_home(),
             Action::Quit => self.quit_app(),
             _ => Vec::new(),
@@ -616,6 +646,9 @@ impl App {
         let Some(chord) = self.keymap.chord(ctx, action) else {
             return Vec::new();
         };
+        // The row is an action, not a keystroke. Replaying a typeable chord into the
+        // search box or a library/local filter inserts that character and drops the command.
+        self.release_text_entry_for_palette_action(ctx, chord);
         let key_event = KeyEvent::new(chord.code, chord.mods);
         match ctx {
             KeyContext::Player => self.on_player_action(action),
@@ -624,6 +657,26 @@ impl App {
             KeyContext::LocalDeck => self.on_key_local(key_event),
             KeyContext::Queue => self.on_key_queue(key_event),
             _ => Vec::new(),
+        }
+    }
+
+    /// Step out of a focused editor so the screen handler resolves the palette action.
+    /// Search only swallows typeable chords; the library and local filters swallow every key.
+    fn release_text_entry_for_palette_action(&mut self, ctx: KeyContext, chord: Chord) {
+        match ctx {
+            KeyContext::SearchResults
+                if chord.is_typeable() && self.search.focus == SearchFocus::Input =>
+            {
+                self.search.focus = SearchFocus::Results;
+                self.search.select_all = false;
+            }
+            KeyContext::Library | KeyContext::Playlists if self.library_ui.filter_editing => {
+                self.library_ui.filter_editing = false;
+            }
+            KeyContext::LocalDeck if self.local_mode.ui.filter_editing => {
+                self.local_mode.ui.filter_editing = false;
+            }
+            _ => {}
         }
     }
 
@@ -951,8 +1004,10 @@ impl App {
             Field::AnimPlasma,
         ];
         for field in anim_fields {
-            let mut copy = self.config.animations;
-            let on = field.anim_flag(&mut copy).is_some_and(|flag| *flag);
+            // `animations()` resolves Radio's `radio_master`, so the on/off subtitle matches
+            // the switch the preview and the renderer actually use.
+            let mut shown = self.animations();
+            let on = field.anim_flag(&mut shown).is_some_and(|flag| *flag);
             let label = field.label();
             let subtitle = Some(if on {
                 t!(
@@ -1084,6 +1139,36 @@ impl App {
             _ => Ok(()),
         }
     }
+}
+
+/// Flip one palette animation field.
+///
+/// Dedicated Radio mode keeps its own master (`radio_master`, inheriting `master` until
+/// pinned). Effect toggles that need a master force that Radio switch on, and the
+/// Anim Master row flips it, leaving the music-mode `master` flag alone.
+fn toggle_palette_animation_field(anim: &mut AnimationsConfig, field: Field, radio: bool) -> bool {
+    if radio && field == Field::AnimMaster {
+        let on = !anim.effective(true).master;
+        anim.radio_master = Some(on);
+        return on;
+    }
+    let on = {
+        let Some(flag) = field.anim_flag(anim) else {
+            return false;
+        };
+        *flag = !*flag;
+        *flag
+    };
+    if field != Field::AnimMaster && on {
+        if radio {
+            if !anim.effective(true).master {
+                anim.radio_master = Some(true);
+            }
+        } else {
+            anim.master = true;
+        }
+    }
+    on
 }
 
 fn is_palette_action(action: Action) -> bool {

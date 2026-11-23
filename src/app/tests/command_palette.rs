@@ -2,10 +2,31 @@
 //! Esc revert, Enter-only EQ apply, context-action gating, Korean query, and footer discoverability.
 
 use super::*;
+use crate::app::command_palette::PaletteTarget;
 use crate::eq::EqPreset;
 use crate::player::{Chapter, SeekPrecision};
 use crate::settings::{Field, SettingsTab};
 use crate::theme::ThemePreset;
+
+fn select_palette(app: &mut App, mut matches_target: impl FnMut(&PaletteTarget) -> bool) {
+    let visible = {
+        let state = app.overlays.command_palette.as_ref().expect("palette open");
+        state
+            .filtered
+            .iter()
+            .position(|&idx| matches_target(&state.entries[idx].target))
+            .expect("palette row")
+    };
+    let current = app.overlays.command_palette.as_ref().unwrap().selected;
+    let down = visible >= current;
+    for _ in 0..visible.abs_diff(current) {
+        app.update(Msg::Key(key(if down {
+            KeyCode::Down
+        } else {
+            KeyCode::Up
+        })));
+    }
+}
 
 fn ctrl_k() -> KeyEvent {
     KeyEvent::new(KeyCode::Char('k'), KeyModifiers::CONTROL)
@@ -215,4 +236,223 @@ fn disabled_context_action_refuses_execution_with_reason_and_korean_query_works(
     // Render across standard and narrow terminals without panic.
     let _ = render_app_buffer(&app, 80, 24);
     let _ = render_app_buffer(&app, 30, 16);
+}
+
+#[test]
+fn radio_palette_animation_writes_radio_master_not_music_master() {
+    let _guard = crate::i18n::lock_for_test();
+    crate::i18n::set_language(crate::i18n::Language::English);
+
+    let mut app = App::new(100);
+    app.config.animations.master = true;
+    app.config.animations.radio_master = Some(false);
+    app.config.animations.rain = false;
+    app.radio_dedicated_mode = true;
+
+    app.update(Msg::Key(ctrl_k()));
+    let master_row = app
+        .overlays
+        .command_palette
+        .as_ref()
+        .unwrap()
+        .entries
+        .iter()
+        .find(|entry| matches!(entry.target, PaletteTarget::Animation(Field::AnimMaster)))
+        .expect("anim master row");
+    assert!(
+        master_row
+            .subtitle
+            .as_deref()
+            .is_some_and(|text| text.starts_with("off")),
+        "radio master is off even while the music master is on"
+    );
+
+    type_str(&mut app, "matrix rain");
+    select_palette(&mut app, |target| {
+        matches!(target, PaletteTarget::Animation(Field::AnimRain))
+    });
+    assert!(
+        app.overlays
+            .command_palette
+            .as_ref()
+            .is_some_and(|state| state.preview_active())
+    );
+    assert!(
+        app.config.animations.master,
+        "preview must not touch music master"
+    );
+    assert_eq!(app.config.animations.radio_master, Some(true));
+    assert!(app.config.animations.rain);
+    assert!(app.animations().master);
+
+    let esc = app.update(Msg::Key(key(KeyCode::Esc)));
+    assert!(esc.is_empty());
+    assert_eq!(app.config.animations.radio_master, Some(false));
+    assert!(!app.config.animations.rain);
+    assert!(!app.animations().master);
+
+    app.update(Msg::Key(ctrl_k()));
+    type_str(&mut app, "enable animations");
+    select_palette(&mut app, |target| {
+        matches!(target, PaletteTarget::Animation(Field::AnimMaster))
+    });
+    let cmds = app.update(Msg::Key(key(KeyCode::Enter)));
+    assert!(app.config.animations.master);
+    assert_eq!(app.config.animations.radio_master, Some(true));
+    assert!(app.animations().master);
+    assert!(cmds.iter().any(|cmd| matches!(
+        cmd,
+        Cmd::Persist(PersistCmd::Config(cfg))
+            if cfg.animations.master && cfg.animations.radio_master == Some(true)
+    )));
+}
+
+#[test]
+fn palette_context_actions_do_not_type_into_focused_fields() {
+    let _guard = crate::i18n::lock_for_test();
+    crate::i18n::set_language(crate::i18n::Language::English);
+
+    let mut app = app_with_search_results();
+    app.search.focus = SearchFocus::Input;
+    app.search.input = "hello".to_owned();
+    app.update(Msg::Key(ctrl_k()));
+    type_str(&mut app, "favorite");
+    select_palette(&mut app, |target| {
+        matches!(
+            target,
+            PaletteTarget::ContextAction {
+                ctx: KeyContext::SearchResults,
+                action: Action::Favorite,
+            }
+        )
+    });
+    let cmds = app.update(Msg::Key(key(KeyCode::Enter)));
+    assert_eq!(app.search.input, "hello");
+    assert!(app.library.is_favorite("a"));
+    assert!(
+        cmds.iter()
+            .any(|cmd| matches!(cmd, Cmd::Persist(PersistCmd::Library)))
+    );
+
+    let mut app = app_with_favorites(vec![
+        fsong("a", "Lovely", "Billie Eilish"),
+        fsong("b", "Bad Guy", "Billie Eilish"),
+    ]);
+    app.update(Msg::Key(key(KeyCode::Char('/'))));
+    for ch in "lov".chars() {
+        app.update(Msg::Key(key(KeyCode::Char(ch))));
+    }
+    assert!(app.library_ui.filter_editing);
+    app.update(Msg::Key(ctrl_k()));
+    type_str(&mut app, "play whole");
+    select_palette(&mut app, |target| {
+        matches!(
+            target,
+            PaletteTarget::ContextAction {
+                ctx: KeyContext::Library,
+                action: Action::PlayAll,
+            }
+        )
+    });
+    let mut cmds = app.update(Msg::Key(key(KeyCode::Enter)));
+    assert_eq!(app.library_ui.filter_query, "lov");
+    assert!(!cmds.is_empty(), "play all must run instead of typing 'a'");
+    admit_player_transition(&mut app, &mut cmds);
+    assert_eq!(
+        app.queue.current().map(|song| song.video_id.as_str()),
+        Some("a")
+    );
+
+    let mut app = App::new(100);
+    app.mode = Mode::Library;
+    app.local_dedicated_mode = true;
+    app.local_mode.ui.filter_editing = true;
+    app.local_mode.ui.filter_query = "jazz".to_owned();
+    app.update(Msg::Key(ctrl_k()));
+    type_str(&mut app, "crossfade");
+    select_palette(&mut app, |target| {
+        matches!(
+            target,
+            PaletteTarget::ContextAction {
+                ctx: KeyContext::LocalDeck,
+                action: Action::LocalCrossfadeUp,
+            }
+        )
+    });
+    let cmds = app.update(Msg::Key(key(KeyCode::Enter)));
+    assert_eq!(app.local_mode.ui.filter_query, "jazz");
+    assert!(!app.audio.local_crossfade.is_off());
+    assert!(
+        cmds.iter()
+            .any(|cmd| matches!(cmd, Cmd::Persist(PersistCmd::Config(_))))
+    );
+}
+
+#[test]
+fn palette_text_zoom_actions_step_zoom() {
+    let _guard = crate::i18n::lock_for_test();
+    crate::i18n::set_language(crate::i18n::Language::English);
+
+    let mut app = App::new(100);
+    app.zoom.set_mode(crate::zoom::ZoomMode::Osc66);
+    assert_eq!(app.zoom.percent(), 100);
+
+    app.update(Msg::Key(ctrl_k()));
+    type_str(&mut app, "text size up");
+    select_palette(&mut app, |target| {
+        matches!(target, PaletteTarget::GlobalAction(Action::TextZoomIn))
+    });
+    let cmds = app.update(Msg::Key(key(KeyCode::Enter)));
+    assert!(app.overlays.command_palette.is_none());
+    assert!(app.zoom.percent() > 100);
+    let percent = app.zoom.percent();
+    assert!(cmds.iter().any(|cmd| matches!(
+        cmd,
+        Cmd::Persist(PersistCmd::Config(cfg)) if cfg.text_zoom == Some(percent)
+    )));
+}
+
+#[test]
+fn palette_commits_update_open_settings_draft() {
+    let _guard = crate::i18n::lock_for_test();
+    crate::i18n::set_language(crate::i18n::Language::English);
+
+    let mut app = App::new(100);
+    app.update(Msg::Key(key(KeyCode::Char('o'))));
+    assert!(app.settings.is_some());
+    app.settings.as_mut().unwrap().draft.animations.fps = 12;
+
+    app.update(Msg::Key(ctrl_k()));
+    type_str(&mut app, "theme dracula");
+    let cmds = app.update(Msg::Key(key(KeyCode::Enter)));
+    assert!(
+        cmds.iter()
+            .any(|cmd| matches!(cmd, Cmd::Persist(PersistCmd::Config(_))))
+    );
+    assert_eq!(app.theme.preset_enum(), ThemePreset::Dracula);
+    assert_eq!(
+        app.settings.as_ref().unwrap().draft.theme.preset_enum(),
+        ThemePreset::Dracula
+    );
+    assert_eq!(app.settings.as_ref().unwrap().draft.animations.fps, 12);
+
+    app.update(Msg::Key(ctrl_k()));
+    type_str(&mut app, "matrix rain");
+    select_palette(&mut app, |target| {
+        matches!(target, PaletteTarget::Animation(Field::AnimRain))
+    });
+    app.update(Msg::Key(key(KeyCode::Enter)));
+    let draft = &app.settings.as_ref().unwrap().draft.animations;
+    assert!(draft.rain);
+    assert!(draft.master);
+    assert_eq!(draft.fps, 12);
+    assert!(app.config.animations.rain);
+    assert!(app.config.animations.master);
+
+    let mut cmds = app.close_settings();
+    admit_player_transition(&mut app, &mut cmds);
+    assert_eq!(app.config.theme.preset_enum(), ThemePreset::Dracula);
+    assert!(app.config.animations.rain);
+    assert!(app.config.animations.master);
+    assert_eq!(app.config.animations.fps, 12);
 }
