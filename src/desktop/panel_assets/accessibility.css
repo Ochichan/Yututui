@@ -1,3 +1,9 @@
+    html.page-hidden *,
+    html.page-hidden *::before,
+    html.page-hidden *::after {
+      animation-play-state: paused !important;
+    }
+
     @media (prefers-reduced-motion: reduce) {
       *, *::before, *::after {
         scroll-behavior: auto !important;
