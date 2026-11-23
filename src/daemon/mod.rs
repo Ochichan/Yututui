@@ -430,7 +430,7 @@ async fn run_owner_loop(
             pending_events.extend(event_tx.drain_coalesced());
             continue;
         }
-        let (observer_plan, media_position_turn, media_before) = event.observer_context(&engine);
+        let observer = event.observer_context(&engine);
         match event {
             DaemonEvent::Remote(
                 RemoteEvent::Command(command, reply)
@@ -615,8 +615,12 @@ async fn run_owner_loop(
 
         // Progress turns only rebase the platform clock: Linux/Windows backends interpolate their
         // own position and need every time-pos sample to correct it, while rebuilding the owned
-        // media projection for a scalar update would allocate on the hottest turn.
-        let media_progress_publish_due = media_position_turn
+        // media projection for a scalar update would allocate on the hottest turn. When a
+        // progress turn applies a seek (e.g. SponsorBlock skip), skip the stale-epoch rebase and
+        // publish the fresh snapshot with the updated `position_epoch` below instead.
+        let position_epoch_changed = observer.position_epoch_changed(&engine);
+        let media_progress_publish_due = observer.position_turn
+            && !position_epoch_changed
             && engine
                 .media_position_update()
                 .is_some_and(|(position, captured_at)| {
@@ -629,8 +633,8 @@ async fn run_owner_loop(
         // Build the owned OS/scrobble projection only when a projected facet changed or the
         // active scrobble clock needs its ~1 Hz heartbeat. Ordinary API/remote events and
         // high-rate telemetry otherwise stay allocation-free here.
-        let media_changed = media_before.is_some_and(|before| before != engine.media_fingerprint());
-        let scrobble_due = observer_plan.drive_scrobble_heartbeat
+        let media_changed = observer.media_changed(&engine);
+        let scrobble_due = observer.plan.drive_scrobble_heartbeat
             && engine.media_scrobble_heartbeat_active()
             && scrobble.heartbeat_due();
         let media_enable_publish_due = media_enabled_changed && media_enabled;

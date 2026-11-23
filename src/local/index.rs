@@ -84,7 +84,7 @@ impl LocalIndex {
             }
         };
 
-        let text = match String::from_utf8(bytes.clone()) {
+        let text = match std::str::from_utf8(&bytes) {
             Ok(text) => text,
             Err(error) => {
                 let backup_path = write_bad_copy(path, &bytes).ok();
@@ -99,7 +99,21 @@ impl LocalIndex {
             }
         };
 
-        let value = match serde_json::from_str::<Value>(&text) {
+        // Fast path: deserialize directly from the UTF-8 buffer without building a Value DOM.
+        // Check schema_version before normalize() so newer-schema files still trigger backup+warn.
+        if let Ok(mut index) = serde_json::from_str::<LocalIndex>(text) {
+            let schema_version = u64::from(index.schema_version);
+            if schema_version > u64::from(INDEX_SCHEMA_VERSION) {
+                return unsupported_schema_load(path, &bytes, schema_version);
+            }
+            index.normalize();
+            return LocalIndexLoad {
+                index,
+                warnings: Vec::new(),
+            };
+        }
+
+        let value = match serde_json::from_str::<Value>(text) {
             Ok(value) => value,
             Err(error) => {
                 let backup_path = write_bad_copy(path, &bytes).ok();
@@ -115,21 +129,10 @@ impl LocalIndex {
         };
 
         if let Some(schema_version) = unsupported_schema_version(&value) {
-            let backup_path = write_bad_copy(path, &bytes).ok();
-            return LocalIndexLoad {
-                index: LocalIndex::default(),
-                warnings: vec![load_warning(
-                    path,
-                    format!(
-                        "local index schema version {schema_version} is newer than supported version {INDEX_SCHEMA_VERSION}; rebuilt empty index"
-                    ),
-                    backup_path,
-                )],
-            };
+            return unsupported_schema_load(path, &bytes, schema_version);
         }
 
-        let mut index = serde_json::from_value::<LocalIndex>(value.clone())
-            .unwrap_or_else(|_| safe_fs::recover_lenient::<LocalIndex>(value));
+        let mut index = safe_fs::recover_lenient::<LocalIndex>(value);
         index.normalize();
         LocalIndexLoad {
             index,
@@ -205,6 +208,20 @@ impl LocalIndex {
                 .cmp(&b.path.to_string_lossy().to_lowercase())
                 .then_with(|| a.title.to_lowercase().cmp(&b.title.to_lowercase()))
         });
+    }
+}
+
+fn unsupported_schema_load(path: &Path, bytes: &[u8], schema_version: u64) -> LocalIndexLoad {
+    let backup_path = write_bad_copy(path, bytes).ok();
+    LocalIndexLoad {
+        index: LocalIndex::default(),
+        warnings: vec![load_warning(
+            path,
+            format!(
+                "local index schema version {schema_version} is newer than supported version {INDEX_SCHEMA_VERSION}; rebuilt empty index"
+            ),
+            backup_path,
+        )],
     }
 }
 
@@ -423,5 +440,99 @@ mod tests {
 
         assert_eq!(index.tracks.len(), 1);
         assert_eq!(index.tracks[0].id, keep.id);
+    }
+
+    #[test]
+    fn unsupported_schema_version_above_u32_max_loads_empty_and_preserves_bad_copy() {
+        let dir = temp_dir("unsupported-schema-u64");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("local-index.json");
+        let contents = br#"{"schema_version":5000000000,"tracks":[],"updated_at":1}"#;
+        std::fs::write(&path, contents).unwrap();
+
+        let loaded = LocalIndex::load_with_diagnostics(&path);
+
+        assert!(loaded.index.tracks.is_empty());
+        assert_eq!(loaded.warnings.len(), 1);
+        assert!(loaded.warnings[0].message.contains("5000000000"));
+        let backup = loaded.warnings[0]
+            .backup_path
+            .as_ref()
+            .expect("oversized schema_version should preserve a bad copy");
+        assert_eq!(std::fs::read(backup).unwrap(), contents);
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn lenient_recovery_still_rescues_valid_tracks_when_direct_parse_fails() {
+        let dir = temp_dir("lenient-recovery");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("local-index.json");
+        let track = LocalTrack::untagged(dir.join("song.flac"), 42, 100);
+        let payload = serde_json::json!({
+            "schema_version": INDEX_SCHEMA_VERSION,
+            "tracks": [track],
+            "updated_at": "not-an-integer",
+        });
+        std::fs::write(&path, serde_json::to_vec(&payload).unwrap()).unwrap();
+
+        let loaded = LocalIndex::load_with_diagnostics(&path);
+
+        assert!(loaded.warnings.is_empty());
+        assert_eq!(loaded.index.tracks.len(), 1);
+        assert_eq!(loaded.index.tracks[0].title, "song");
+        assert_eq!(loaded.index.updated_at, 0);
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn duplicate_ids_keep_last_entry_and_tie_break_preserves_id_order() {
+        let dir = temp_dir("dup-and-tiebreak");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("local-index.json");
+
+        let mut first = LocalTrack::untagged(dir.join("same.mp3"), 10, 20);
+        first.title = "Old Title".to_string();
+        let mut second = first.clone();
+        second.title = "New Title".to_string();
+
+        // Two distinct IDs with identical path+title sort keys (case-insensitive).
+        let mut tie_b = LocalTrack::untagged(dir.join("tie.mp3"), 100, 200);
+        tie_b.title = "Tie".to_string();
+        let mut tie_a = LocalTrack::untagged(dir.join("TIE.mp3"), 101, 201);
+        tie_a.title = "tie".to_string();
+        let expected_tie_order = if tie_a.id < tie_b.id {
+            vec![tie_a.id.clone(), tie_b.id.clone()]
+        } else {
+            vec![tie_b.id.clone(), tie_a.id.clone()]
+        };
+
+        let raw = serde_json::json!({
+            "schema_version": INDEX_SCHEMA_VERSION,
+            "tracks": [first, second.clone(), tie_b, tie_a],
+            "updated_at": 1,
+        });
+        std::fs::write(&path, serde_json::to_vec(&raw).unwrap()).unwrap();
+
+        let loaded = LocalIndex::load(&path);
+
+        let deduped = loaded
+            .tracks
+            .iter()
+            .find(|t| t.id == second.id)
+            .expect("duplicate id should be kept");
+        assert_eq!(deduped.title, "New Title");
+
+        let actual_tie_order: Vec<_> = loaded
+            .tracks
+            .iter()
+            .filter(|t| t.title.eq_ignore_ascii_case("tie"))
+            .map(|t| t.id.clone())
+            .collect();
+        assert_eq!(actual_tie_order, expected_tie_order);
+
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

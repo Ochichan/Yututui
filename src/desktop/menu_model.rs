@@ -244,6 +244,44 @@ fn visit_items(entries: &[MenuEntry], visitor: &mut impl FnMut(&MenuItem)) {
     }
 }
 
+/// Allocation-free capability query matching [`build_menu`]'s enabled state for every action.
+/// Keep in lockstep with [`build_menu`] (verified by `action_enabled_matches_build_menu`).
+pub fn action_enabled(state: &TrayState, action: MenuAction) -> bool {
+    let kind = state.kind();
+    let connected = !matches!(kind, TrayStateKind::Disconnected);
+    let has_track = state.status().is_some_and(|status| !is_idle(status));
+    let daemon_owner = state
+        .status()
+        .is_some_and(|status| status.owner_mode == InstanceMode::Daemon);
+    let daemon_idle = daemon_owner && state.status().is_some_and(is_idle);
+    let disconnected = matches!(state, TrayState::Disconnected { .. });
+    match action {
+        MenuAction::PlayPause
+        | MenuAction::Next
+        | MenuAction::Previous
+        | MenuAction::SeekBack
+        | MenuAction::SeekForward => has_track,
+        MenuAction::VolumeUp
+        | MenuAction::VolumeDown
+        | MenuAction::ToggleStreaming
+        | MenuAction::QuitPlayer => connected,
+        MenuAction::StartDaemon => !daemon_owner && disconnected,
+        MenuAction::ResumeDaemon => {
+            if daemon_owner {
+                daemon_idle
+            } else {
+                disconnected && state.resume_available()
+            }
+        }
+        MenuAction::StopDaemon => daemon_owner,
+        MenuAction::ShowMiniPlayer
+        | MenuAction::OpenTui
+        | MenuAction::ToggleStartup
+        | MenuAction::QuitTray => true,
+        MenuAction::Refresh => false,
+    }
+}
+
 pub fn build_menu(state: &TrayState) -> MenuModel {
     let kind = state.kind();
     let connected = !matches!(kind, TrayStateKind::Disconnected);
@@ -874,5 +912,60 @@ mod tests {
         assert_eq!(MenuAction::StopDaemon.remote_command(), None);
         assert_eq!(MenuAction::ToggleStartup.remote_command(), None);
         assert_eq!(MenuAction::QuitTray.remote_command(), None);
+    }
+
+    #[test]
+    fn action_enabled_matches_build_menu() {
+        let _guard = crate::i18n::lock_for_test();
+        let mut daemon_playing = playing_status();
+        daemon_playing.owner_mode = InstanceMode::Daemon;
+        let mut daemon_idle = daemon_playing.clone();
+        daemon_idle.title = None;
+        daemon_idle.artist = None;
+        daemon_idle.total = 0;
+        let mut standalone_idle = playing_status();
+        standalone_idle.title = None;
+        standalone_idle.artist = None;
+        standalone_idle.total = 0;
+
+        let states = [
+            TrayState::disconnected(false),
+            TrayState::disconnected(true),
+            TrayState::Connected(playing_status()),
+            TrayState::Connected(standalone_idle),
+            TrayState::Connected(daemon_playing),
+            TrayState::Connected(daemon_idle),
+        ];
+        let actions = [
+            MenuAction::PlayPause,
+            MenuAction::Next,
+            MenuAction::Previous,
+            MenuAction::SeekBack,
+            MenuAction::SeekForward,
+            MenuAction::VolumeUp,
+            MenuAction::VolumeDown,
+            MenuAction::ToggleStreaming,
+            MenuAction::StartDaemon,
+            MenuAction::ResumeDaemon,
+            MenuAction::StopDaemon,
+            MenuAction::ShowMiniPlayer,
+            MenuAction::OpenTui,
+            MenuAction::Refresh,
+            MenuAction::ToggleStartup,
+            MenuAction::QuitPlayer,
+            MenuAction::QuitTray,
+        ];
+        for state in &states {
+            let model = build_menu(state);
+            for action in actions {
+                let expected = model.action_item(action).is_some_and(|item| item.enabled);
+                assert_eq!(
+                    action_enabled(state, action),
+                    expected,
+                    "mismatch for {action:?} in {:?}",
+                    state.kind()
+                );
+            }
+        }
     }
 }
