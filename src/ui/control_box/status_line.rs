@@ -718,6 +718,7 @@ pub(super) fn render_sponsorblock_ticks(
     frame: &mut ratatui::Frame,
     app: &App,
     area: ratatui::layout::Rect,
+    label_width: u16,
 ) {
     if app.current_is_radio_stream() || area.width < 2 || area.height == 0 {
         return;
@@ -729,6 +730,10 @@ pub(super) fn render_sponsorblock_ticks(
     if segments.is_empty() {
         return;
     }
+    // Match `Gauge`'s centered label placement so internal label spaces stay untouched.
+    let clamped_label_w = area.width.min(label_width);
+    let label_start = area.x + (area.width - clamped_label_w) / 2;
+    let label_end = label_start.saturating_add(clamped_label_w);
     let warning = app.theme.color(crate::theme::ThemeRole::Warning);
     let max_x = area.right().saturating_sub(1);
     let span_w = f64::from(area.width.saturating_sub(1));
@@ -748,6 +753,9 @@ pub(super) fn render_sponsorblock_ticks(
             .saturating_add((span_w * r1).round() as u16)
             .min(max_x);
         for x in x0..=x1 {
+            if x >= label_start && x < label_end {
+                continue;
+            }
             if let Some(cell) = buf.cell_mut((x, area.y))
                 && cell.symbol() == " "
             {

@@ -555,10 +555,12 @@ fn seekbar_scrub_preview_shows_delta_chapter_and_sponsorblock_spans() {
         },
         crate::player::Chapter {
             title: "Chorus".into(),
-            start_secs: 120.0,
+            start_secs: 90.0,
         },
     ];
-    app.install_sponsorblock_parity_state(&[(20.0, 90.0), (210.0, 280.0)]);
+    // Include a segment across the center of the seekbar to verify the centered label's
+    // internal spaces are excluded from SponsorBlock overlays.
+    app.install_sponsorblock_parity_state(&[(20.0, 90.0), (110.0, 190.0), (210.0, 280.0)]);
 
     let buffer = render_app_buffer(&app, 100, 26);
     let sb_rect = app.hits.seekbar_rect().expect("seekbar rect registered");
@@ -570,6 +572,11 @@ fn seekbar_scrub_preview_shows_delta_chapter_and_sponsorblock_spans() {
     assert!(
         has_sb_marker,
         "SponsorBlock segments should render warning-tinted markers on the seekbar"
+    );
+    let idle_row = buffer_row(&buffer, sb_rect.y);
+    assert!(
+        idle_row.contains("0:40 / 5:00"),
+        "SponsorBlock overlay must not paint over spaces inside the seekbar label, got: {idle_row:?}"
     );
 
     // Click around 55% of the seekbar (~165s, inside "Chorus", delta ~+2:05).
@@ -583,8 +590,8 @@ fn seekbar_scrub_preview_shows_delta_chapter_and_sponsorblock_spans() {
     let scrub_buf = render_app_buffer(&app, 100, 26);
     let row = buffer_row(&scrub_buf, sb_rect.y);
     assert!(
-        row.contains("(+") && row.contains("Chorus"),
-        "scrub preview should show signed delta and destination chapter, got: {row:?}"
+        row.contains(" / 5:00 (+") && row.contains(" · Chorus"),
+        "scrub preview should keep intact spaces with signed delta and destination chapter, got: {row:?}"
     );
 }
 
