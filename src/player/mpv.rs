@@ -64,8 +64,10 @@ pub fn flag_supported(flag: &str) -> bool {
     );
     let supported = match probe {
         Ok(out) => {
-            super::mpv_probe_cache::store_flag(&program, flag, out.success);
-            out.success
+            if out.exited {
+                super::mpv_probe_cache::store_flag(&program, flag, out.success);
+            }
+            out.exited && out.success
         }
         Err(_) => false,
     };
@@ -106,8 +108,10 @@ pub fn lifeline_supported() -> bool {
             64 * 1024,
         ) {
             Ok(output) => {
-                super::mpv_probe_cache::store_lifeline(&program, output.success);
-                output.success
+                if output.exited {
+                    super::mpv_probe_cache::store_lifeline(&program, output.success);
+                }
+                output.exited && output.success
             }
             Err(_) => false,
         };
@@ -157,7 +161,7 @@ pub fn version_line(program: &str) -> Option<String> {
         64 * 1024,
     )
     .ok()
-    .filter(|out| out.success)
+    .filter(|out| out.exited && out.success)
     .and_then(|out| String::from_utf8(out.stdout).ok())
     .and_then(|stdout| stdout.lines().next().map(str::to_owned))
 }
