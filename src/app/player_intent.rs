@@ -93,6 +93,11 @@ pub enum PlayerCommit {
     SponsorBlockSkip {
         target: f64,
     },
+    AbLoop {
+        state: yututui_core::ab_loop::AbLoopState,
+        seek_to: Option<f64>,
+        announce: bool,
+    },
     ListeningSeek {
         position_ms: u64,
         change: Option<Box<crate::listening::ListeningOperation>>,
@@ -130,6 +135,10 @@ impl PlayerCommit {
             Self::Seek { .. }
                 | Self::ListeningSeek { .. }
                 | Self::SponsorBlockSkip { .. }
+                | Self::AbLoop {
+                    seek_to: Some(_),
+                    ..
+                }
                 | Self::RadioLiveSeek(_)
         )
     }
@@ -158,6 +167,7 @@ impl PlayerCommit {
             | Self::Seek { .. }
             | Self::ListeningSeek { .. }
             | Self::SponsorBlockSkip { .. }
+            | Self::AbLoop { .. }
             | Self::Speed { .. }
             | Self::EqPreset { .. }
             | Self::Normalize { .. }
@@ -282,6 +292,13 @@ impl App {
             }
             PlayerCommit::SponsorBlockSkip { target } => {
                 self.commit_sponsorblock_skip(target);
+            }
+            PlayerCommit::AbLoop {
+                state,
+                seek_to,
+                announce,
+            } => {
+                self.commit_ab_loop(state, seek_to, announce);
             }
             PlayerCommit::ListeningSeek {
                 position_ms,

@@ -18,6 +18,7 @@ impl App {
             .is_some_and(|(loaded, song)| loaded == song.video_id);
         if !admitted_media_is_active {
             self.supersede_source_recovery();
+            self.playback.ab_loop = yututui_core::ab_loop::AbLoopState::Off;
             self.status.kind = StatusKind::Error;
             self.status.text = format!(
                 "{} ({})",
@@ -92,6 +93,7 @@ impl App {
         let mut cmds = self.recorder_teardown();
         let restore = Vec::new();
         let Some(song) = self.queue.current().cloned() else {
+            self.playback.ab_loop = yututui_core::ab_loop::AbLoopState::Off;
             cmds.push(Cmd::PlayerControl(PlayerControl::Restart { restore }));
             return cmds;
         };
@@ -103,6 +105,7 @@ impl App {
                     %error,
                     "could not resume current track after cache safety recycle"
                 );
+                self.playback.ab_loop = yututui_core::ab_loop::AbLoopState::Off;
                 cmds.push(Cmd::PlayerControl(PlayerControl::Restart { restore }));
                 return cmds;
             }
@@ -112,15 +115,17 @@ impl App {
             Some(st) => eq::build_af_string(&st.draft.eq_bands, st.draft.normalize),
             None => self.current_af(),
         };
-        let restore = crate::player::recovery::TransportRestorePlan::resume_ram_only_if_loaded(
-            self.prefetch.loaded_video_id.as_deref(),
-            &song.video_id,
-            target,
-            position_secs,
-            paused,
-            crate::player::MediaSourceContext::from_live(song.is_radio_station()),
-        )
-        .into_commands(af);
+        let restore = self.with_ab_loop_restore(
+            crate::player::recovery::TransportRestorePlan::resume_ram_only_if_loaded(
+                self.prefetch.loaded_video_id.as_deref(),
+                &song.video_id,
+                target,
+                position_secs,
+                paused,
+                crate::player::MediaSourceContext::from_live(song.is_radio_station()),
+            )
+            .into_commands(af),
+        );
         self.prefetch.last_load_prefetched = false;
         cmds.push(Cmd::PlayerControl(PlayerControl::Restart { restore }));
         cmds
@@ -162,6 +167,7 @@ impl App {
         let mut cmds = self.recorder_teardown();
         let restore = Vec::new();
         let Some(song) = self.queue.current().cloned() else {
+            self.playback.ab_loop = yututui_core::ab_loop::AbLoopState::Off;
             cmds.push(Cmd::PlayerControl(PlayerControl::Restart { restore }));
             return cmds;
         };
@@ -182,6 +188,7 @@ impl App {
                     ),
                     crate::util::sanitize::sanitize_error_text(error.to_string())
                 );
+                self.playback.ab_loop = yututui_core::ab_loop::AbLoopState::Off;
                 cmds.push(Cmd::PlayerControl(PlayerControl::Restart { restore }));
                 return cmds;
             }
@@ -191,14 +198,16 @@ impl App {
             Some(st) => eq::build_af_string(&st.draft.eq_bands, st.draft.normalize),
             None => self.current_af(),
         };
-        let restore = crate::player::recovery::TransportRestorePlan::reload_if_loaded(
-            self.prefetch.loaded_video_id.as_deref(),
-            &song.video_id,
-            target,
-            was_paused,
-            crate::player::MediaSourceContext::from_live(song.is_radio_station()),
-        )
-        .into_commands(af);
+        let restore = self.with_ab_loop_restore(
+            crate::player::recovery::TransportRestorePlan::reload_if_loaded(
+                self.prefetch.loaded_video_id.as_deref(),
+                &song.video_id,
+                target,
+                was_paused,
+                crate::player::MediaSourceContext::from_live(song.is_radio_station()),
+            )
+            .into_commands(af),
+        );
         self.prefetch.last_load_prefetched = false;
         cmds.push(Cmd::PlayerControl(PlayerControl::Restart { restore }));
         cmds

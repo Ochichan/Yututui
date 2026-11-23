@@ -58,7 +58,7 @@ impl App {
     }
 
     pub(in crate::app) fn begin_crossfade_if_due(&mut self) -> Vec<Cmd> {
-        if self.playback.paused || self.video.proc.is_some() {
+        if self.playback.paused || self.video.proc.is_some() || self.playback.ab_loop.is_active() {
             return Vec::new();
         }
         if self.audio.local_crossfade.is_off() {

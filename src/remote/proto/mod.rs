@@ -33,7 +33,7 @@ pub use command::{
     RemoteSettingChange,
 };
 pub use model::{ArtworkRef, LyricLineModel, TrackModel, WhyGemModel};
-pub use model_player::{ChapterModel, EqModel, PlayerModel, QueueModel};
+pub use model_player::{AbLoopModel, ChapterModel, EqModel, PlayerModel, QueueModel};
 pub use model_settings::{
     ActionInfoModel, AnimationsModel, AudioSettingsModel, KeymapSettingsModel,
     LongFormSeekEffective, LongFormSeekReason, PlaybackSettingsModel, SearchSettingsModel,
@@ -257,6 +257,9 @@ pub struct StatusSnapshot {
     pub banned_artists: usize,
     #[serde(default, skip_serializing_if = "is_zero_usize")]
     pub seed_terms: usize,
+    /// Active track-scoped A–B loop bounds. Omitted when off to preserve frozen status bytes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ab_loop: Option<AbLoopModel>,
 }
 
 fn is_zero_u64(value: &u64) -> bool {
@@ -751,6 +754,7 @@ mod tests {
             banned_tracks: 0,
             banned_artists: 0,
             seed_terms: 0,
+            ab_loop: None,
         };
         let line = snap.human_line();
         assert!(line.contains("nothing playing"));
@@ -784,6 +788,7 @@ mod tests {
             banned_tracks: 0,
             banned_artists: 0,
             seed_terms: 0,
+            ab_loop: None,
         };
         let line = serde_json::to_string(&RemoteResponse::status(snap.clone())).unwrap();
         assert!(line.contains("\"owner_mode\":\"daemon\""), "got {line}");

@@ -74,6 +74,20 @@ pub fn chapters_for_track<'a>(
     }
 }
 
+/// Build the mpv `ab-loop-a` / `ab-loop-b` property commands representing `state`.
+/// Clearing uses mpv's literal `"no"` value because mpv keeps A–B bounds across `loadfile`.
+pub fn ab_loop_commands(state: yututui_core::ab_loop::AbLoopState) -> Vec<PlayerCmd> {
+    let (a, b) = state.mpv_bounds();
+    let prop = |name: &str, bound: Option<f64>| PlayerCmd::SetProperty {
+        name: name.to_owned(),
+        value: match bound {
+            Some(secs) => serde_json::Value::from(secs),
+            None => serde_json::Value::String("no".to_owned()),
+        },
+    };
+    vec![prop("ab-loop-a", a), prop("ab-loop-b", b)]
+}
+
 /// Chapter-list policy ceilings shared by the parser and its consumers.
 pub mod chapter_policy {
     /// Most chapters kept from a hostile/spammy list; a real track has a handful.

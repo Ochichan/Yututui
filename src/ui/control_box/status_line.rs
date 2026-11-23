@@ -74,6 +74,7 @@ pub(super) fn status_line_parts_with_labels_reusing(
     push_download_tag(&mut parts, app, gap, minimal);
     push_chapter_tag(&mut parts, app, gap, minimal);
     push_sleep_timer(&mut parts, app, gap, minimal);
+    push_ab_loop_tag(&mut parts, app, gap, minimal);
 
     parts
 }
@@ -675,6 +676,35 @@ fn push_sleep_timer(parts: &mut StatusLineParts, app: &App, gap: &'static str, m
     parts.push((None, Cow::Owned(format!("{gap}{label}"))));
 }
 
+/// Active A–B loop indicator in the docked status line (`A 1:12–…` or `A-B 1:12–1:48`).
+fn push_ab_loop_tag(parts: &mut StatusLineParts, app: &App, gap: &'static str, minimal: bool) {
+    if minimal {
+        return;
+    }
+    let retro = app.retro_mode();
+    let label = match app.ab_loop() {
+        yututui_core::ab_loop::AbLoopState::Off => return,
+        yututui_core::ab_loop::AbLoopState::PointA { a_secs } => {
+            let a = crate::util::format::time(a_secs);
+            if retro {
+                format!("A {a}-..")
+            } else {
+                format!("A {a}–…")
+            }
+        }
+        yututui_core::ab_loop::AbLoopState::Active { a_secs, b_secs } => {
+            let a = crate::util::format::time(a_secs);
+            let b = crate::util::format::time(b_secs);
+            if retro {
+                format!("A-B {a}-{b}")
+            } else {
+                format!("A-B {a}–{b}")
+            }
+        }
+    };
+    parts.push((None, Cow::Owned(format!("{gap}{label}"))));
+}
+
 /// Seekbar timestamp label, enriched during an active mouse scrub with a signed seek delta
 /// (`+0:15` / `-0:22`) and the destination chapter name whenever they fit inside `width`.
 pub(super) fn seekbar_label(app: &App, preview: Option<f64>, width: u16) -> String {
@@ -760,6 +790,81 @@ pub(super) fn render_sponsorblock_ticks(
                 && cell.symbol() == " "
             {
                 cell.set_char('▒').set_fg(warning);
+            }
+        }
+    }
+}
+
+/// Accent-colored A–B loop markers drawn on the seekbar without obscuring the centered label.
+pub(super) fn render_ab_loop_markers(
+    frame: &mut ratatui::Frame,
+    app: &App,
+    area: ratatui::layout::Rect,
+    label_width: u16,
+) {
+    use yututui_core::ab_loop::AbLoopState;
+
+    if app.current_is_radio_stream() || area.width < 2 || area.height == 0 {
+        return;
+    }
+    let Some(duration) = app.playback.duration.filter(|d| d.is_finite() && *d > 0.0) else {
+        return;
+    };
+    let state = app.ab_loop();
+    if !state.is_set() {
+        return;
+    }
+
+    let clamped_label_w = area.width.min(label_width);
+    let label_start = area.x + (area.width - clamped_label_w) / 2;
+    let label_end = label_start.saturating_add(clamped_label_w);
+    let in_label = |x: u16| x >= label_start && x < label_end;
+
+    let accent = app.theme.color(crate::theme::ThemeRole::Accent);
+    let marker_style = ratatui::style::Style::default()
+        .fg(accent)
+        .add_modifier(ratatui::style::Modifier::BOLD);
+    let max_x = area.right().saturating_sub(1);
+    let span_w = f64::from(area.width.saturating_sub(1));
+    let x_for = |secs: f64| {
+        let ratio = (secs / duration).clamp(0.0, 1.0);
+        area.x
+            .saturating_add((span_w * ratio).round() as u16)
+            .min(max_x)
+    };
+
+    let buf = frame.buffer_mut();
+    match state {
+        AbLoopState::Off => {}
+        AbLoopState::PointA { a_secs } => {
+            let x_a = x_for(a_secs);
+            if !in_label(x_a)
+                && let Some(cell) = buf.cell_mut((x_a, area.y))
+            {
+                cell.set_char('A').set_style(marker_style);
+            }
+        }
+        AbLoopState::Active { a_secs, b_secs } => {
+            let x_a = x_for(a_secs);
+            let x_b = x_for(b_secs);
+            let span_ch = if app.retro_mode() { '=' } else { '═' };
+            for x in x_a.saturating_add(1)..x_b {
+                if !in_label(x)
+                    && let Some(cell) = buf.cell_mut((x, area.y))
+                    && cell.symbol() == " "
+                {
+                    cell.set_char(span_ch).set_fg(accent);
+                }
+            }
+            if !in_label(x_a)
+                && let Some(cell) = buf.cell_mut((x_a, area.y))
+            {
+                cell.set_char('[').set_style(marker_style);
+            }
+            if !in_label(x_b)
+                && let Some(cell) = buf.cell_mut((x_b, area.y))
+            {
+                cell.set_char(']').set_style(marker_style);
             }
         }
     }

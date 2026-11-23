@@ -284,6 +284,7 @@ impl App {
         }
         let recorder = self.prepare_recorder_teardown();
         let mut commands = self.recorder_transition_commands(&recorder);
+        self.push_ab_loop_clear_if_set(&mut commands);
         commands.push(PlayerCmd::Stop);
         let plan = PlaybackStopPlan {
             expected_queue_rev: self.queue.rev(),
@@ -331,6 +332,7 @@ impl App {
 
         let effects = self.commit_recorder_transition(recorder);
         self.playback.paused = true;
+        self.playback.ab_loop = yututui_core::ab_loop::AbLoopState::Off;
         self.playback.time_pos = None;
         self.playback.time_pos_at = None;
         self.bump_position_epoch(PositionEpochReason::Stop);

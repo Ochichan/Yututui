@@ -62,6 +62,7 @@ impl App {
         listening_reason: crate::listening::ListeningLoadReason,
     ) -> Vec<Cmd> {
         self.playback.loaded = Some(load.as_playback_load());
+        self.playback.ab_loop = yututui_core::ab_loop::AbLoopState::Off;
         let PreparedTrackLoad {
             song,
             destination: _,
@@ -167,6 +168,7 @@ impl App {
         self.playback.paused = true;
         self.playback.stream_now_playing = None;
         self.playback.loaded = None;
+        self.playback.ab_loop = yututui_core::ab_loop::AbLoopState::Off;
         self.playback.cache_time = None;
         self.playback.cache_time_at = None;
         self.anim.last_shown_sec = -1;

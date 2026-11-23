@@ -48,6 +48,9 @@ pub fn default_bindings() -> Vec<(KeyContext, Action, Chord)> {
         // Chapter jumps on mpv's own `!`/`@` chords, so muscle memory carries over.
         (C::Player, A::ChapterPrev, ch('!')),
         (C::Player, A::ChapterNext, ch('@')),
+        // Track-scoped A–B loop (`b` cycles Off → A → A–B → Off; `Alt+Shift+B` clears).
+        (C::Player, A::AbLoopCycle, ch('b')),
+        (C::Player, A::AbLoopClear, alt_shift('b')),
         // `Shift+S` opens the sleep-timer popup (plain `s` is Search).
         (C::Player, A::SleepTimer, ch('S')),
         (C::Player, A::OpenSettings, ch('o')),

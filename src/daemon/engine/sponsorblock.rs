@@ -60,6 +60,7 @@ impl DaemonEngine {
         let track_id = self.sponsorblock_loaded_id();
         let blocked = self.listening.has_pending_seek()
             || self.source_recovery.active_ticket().is_some()
+            || self.playback.ab_loop.is_active()
             || matches!(
                 self.transport_recovery,
                 TransportRecoveryState::Recovering(_)

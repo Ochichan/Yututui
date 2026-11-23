@@ -11,19 +11,25 @@ fn test_player(capacity: usize) -> (PlayerRuntime, tokio::sync::mpsc::Receiver<P
     )
 }
 
-fn install_test_player(engine: &mut DaemonEngine) -> tokio::sync::mpsc::Receiver<PlayerCmd> {
+pub(super) fn install_test_player(
+    engine: &mut DaemonEngine,
+) -> tokio::sync::mpsc::Receiver<PlayerCmd> {
     let (player, rx) = test_player(8);
     engine.player = Some(player);
     rx
 }
 
-fn queue_test_player_start(engine: &mut DaemonEngine) -> tokio::sync::mpsc::Receiver<PlayerCmd> {
+pub(super) fn queue_test_player_start(
+    engine: &mut DaemonEngine,
+) -> tokio::sync::mpsc::Receiver<PlayerCmd> {
     let (player, rx) = test_player(8);
     engine.test_player_starts.push_back(player);
     rx
 }
 
-async fn recv_player_command(rx: &mut tokio::sync::mpsc::Receiver<PlayerCmd>) -> PlayerCmd {
+pub(super) async fn recv_player_command(
+    rx: &mut tokio::sync::mpsc::Receiver<PlayerCmd>,
+) -> PlayerCmd {
     tokio::time::timeout(Duration::from_secs(1), rx.recv())
         .await
         .expect("player command timed out")

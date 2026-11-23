@@ -36,6 +36,9 @@ pub enum Action {
     /// Jump to the previous/next chapter of the current long-form track.
     ChapterPrev,
     ChapterNext,
+    /// Cycle (Off → A → A–B → Off) or clear the track-scoped A–B loop.
+    AbLoopCycle,
+    AbLoopClear,
     OpenSettings,
     OpenAi,
     OpenSearch,
@@ -908,6 +911,20 @@ const ACTION_META: &[(Action, &str, &str, &str, &str)] = &[
         "Next chapter",
         "다음 챕터",
         "次のチャプター",
+    ),
+    (
+        Action::AbLoopCycle,
+        "ab_loop_cycle",
+        "A–B loop (set A / B / clear)",
+        "A–B 구간 반복 (A / B / 해제)",
+        "A–Bループ（A / B / 解除）",
+    ),
+    (
+        Action::AbLoopClear,
+        "ab_loop_clear",
+        "Clear A–B loop",
+        "A–B 구간 반복 해제",
+        "A–Bループ解除",
     ),
     (
         Action::TextZoomIn,

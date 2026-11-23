@@ -464,6 +464,7 @@ impl App {
         let recorder = self.prepare_recorder_teardown();
         let mut commands = Vec::with_capacity(5);
         commands.extend(self.recorder_transition_commands(&recorder));
+        self.push_ab_loop_clear_if_set(&mut commands);
         debug_assert!(plan.recorder.is_none());
         plan.recorder = Some(recorder);
         match &plan.kind {

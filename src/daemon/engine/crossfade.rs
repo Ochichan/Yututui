@@ -90,7 +90,7 @@ impl DaemonEngine {
 
     pub(super) async fn advance_crossfade_if_due(&mut self, position: f64) -> Vec<EngineEffect> {
         let local_crossfade = self.crossfade.local_crossfade;
-        if self.playback.paused || local_crossfade.is_off() {
+        if self.playback.paused || local_crossfade.is_off() || self.playback.ab_loop.is_active() {
             return Vec::new();
         }
         if !crate::crossfade::remaining_in_overlap_window(

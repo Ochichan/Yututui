@@ -897,6 +897,12 @@ impl App {
             }
             Action::ChapterPrev => self.jump_chapter(false),
             Action::ChapterNext => self.jump_chapter(true),
+            Action::AbLoopCycle => {
+                self.handle_ab_loop_action(yututui_core::ab_loop::AbLoopAction::Cycle)
+            }
+            Action::AbLoopClear => {
+                self.handle_ab_loop_action(yututui_core::ab_loop::AbLoopAction::Clear)
+            }
             Action::OpenSettings => {
                 self.open_settings();
                 Vec::new()
