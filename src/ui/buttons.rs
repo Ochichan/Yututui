@@ -619,22 +619,20 @@ pub fn render_list_scrollbar(
 
     let thumb_start = thumb.start;
     let thumb_end = thumb.start.saturating_add(thumb.len);
+    let thumb_style = app.theme.style(R::Accent);
+    let track_style = app.theme.style(R::BorderPrimary);
+    let buf = frame.buffer_mut();
     for row in 0..bar.height {
         let is_thumb = row >= thumb_start && row < thumb_end;
         let (symbol, style) = if is_thumb {
-            ("█", app.theme.style(R::Accent))
+            ("█", thumb_style)
         } else {
-            ("│", app.theme.style(R::BorderPrimary))
+            ("│", track_style)
         };
-        frame.render_widget(
-            Paragraph::new(Line::from(symbol).style(style)),
-            Rect {
-                x: bar.x,
-                y: bar.y + row,
-                width: 1,
-                height: 1,
-            },
-        );
+        if let Some(cell) = buf.cell_mut((bar.x, bar.y + row)) {
+            cell.set_symbol(symbol);
+            cell.set_style(style);
+        }
     }
 }
 

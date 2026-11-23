@@ -108,10 +108,59 @@ fn ime_scrub_interval() -> tokio::time::Interval {
     interval
 }
 
-fn lyrics_interval() -> tokio::time::Interval {
-    let mut interval = tokio::time::interval(Duration::from_millis(100));
-    interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
-    interval
+/// Cap on immediately-ready local input events drained in a single owner turn before drawing.
+/// Keeps key-repeat scrolling, wheel bursts, and pointer drags responsive without starving
+/// redraws or worker messages.
+const MAX_COALESCED_LOCAL_INPUTS: usize = 16;
+
+fn is_coalesceable_local_msg(msg: &Msg) -> bool {
+    match msg {
+        Msg::MouseMove { .. } | Msg::MouseDrag { .. } | Msg::MouseScroll { ctrl: false, .. } => {
+            true
+        }
+        Msg::Key(key) => {
+            key.modifiers.is_empty()
+                && matches!(
+                    key.code,
+                    crossterm::event::KeyCode::Up
+                        | crossterm::event::KeyCode::Down
+                        | crossterm::event::KeyCode::PageUp
+                        | crossterm::event::KeyCode::PageDown
+                )
+        }
+        _ => false,
+    }
+}
+
+fn drain_coalesced_local_inputs(
+    first: &Msg,
+    try_next: &mut impl FnMut() -> Option<crossterm::event::Event>,
+    translator: &mut event::Translator,
+    scale: (u8, u8),
+    app: &mut App,
+    deferred_local_msg: &mut Option<Msg>,
+) -> Vec<Msg> {
+    if !is_coalesceable_local_msg(first) || deferred_local_msg.is_some() {
+        return Vec::new();
+    }
+    let mut batch = Vec::new();
+    for _ in 0..MAX_COALESCED_LOCAL_INPUTS {
+        let Some(ev) = try_next() else {
+            break;
+        };
+        app.arm_ime_scrub_burst();
+        let Some(next_msg) = translator.translate_with_keymap(ev, scale.0, scale.1, &app.keymap)
+        else {
+            continue;
+        };
+        if is_coalesceable_local_msg(&next_msg) {
+            batch.push(next_msg);
+        } else {
+            *deferred_local_msg = Some(next_msg);
+            break;
+        }
+    }
+    batch
 }
 
 /// Take only an immediately-adjacent time/cache pair. Both messages still pass through
@@ -387,25 +436,6 @@ pub async fn run(
     app.library = Arc::new(library);
     app.signals = Arc::new(signals);
     app.download_store = download_store;
-    // Enrich the bare disk scan with each track's remembered
-    // YouTube identity (+ real artist) so a downloaded-and-online track keeps its share link
-    // after a restart; files the manifest doesn't know are recovered from their `[id]` filename.
-    let scanned = library::scan_downloads(&download_runtime.dir);
-    let scan_truncated = scanned.truncated;
-    let scan_limit = scanned.limit;
-    app.library_ui.downloaded_rev = app.library_ui.downloaded_rev.wrapping_add(1);
-    app.library_ui.downloaded = app.enrich_downloads(scanned.songs);
-    if scan_truncated {
-        app.status.text = format!(
-            "{} {scan_limit} {}",
-            crate::t!("Showing first", "처음", "先頭"),
-            crate::t!(
-                "download files; more are hidden",
-                "개 다운로드 파일만 표시됨; 일부는 숨김",
-                "件のダウンロードファイルのみ表示; 一部は非表示"
-            )
-        );
-    }
     // Load local playlists (the DJ Gem playlist tools read/write these). Hand-edited or old
     // files are count-repaired on load; persist the repaired snapshot so startup does not keep
     // redoing the same repair every run.
@@ -504,10 +534,32 @@ pub async fn run(
     let (worker_tx, mut worker_rx) = runtime::channel(crate::util::backpressure::OWNER_EVENT_QUEUE);
     persist.set_event_sink(runtime::sink(worker_tx.clone(), RuntimeEvent::Persist));
 
-    // Resolve which yt-dlp (managed vs system vs override) and mpv this process runs.
-    // After first draw (a cold probe spawns `yt-dlp --version`, several hundred ms),
-    // but before the deps preflight and the mpv spawn below, which both consume it.
-    tools::init(&cfg.tools).await;
+    // Resolve which yt-dlp (managed vs system vs override) and mpv this process runs, overlapping
+    // the download directory scan with tool selection after first draw so large download folders
+    // never delay the initial paint.
+    let download_dir = download_runtime.dir.clone();
+    let (_, scanned_downloads) = tokio::join!(
+        tools::init(&cfg.tools),
+        tokio::task::spawn_blocking(move || library::scan_downloads(&download_dir)),
+    );
+    if let Ok(scanned) = scanned_downloads {
+        let scan_truncated = scanned.truncated;
+        let scan_limit = scanned.limit;
+        app.library_ui.downloaded_rev = app.library_ui.downloaded_rev.wrapping_add(1);
+        app.library_ui.downloaded = app.enrich_downloads(scanned.songs);
+        if scan_truncated && !persistence_read_only && app.status.text.is_empty() {
+            app.status.text = format!(
+                "{} {scan_limit} {}",
+                crate::t!("Showing first", "처음", "先頭"),
+                crate::t!(
+                    "download files; more are hidden",
+                    "개 다운로드 파일만 표시됨; 일부는 숨김",
+                    "件のダウンロードファイルのみ表示; 一部は非表示"
+                )
+            );
+            app.dirty = true;
+        }
+    }
     startup.mark("tools_selected");
     if shutdown.is_triggered() {
         // The terminal watchdog or an OS signal may win while tool discovery is awaiting. Close
@@ -520,13 +572,15 @@ pub async fn run(
         return finish_interrupted_startup(&app, &persist, terminal_error).await;
     }
 
-    // Probe after `tools::init` so it hits the selected mpv. Recovery-aware temp cleanup is
-    // deferred until the tracked runtime task set exists below.
-    app.recorder.supported = !persistence_read_only && player::mpv::stream_record_supported();
-    // Warm the media-controls probe here too (same one-time subprocess cost as the line above)
-    // so the mid-session mpv respawn path hits the cache instead of blocking a worker on the
-    // first play. Both probes are cached per (process, flag) after this.
-    let _ = player::mpv::media_controls_flag_supported();
+    // Probe after `tools::init` so it hits the selected mpv. Warm both optional flag probes off
+    // the async worker; warm starts hit the disk probe cache with zero subprocess spawns.
+    app.recorder.supported = tokio::task::spawn_blocking(move || {
+        let supported = !persistence_read_only && player::mpv::stream_record_supported();
+        let _ = player::mpv::media_controls_flag_supported();
+        supported
+    })
+    .await
+    .unwrap_or(false);
 
     // Preflight the external tools. If mpv/yt-dlp are missing, show an install hint up
     // front rather than surfacing an opaque spawn failure later.
@@ -839,13 +893,8 @@ pub async fn run(
     let mut media_pump = tokio::time::interval(Duration::from_millis(100));
     media_pump.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
-    let mut input = event::Translator::default();
+    let mut translator = event::Translator::default();
     let mut ime_scrub = ime_scrub_interval();
-    // Polled only while transient status or the lyric-delay OSD has a deadline; lets the reducer
-    // restore the title and collapse the control after their respective TTLs. Idle otherwise.
-    let mut status_tick = tokio::time::interval(Duration::from_millis(250));
-    status_tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
-    let mut lyrics_tick = lyrics_interval();
 
     // 1 Hz while a radio recording is in progress; parked otherwise (like the other guarded
     // ticks). Drives the max-duration force-split.
@@ -887,6 +936,7 @@ pub async fn run(
 
     let mut pending_worker_events = BufferedWorkerEvents::default();
     let mut pending_shutdown_events: VecDeque<RuntimeEvent> = VecDeque::new();
+    let mut deferred_local_msg: Option<Msg> = None;
     let mut owner_error = None;
     // Startup mutates App after the first paint. Until a later successful full render proves the
     // terminal matches all reducer-owned state, the IME clock must take the normal draw path.
@@ -949,7 +999,12 @@ pub async fn run(
             // newer input mutation. Otherwise a terminal event buffered before `Next` could be
             // reduced against the track selected by `Next` and double-advance the queue.
             OwnerTurnInput::BufferedWorker(pending)
+        } else if let Some(local) = deferred_local_msg.take() {
+            OwnerTurnInput::Local(local)
         } else {
+            let now = Instant::now();
+            let status_deadline = app.status_tick_deadline_at(now);
+            let lyrics_deadline = app.next_lyrics_deadline_at(now);
             tokio::select! {
                 biased;
                 _ = shutdown.wait() => {
@@ -975,7 +1030,7 @@ pub async fn run(
                         // key release) — re-arms the bounded IME scrub burst.
                         app.arm_ime_scrub_burst();
                         let (cs, rs) = zoom.mouse_scale();
-                        match input.translate_with_keymap(ev, cs, rs, &app.keymap) {
+                        match translator.translate_with_keymap(ev, cs, rs, &app.keymap) {
                             Some(m) => OwnerTurnInput::Local(m),
                             None => continue,
                         }
@@ -1073,8 +1128,12 @@ pub async fn run(
                 _ = tokio::time::sleep_until(tokio::time::Instant::from_std(
                     app.automatic_sync_deadline().unwrap_or_else(Instant::now)
                 )), if app.automatic_sync_deadline().is_some() => OwnerTurnInput::Local(Msg::AutomaticSyncTick),
-                _ = status_tick.tick(), if app.status_visible() || app.lyrics.delay_osd_until.is_some() => OwnerTurnInput::Local(Msg::StatusTick),
-                _ = lyrics_tick.tick(), if app.lyrics_clock_active() => OwnerTurnInput::Local(Msg::LyricsTick),
+                _ = tokio::time::sleep_until(tokio::time::Instant::from_std(
+                    status_deadline.unwrap_or(now)
+                )), if status_deadline.is_some() => OwnerTurnInput::Local(Msg::StatusTick),
+                _ = tokio::time::sleep_until(tokio::time::Instant::from_std(
+                    lyrics_deadline.unwrap_or(now)
+                )), if lyrics_deadline.is_some() => OwnerTurnInput::Local(Msg::LyricsTick),
                 _ = anim_tick.tick(), if app.animation_active() => OwnerTurnInput::Local(Msg::AnimTick),
                 _ = recording_tick.tick(), if app.recorder_active() => OwnerTurnInput::Local(Msg::RecordingTick),
                 _ = sleep_tick.tick(), if app.sleep_timer_active() => OwnerTurnInput::Local(Msg::SleepTick),
@@ -1188,6 +1247,14 @@ pub async fn run(
             take_adjacent_player_progress_pair(&msg, &mut pending_worker_events, |event| {
                 handles.player_event_is_current(event)
             });
+        let coalesced_local = drain_coalesced_local_inputs(
+            &msg,
+            &mut || events.try_recv().ok(),
+            &mut translator,
+            zoom.mouse_scale(),
+            &mut app,
+            &mut deferred_local_msg,
+        );
         let observer_plan = ObserverPlan::for_messages(&msg, paired_progress.as_ref());
 
         let resized_artwork = matches!(&msg, Msg::ArtworkResized(_))
@@ -1197,7 +1264,10 @@ pub async fn run(
         // `position_epoch` through a different message. Skip both hashes on this high-rate path.
         let media_before = observer_plan.project_state.then(|| app.media_fingerprint());
         arm_unrendered_reducer_turn(&mut reducer_turn_unrendered, &msg);
-        for msg in std::iter::once(msg).chain(paired_progress) {
+        for msg in std::iter::once(msg)
+            .chain(paired_progress)
+            .chain(coalesced_local)
+        {
             if shutdown.is_triggered() {
                 handles.begin_player_shutdown(&mut app);
                 break 'owner;

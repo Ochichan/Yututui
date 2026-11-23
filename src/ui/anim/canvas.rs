@@ -71,6 +71,19 @@ impl<'a> CanvasWriter<'a> {
         cell.fg = fg;
     }
 
+    /// Mutable slice of the buffer cells for one horizontal visible span on row `y`.
+    pub(super) fn visible_row_slice_mut(
+        &mut self,
+        y: u16,
+        span: CellSpan,
+    ) -> &mut [ratatui::buffer::Cell] {
+        let area = self.buffer.area;
+        let row_base = usize::from(y - area.y) * usize::from(area.width);
+        let start = row_base + usize::from(span.start - area.x);
+        let end = row_base + usize::from(span.end - area.x);
+        &mut self.buffer.content[start..end]
+    }
+
     fn masked(&self, x: u16, y: u16) -> bool {
         self.art_mask.is_some_and(|mask| {
             x >= mask.left() && x < mask.right() && y >= mask.top() && y < mask.bottom()

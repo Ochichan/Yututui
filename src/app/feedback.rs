@@ -1,6 +1,6 @@
 //! Status-line and zoom feedback helpers.
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use super::*;
 
@@ -9,6 +9,68 @@ impl App {
     /// expiry tick - see [`Msg::StatusTick`]).
     pub fn status_visible(&self) -> bool {
         self.status.set_at.is_some()
+    }
+
+    /// Next monotonic wall-clock instant at which [`Msg::StatusTick`] has work to do: expiring a
+    /// transient status toast, collapsing the lyric-delay OSD, or polling an active sync pairing
+    /// wizard. Returns `None` when none of those timers are armed so the event loop stays parked.
+    pub(crate) fn status_tick_deadline_at(&self, now: Instant) -> Option<Instant> {
+        let mut earliest: Option<Instant> = None;
+        let mut consider = |candidate: Instant| {
+            earliest = Some(match earliest {
+                Some(current) => current.min(candidate),
+                None => candidate,
+            });
+        };
+        if let Some(set_at) = self.status.set_at {
+            // +1 ms ensures `set_at.elapsed() >= STATUS_TTL` holds on wake without a spin retry.
+            let deadline = set_at
+                .checked_add(STATUS_TTL + Duration::from_millis(1))
+                .unwrap_or(now);
+            consider(deadline);
+        }
+        if let Some(osd_until) = self.lyrics.delay_osd_until {
+            let deadline = osd_until
+                .checked_add(Duration::from_millis(1))
+                .unwrap_or(now);
+            consider(deadline);
+        }
+        // Join polls share the personal-sync lane. `start_join_poll` returns without
+        // moving `busy` or `last_poll_unix` while that sync is in progress, so a due
+        // deadline would make `StatusTick` win every idle `select!` until it finishes.
+        // Park instead: the sync completion event wakes the owner loop, which recomputes
+        // this deadline and starts the poll. Host polls still arm — they record `busy`
+        // themselves and do not no-op on the lane.
+        let pairing_poll_ready = match &self.personal_state.sync_ui.wizard {
+            Some(crate::app::sync_ui::SyncWizard::JoinWaiting(_)) => {
+                !self.personal_state.sync.in_progress
+            }
+            Some(crate::app::sync_ui::SyncWizard::Host {
+                host: Some(_),
+                review: None,
+                ..
+            }) => true,
+            _ => false,
+        };
+        if self.personal_state.sync_ui.busy.is_none()
+            && self.personal_state.sync_ui.auto_poll_enabled
+            && pairing_poll_ready
+        {
+            let wait = match self.personal_state.sync_ui.last_poll_unix {
+                Some(last) => {
+                    let elapsed = crate::signals::unix_now().saturating_sub(last);
+                    if elapsed >= 2 {
+                        Duration::ZERO
+                    } else {
+                        let remaining = u64::try_from(2 - elapsed.max(0)).unwrap_or(2);
+                        Duration::from_secs(remaining) + Duration::from_millis(20)
+                    }
+                }
+                None => Duration::ZERO,
+            };
+            consider(now.checked_add(wait).unwrap_or(now));
+        }
+        earliest
     }
 
     pub(crate) fn set_status_info(&mut self, text: impl Into<String>) {
@@ -206,5 +268,88 @@ impl App {
         vec![Cmd::Persist(PersistCmd::Config(Box::new(
             self.config.clone(),
         )))]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::{Duration, Instant};
+
+    use super::*;
+
+    #[test]
+    fn status_tick_deadline_parks_when_idle_and_picks_earliest_deadline() {
+        let t0 = Instant::now();
+        let mut app = App::new(100);
+        assert_eq!(app.status_tick_deadline_at(t0), None);
+
+        app.status.set_at = Some(t0);
+        assert_eq!(
+            app.status_tick_deadline_at(t0),
+            Some(t0 + STATUS_TTL + Duration::from_millis(1))
+        );
+
+        let earlier_osd = t0 + Duration::from_secs(1);
+        app.lyrics.delay_osd_until = Some(earlier_osd);
+        assert_eq!(
+            app.status_tick_deadline_at(t0),
+            Some(earlier_osd + Duration::from_millis(1))
+        );
+
+        app.status.set_at = None;
+        app.lyrics.delay_osd_until = None;
+        assert_eq!(app.status_tick_deadline_at(t0), None);
+    }
+
+    #[test]
+    fn status_tick_deadline_arms_only_for_active_unbusy_sync_wizard() {
+        let t0 = Instant::now();
+        let mut app = App::new(100);
+        app.personal_state.sync_ui.auto_poll_enabled = true;
+        // Without an active waiting/host wizard, stays parked so it never spins.
+        assert_eq!(app.status_tick_deadline_at(t0), None);
+
+        app.personal_state.sync_ui.wizard = Some(crate::app::sync_ui::SyncWizard::JoinWaiting(
+            Box::new(crate::sync::service::PairingJoinWaiting {
+                device_id: "dev".to_owned(),
+                expires_at_unix: crate::signals::unix_now() + 60,
+                resumed: false,
+            }),
+        ));
+        app.personal_state.sync_ui.last_poll_unix = Some(crate::signals::unix_now());
+        let deadline = app
+            .status_tick_deadline_at(t0)
+            .expect("waiting sync wizard should arm status_tick");
+        assert!(deadline > t0);
+
+        // Busy sync request parks until completion.
+        app.personal_state.sync_ui.busy = Some(crate::app::sync_ui::SyncBusy::PairJoinPoll);
+        assert_eq!(app.status_tick_deadline_at(t0), None);
+    }
+
+    #[test]
+    fn status_tick_deadline_parks_due_join_poll_while_personal_sync_is_in_progress() {
+        let t0 = Instant::now();
+        let mut app = App::new(100);
+        app.personal_state.sync_ui.auto_poll_enabled = true;
+        app.personal_state.sync_ui.wizard = Some(crate::app::sync_ui::SyncWizard::JoinWaiting(
+            Box::new(crate::sync::service::PairingJoinWaiting {
+                device_id: "dev".to_owned(),
+                expires_at_unix: crate::signals::unix_now() + 60,
+                resumed: false,
+            }),
+        ));
+        app.personal_state.sync.in_progress = true;
+
+        // `JoinStarted` leaves `last_poll_unix` unset when the first poll cannot start.
+        app.personal_state.sync_ui.last_poll_unix = None;
+        assert_eq!(app.status_tick_deadline_at(t0), None);
+
+        // A poll that is already older than the 2s cadence must not become due-now either.
+        app.personal_state.sync_ui.last_poll_unix = Some(crate::signals::unix_now() - 5);
+        assert_eq!(app.status_tick_deadline_at(t0), None);
+
+        app.personal_state.sync.in_progress = false;
+        assert_eq!(app.status_tick_deadline_at(t0), Some(t0));
     }
 }

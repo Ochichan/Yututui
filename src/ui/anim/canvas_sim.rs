@@ -467,13 +467,15 @@ pub(super) fn pipes(canvas: &mut CanvasWriter<'_>, app: &App, zone: Rect, f: u64
     });
 }
 
-const PLASMA_GLYPHS: [char; 4] = [' ', '░', '▒', '▓'];
+const PLASMA_GLYPH_STRS: [&str; 4] = [" ", "░", "▒", "▓"];
 
 #[derive(Default)]
 struct PlasmaScratch {
     col_wave: Vec<f64>,
     row_wave: Vec<f64>,
     diag_wave: Vec<f64>,
+    ramp_key: Option<(Color, Color, Color)>,
+    ramp: [Color; 16],
 }
 
 thread_local! {
@@ -495,19 +497,23 @@ pub(super) fn plasma(canvas: &mut CanvasWriter<'_>, app: &App, zone: Rect, f: u6
     let bg = app.theme.color(R::Background);
     let mid = app.theme.color(R::Accent);
     let hot = app.theme.color(R::AccentAlt);
-    // Quantized style ramp (16 steps) so cells share Style values instead of allocating a
-    // fresh blend per cell.
-    let ramp: [Color; 16] = std::array::from_fn(|i| {
-        let v = i as f64 / 15.0;
-        if v < 0.5 {
-            lerp_color(bg, mid, v * 2.0)
-        } else {
-            lerp_color(mid, hot, (v - 0.5) * 2.0)
-        }
-    });
 
     PLASMA_SCRATCH.with(|scratch| {
         let mut scratch = scratch.borrow_mut();
+        let ramp_key = (bg, mid, hot);
+        if scratch.ramp_key != Some(ramp_key) {
+            scratch.ramp = std::array::from_fn(|i| {
+                let v = i as f64 / 15.0;
+                if v < 0.5 {
+                    lerp_color(bg, mid, v * 2.0)
+                } else {
+                    lerp_color(mid, hot, (v - 0.5) * 2.0)
+                }
+            });
+            scratch.ramp_key = Some(ramp_key);
+        }
+        let ramp = scratch.ramp;
+
         if scratch.col_wave.len() != w {
             reset_scratch_vec(&mut scratch.col_wave, w);
         }
@@ -531,24 +537,31 @@ pub(super) fn plasma(canvas: &mut CanvasWriter<'_>, app: &App, zone: Rect, f: u6
             *value = (d as f64 * 0.21 + t * 0.024).sin();
         }
 
-        for y in 0..h {
+        let col_wave = scratch.col_wave.as_slice();
+        let row_wave = scratch.row_wave.as_slice();
+        let diag_wave = scratch.diag_wave.as_slice();
+        for (y, &row_w) in row_wave.iter().enumerate() {
             let abs_y = zone.top() + y as u16;
             let (spans, span_count) = canvas.visible_spans(zone, abs_y);
+            let diag_row = &diag_wave[y..y + w];
             for span in &spans[..span_count] {
-                for abs_x in span.start..span.end {
-                    let x = usize::from(abs_x - zone.left());
-                    // v ∈ [-3, 3] → normalized [0, 1].
-                    let v = (scratch.col_wave[x]
-                        + scratch.row_wave[y]
-                        + scratch.diag_wave[x + y]
-                        + 3.0)
-                        / 6.0;
-                    let bucket = (v * 3.999) as usize; // 0..=3 density glyph
+                let x0 = usize::from(span.start - zone.left());
+                let x1 = usize::from(span.end - zone.left());
+                let cells = canvas.visible_row_slice_mut(abs_y, *span);
+                for ((cell, &col_w), &diag_w) in cells
+                    .iter_mut()
+                    .zip(&col_wave[x0..x1])
+                    .zip(&diag_row[x0..x1])
+                {
+                    // Keep exact addition order so floating-point rounding stays bit-identical.
+                    let v = (col_w + row_w + diag_w + 3.0) / 6.0;
+                    let bucket = (v * 3.999) as usize;
                     if bucket == 0 {
-                        continue; // the trough stays blank — cheaper, and lets the theme breathe
+                        continue;
                     }
-                    let ci = (v * 15.999) as usize;
-                    canvas.put_visible_fg(abs_x, abs_y, PLASMA_GLYPHS[bucket], ramp[ci.min(15)]);
+                    let ci = ((v * 15.999) as usize).min(15);
+                    cell.set_symbol(PLASMA_GLYPH_STRS[bucket]);
+                    cell.fg = ramp[ci];
                 }
             }
         }
@@ -705,6 +718,7 @@ mod tests {
                 col_wave: vec![0.0; LARGE_LEN],
                 row_wave: vec![0.0; LARGE_LEN],
                 diag_wave: vec![0.0; LARGE_LEN],
+                ..PlasmaScratch::default()
             };
         });
         let app = App::new(100);

@@ -14,6 +14,11 @@ impl DaemonEngine {
         Some((self.playback.time_pos?, self.playback.time_pos_at?))
     }
 
+    /// Monotonic discontinuity counter bumped on seeks (including SponsorBlock skips) and reloads.
+    pub fn media_position_epoch(&self) -> u64 {
+        self.playback.position_epoch
+    }
+
     /// Allocation-free fingerprint of every daemon field projected by [`Self::media_snapshot`],
     /// excluding ordinary position/time-anchor progress. The owner loop uses this to avoid
     /// rebuilding a tree of owned strings and paths after unrelated remote/API events.

@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use ratatui::{
     Frame,
     layout::{Constraint, Layout, Rect},
@@ -6,11 +8,29 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph},
 };
 
-use crate::app::{App, ListeningAction, ListeningDialog, ListeningTab, MouseTarget};
+use crate::app::{App, ListeningAction, ListeningDialog, ListeningRow, ListeningTab, MouseTarget};
 use crate::app::{ListeningControl, ListeningEdit};
+use crate::personal_state::PortableTrackKey;
 use crate::t;
 use crate::theme::ThemeRole as R;
 use crate::ui::text::truncate_to_width;
+
+#[derive(Hash, PartialEq, Eq)]
+enum ConflictKey<'a> {
+    Bookmark(&'a str),
+    Resume(&'a PortableTrackKey),
+    Preset(&'a str),
+    Visit(&'a str),
+}
+
+fn conflict_key(row: &ListeningRow) -> ConflictKey<'_> {
+    match row {
+        ListeningRow::Bookmark(bookmark) => ConflictKey::Bookmark(bookmark.bookmark_id.as_str()),
+        ListeningRow::Resume(resume) => ConflictKey::Resume(&resume.track().key),
+        ListeningRow::Preset(preset) => ConflictKey::Preset(preset.preset_id.as_str()),
+        ListeningRow::Visit { visit, .. } => ConflictKey::Visit(visit.station_uuid.as_str()),
+    }
+}
 
 pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     let Some(dialog) = app.overlays.listening.as_ref() else {
@@ -226,6 +246,13 @@ fn render_rows(frame: &mut Frame, app: &App, dialog: &ListeningDialog, area: Rec
     };
     let sel_style = crate::ui::selection_highlight(app);
     let row_style = crate::ui::popup_style(app, R::TextPrimary);
+    // Count record keys in one O(N) pass so large lists stay linear while preserving
+    // detection of duplicates involving off-screen rows.
+    let mut conflict_counts: HashMap<ConflictKey<'_>, u8> = HashMap::with_capacity(len);
+    for row in &dialog.rows {
+        let count = conflict_counts.entry(conflict_key(row)).or_insert(0);
+        *count = count.saturating_add(1).min(2);
+    }
     for (line, (index, row)) in dialog
         .rows
         .iter()
@@ -236,11 +263,10 @@ fn render_rows(frame: &mut Frame, app: &App, dialog: &ListeningDialog, area: Rec
     {
         let rect = Rect::new(area.x, area.y + line as u16, row_width, 1);
         let selected = index == dialog.selected;
-        let conflict = dialog
-            .rows
-            .iter()
-            .filter(|candidate| row.same_record(candidate))
-            .count()
+        let conflict = conflict_counts
+            .get(&conflict_key(row))
+            .copied()
+            .unwrap_or(0)
             > 1;
         let label = format!(
             "{} {}{}",

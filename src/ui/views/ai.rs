@@ -223,25 +223,35 @@ fn render_transcript(frame: &mut Frame, app: &App, area: Rect) {
     let selection_style = Style::default()
         .fg(app.theme.color(R::SelectionFg))
         .bg(app.theme.color(R::SelectionBg));
-    let visible: Vec<Line> = lines[offset..end]
-        .iter()
-        .enumerate()
-        .map(|(vis, line)| {
-            let abs = offset + vis;
-            if selected.is_some_and(|(start, end)| abs >= start && abs <= end) {
-                Line::from(line.text.as_ref()).style(selection_style)
-            } else {
-                Line::from(
-                    line.styles
-                        .iter()
-                        .map(|range| Span::styled(&line.text[range.start..range.end], range.style))
-                        .collect::<Vec<Span>>(),
-                )
+    let buf = frame.buffer_mut();
+    let max_width = usize::from(text_area.width);
+    for (vis, line) in lines[offset..end].iter().enumerate() {
+        let abs = offset + vis;
+        let y = text_area.y + vis as u16;
+        if selected.is_some_and(|(start, end)| abs >= start && abs <= end) {
+            let row = Rect::new(text_area.x, y, text_area.width, 1);
+            buf.set_style(row, selection_style);
+            buf.set_stringn(
+                text_area.x,
+                y,
+                line.text.as_ref(),
+                max_width,
+                selection_style,
+            );
+        } else {
+            let mut x = text_area.x;
+            let right = text_area.right();
+            for range in &line.styles {
+                if x >= right {
+                    break;
+                }
+                let rem = usize::from(right - x);
+                let (next_x, _) =
+                    buf.set_stringn(x, y, &line.text[range.start..range.end], rem, range.style);
+                x = next_x;
             }
-        })
-        .collect();
-
-    frame.render_widget(Paragraph::new(visible), text_area);
+        }
+    }
     register_transcript_rows(app, text_area, offset, len);
     buttons::render_list_scrollbar(
         frame,

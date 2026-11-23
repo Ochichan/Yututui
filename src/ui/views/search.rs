@@ -8,7 +8,7 @@ use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, HighlightSpacing, List, ListItem, ListState, Paragraph};
+use ratatui::widgets::{Block, Borders, Paragraph};
 use unicode_width::UnicodeWidthStr;
 
 use crate::app::{App, MouseTarget, ScrollSurface, SearchFocus, SearchKind};
@@ -253,13 +253,37 @@ fn render_filter_button(frame: &mut Frame, app: &App, area: Rect) {
 /// the fixed-width heart gutter, and the display title, artist, and duration — so the results
 /// list and the filter popup format rows identically and never drift. Each caller lays the
 /// body out with [`crate::ui::track_row`] and applies its own marker and marquee on top.
-type ResultCells = (String, &'static str, String, String, String);
+#[derive(Debug, PartialEq, Eq)]
+struct ResultCells<'a> {
+    source: std::borrow::Cow<'static, str>,
+    heart: &'static str,
+    title: std::borrow::Cow<'a, str>,
+    artist: std::borrow::Cow<'a, str>,
+    duration: &'a str,
+}
 
-fn result_row_cells(
-    app: &App,
-    song: &crate::api::Song,
+fn padded_source_tag(song: &crate::api::Song) -> std::borrow::Cow<'static, str> {
+    if song.youtube_playlist_id().is_some() {
+        return std::borrow::Cow::Borrowed("[PL]  ");
+    }
+    if song.youtube_artist_id().is_some() {
+        return std::borrow::Cow::Borrowed("[ART] ");
+    }
+    match song.source.code() {
+        "YT" => std::borrow::Cow::Borrowed("[YT]  "),
+        "SC" => std::borrow::Cow::Borrowed("[SC]  "),
+        "RAD" => std::borrow::Cow::Borrowed("[RAD] "),
+        "LOC" => std::borrow::Cow::Borrowed("[LOC] "),
+        "SRV" => std::borrow::Cow::Borrowed("[SRV] "),
+        code => std::borrow::Cow::Owned(crate::ui::text::pad_to_width(&format!("[{code}]"), 6)),
+    }
+}
+
+fn result_row_cells<'a>(
+    app: &'a App,
+    song: &'a crate::api::Song,
     favorite_lookup: Option<&FavoriteLookup<'_>>,
-) -> ResultCells {
+) -> ResultCells<'a> {
     // Fixed-width heart slot (like the library lists) so favoriting a row never shifts its
     // title relative to its neighbors.
     let is_favorite = favorite_lookup.map_or_else(
@@ -267,60 +291,62 @@ fn result_row_cells(
         |lookup| lookup.is_favorite(&song.video_id),
     );
     let heart = if is_favorite { "♥ " } else { "  " };
-    // Playlist/artist rows get their own tag so they read as containers, not tracks. Codes
-    // vary in width ([YT] vs [RAD]); pad to a fixed column so titles align across
-    // mixed-source results.
-    let source = if song.youtube_playlist_id().is_some() {
-        "[PL]".to_owned()
-    } else if song.youtube_artist_id().is_some() {
-        "[ART]".to_owned()
-    } else {
-        format!("[{}]", song.source.code())
-    };
-    let source = crate::ui::text::pad_to_width(&source, 6);
     // Artist rows carry no artist of their own; `track_row` then drops the dash.
-    (
-        source,
+    ResultCells {
+        source: padded_source_tag(song),
         heart,
-        app.display_title(song).into_owned(),
-        app.display_artist(song).into_owned(),
-        song.duration.clone(),
-    )
+        title: app.display_title(song),
+        artist: app.display_artist(song),
+        duration: song.duration.as_str(),
+    }
 }
 
-/// One result row after its leading marker: the source tag and heart gutter, then the
-/// [`crate::ui::track_row`] body filling `width` cells. `marquee` scrolls a clipped cursor row;
-/// `muted` is the artist/duration/tag color (the row color itself on a highlighted row).
-fn result_row_spans(
+/// Render one result row directly into `buf` after its leading marker: the source tag and heart
+/// gutter, then the [`crate::ui::track_row`] body filling `width` cells.
+#[allow(clippy::too_many_arguments)]
+fn render_result_row_to_buf(
+    buf: &mut ratatui::buffer::Buffer,
+    row: Rect,
+    marker: &str,
     app: &App,
-    cells: &ResultCells,
+    cells: &ResultCells<'_>,
     width: usize,
     marquee: Option<(ScrollSurface, usize)>,
+    base: Style,
     muted: Style,
-) -> Vec<Span<'static>> {
-    let (source, heart, title, artist, duration) = cells;
-    let body_w = width
-        .saturating_sub(UnicodeWidthStr::width(source.as_str()) + UnicodeWidthStr::width(*heart));
-    let marquee = marquee.map(|(surface, index)| {
+) {
+    let muted_style = base.patch(muted);
+    let source_w = UnicodeWidthStr::width(cells.source.as_ref());
+    let heart_w = UnicodeWidthStr::width(cells.heart);
+    let body_w = width.saturating_sub(source_w + heart_w);
+    let marquee_text = marquee.map(|(surface, index)| {
         crate::ui::anim::selected_marquee(
             app,
             surface,
             index,
-            &crate::ui::track_row::body_text(title, artist),
-            crate::ui::track_row::body_width(duration, body_w),
+            &crate::ui::track_row::body_text(cells.title.as_ref(), cells.artist.as_ref()),
+            crate::ui::track_row::body_width(cells.duration, body_w),
         )
     });
-    let mut spans = vec![Span::styled(source.clone(), muted), Span::raw(*heart)];
-    spans.extend(crate::ui::track_row::spans(
-        title,
-        artist,
-        duration,
-        body_w,
-        marquee,
-        Style::default(),
+    buf.set_style(row, base);
+    let (x, _) = buf.set_stringn(row.x, row.y, marker, usize::from(row.width), base);
+    let rem = usize::from(row.right().saturating_sub(x));
+    let (x, _) = buf.set_stringn(x, row.y, cells.source.as_ref(), rem, muted_style);
+    let rem = usize::from(row.right().saturating_sub(x));
+    let (x, _) = buf.set_stringn(x, row.y, cells.heart, rem, base);
+    let rem = usize::from(row.right().saturating_sub(x));
+    crate::ui::track_row::render_to_buf(
+        buf,
+        x,
+        row.y,
+        body_w.min(rem),
+        cells.title.as_ref(),
+        cells.artist.as_ref(),
+        cells.duration,
+        marquee_text.as_deref(),
+        base,
         muted,
-    ));
-    spans
+    );
 }
 
 fn render_results(
@@ -409,70 +435,64 @@ fn render_results(
         app.theme.style(R::TextPrimary)
     };
 
-    // Fresh results cascade in top-to-bottom while the stagger window runs. New results
-    // always land with the viewport at the top, so styling by absolute row index is the
-    // visible order.
-    let items: Vec<ListItem> = app
+    // Fresh results cascade in top-to-bottom while the stagger window runs. Render directly into
+    // the buffer (preserving List's ▶ gutter and highlight semantics) without building per-row
+    // ListItem / String allocations.
+    let body_width = (area.width as usize).saturating_sub(3);
+    for (vis, (i, s)) in app
         .search
         .results
         .iter()
         .enumerate()
         .skip(offset)
         .take(area.height as usize)
-        .map(|(i, s)| {
-            let cells = result_row_cells(app, s, favorite_lookup);
-            // The focused, visible cursor row marquees when clipped — the source tag and
-            // heart gutter stay put while the text crawls (see `anim::selected_marquee`).
-            // Suppressed while the filter popup is open: its cursor row marquees instead,
-            // and the two would fight over the single shared phase cell.
-            let marquee = (focused && visible_sel == Some(i) && !app.search_filter.open)
-                .then_some((crate::app::ScrollSurface::Search, i));
-            let base = if row_selected(i) {
-                highlight
-            } else {
-                app.theme.style(R::TextPrimary)
-            };
-            // Artist, duration, and source tag recede, except on a highlighted row where the
-            // selection colors must read as one block.
-            let muted = if row_selected(i) || visible_sel == Some(i) {
-                Style::default()
-            } else {
-                app.theme.style(R::TextMuted)
-            };
-            // Marker gutter (2) on the left, one blank cell before the frame on the right.
-            let line = Line::from(result_row_spans(
-                app,
-                &cells,
-                (area.width as usize).saturating_sub(3),
-                marquee,
-                muted,
-            ));
-            ListItem::new(line).style(crate::ui::anim::stagger_style(
-                app,
-                crate::app::Mode::Search,
-                i,
-                base,
-            ))
-        })
-        .collect();
-    let list = List::new(items)
-        .highlight_style(cursor_style)
-        .style(app.theme.style(R::TextPrimary))
-        .highlight_symbol("▶ ")
-        // Reserve the ▶ gutter even while the selection is scrolled off-view
-        // (`state.select` below is skipped then) — otherwise every visible row
-        // shifts 2 cells left the moment the wheel moves the cursor out of the
-        // viewport and snaps back when it returns.
-        .highlight_spacing(HighlightSpacing::Always);
-
-    // Only the visible window is formatted above, so its local list offset is zero. Keep all
-    // hit targets, selection, animation indices, and scrollbar positions in absolute result
-    // coordinates to preserve the existing interaction semantics.
-    let mut state = ListState::default();
-    if let Some(sel) = visible_sel {
-        state.select(Some(sel - offset));
+        .enumerate()
+    {
+        let cells = result_row_cells(app, s, favorite_lookup);
+        let is_cursor = visible_sel == Some(i);
+        // The focused, visible cursor row marquees when clipped — the source tag and
+        // heart gutter stay put while the text crawls (see `anim::selected_marquee`).
+        // Suppressed while the filter popup is open: its cursor row marquees instead,
+        // and the two would fight over the single shared phase cell.
+        let marquee = (focused && is_cursor && !app.search_filter.open)
+            .then_some((crate::app::ScrollSurface::Search, i));
+        let base = if row_selected(i) {
+            highlight
+        } else {
+            app.theme.style(R::TextPrimary)
+        };
+        let item_style = crate::ui::anim::stagger_style(app, crate::app::Mode::Search, i, base);
+        let row_style = if is_cursor {
+            item_style.patch(cursor_style)
+        } else {
+            item_style
+        };
+        // Artist, duration, and source tag recede, except on a highlighted row where the
+        // selection colors must read as one block.
+        let muted = if row_selected(i) || is_cursor {
+            Style::default()
+        } else {
+            app.theme.style(R::TextMuted)
+        };
+        let marker = if is_cursor { "▶ " } else { "  " };
+        let row = Rect {
+            x: area.x,
+            y: area.y + vis as u16,
+            width: area.width,
+            height: 1,
+        };
+        render_result_row_to_buf(
+            frame.buffer_mut(),
+            row,
+            marker,
+            app,
+            &cells,
+            body_width,
+            marquee,
+            row_style,
+            muted,
+        );
     }
-    frame.render_stateful_widget(list, area, &mut state);
     // Each visible row is a click target: single-click selects, double-click plays.
     buttons::register_list_rows(app, area, offset, len, Some);
     // Scrollbar on the right border, tracking the viewport position; hidden when results fit.
@@ -725,21 +745,23 @@ fn render_filter_popup(
             } else {
                 crate::ui::popup_style(app, R::TextMuted)
             };
-            let mut spans = vec![Span::raw(marker)];
-            spans.extend(result_row_spans(
-                app,
-                &cells,
-                body_w.saturating_sub(3),
-                marquee,
-                muted,
-            ));
             let row = Rect {
                 x: list_area.x,
                 y,
                 width: list_area.width,
                 height: 1,
             };
-            frame.render_widget(Paragraph::new(Line::from(spans).style(style)), row);
+            render_result_row_to_buf(
+                frame.buffer_mut(),
+                row,
+                marker,
+                app,
+                &cells,
+                body_w.saturating_sub(3),
+                marquee,
+                style,
+                muted,
+            );
             app.register_mouse_button(row, MouseTarget::SearchFilterRow(display_idx));
         }
 
