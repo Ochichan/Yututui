@@ -6,6 +6,7 @@
 
 use serde::{Deserialize, Serialize};
 
+pub mod ab_loop;
 pub mod chapters;
 pub mod playback;
 pub mod sleep_timer;

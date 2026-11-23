@@ -103,6 +103,7 @@ pub use server_settings::{
 mod server;
 pub use server::{ServerEvent, ServerUiState};
 
+mod ab_loop;
 mod automatic_sync;
 mod bootstrap;
 mod data_export;

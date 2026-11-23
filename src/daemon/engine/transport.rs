@@ -452,10 +452,10 @@ impl DaemonEngine {
                 )
             }
         };
-        let commands = ordinary_load.map_or_else(
+        let commands = self.with_ab_loop_clear(ordinary_load.map_or_else(
             || restore.into_commands(None),
             |load| vec![PlayerCmd::Load(load)],
-        );
+        ));
         self.send_active_player_batch("load_current", commands)?;
 
         self.on_listening_track_loaded(
@@ -469,7 +469,7 @@ impl DaemonEngine {
         self.playback.time_pos_at = None;
         if matches!(intent, LoadCurrentIntent::Ordinary) {
             self.bump_position_epoch(PositionEpochReason::TrackRestart);
-            self.sponsorblock_on_load(&song);
+            self.on_ordinary_track_loaded(&song);
         }
         self.playback.duration = None;
         self.loaded_video_id = Some(song.video_id.clone());

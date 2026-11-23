@@ -154,6 +154,11 @@ pub enum RemoteCommand {
     Chapter {
         direction: yututui_core::chapters::ChapterDirection,
     },
+    /// Set, cycle, or clear the track-scoped A–B loop. Additive (post-v8); capability-gated by
+    /// `ab-loop-v1`.
+    AbLoop {
+        action: yututui_core::ab_loop::AbLoopAction,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -221,7 +226,8 @@ impl RemoteCommand {
             | RemoteCommand::Sleep { .. }
             | RemoteCommand::Ban { .. }
             | RemoteCommand::Listening { .. }
-            | RemoteCommand::Chapter { .. } => RequestRetryClass::RetainedOutcome,
+            | RemoteCommand::Chapter { .. }
+            | RemoteCommand::AbLoop { .. } => RequestRetryClass::RetainedOutcome,
         }
     }
 
@@ -301,6 +307,17 @@ impl RemoteCommand {
                     | ListeningRemoteAction::PresetDelete { preset_id },
             } if crate::listening::DjPresetId::new(preset_id.clone()).is_err() => {
                 Err(validation_error("bad_preset_id"))
+            }
+            RemoteCommand::AbLoop {
+                action:
+                    yututui_core::ab_loop::AbLoopAction::SetA {
+                        seconds: Some(seconds),
+                    }
+                    | yututui_core::ab_loop::AbLoopAction::SetB {
+                        seconds: Some(seconds),
+                    },
+            } if !seconds.is_finite() || *seconds < 0.0 => {
+                Err(validation_error("invalid_position"))
             }
             _ => Ok(()),
         }

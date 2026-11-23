@@ -4,6 +4,7 @@
 //! `main`. The verb (with short aliases) maps to an [`Invocation`]; `-q`/`--json` are
 //! client-side display flags.
 
+use yututui_core::ab_loop::AbLoopAction;
 use yututui_core::chapters::ChapterDirection;
 
 use super::proto::{
@@ -61,6 +62,8 @@ Commands:
   fwd, forward            Seek forward
   seek-to <seconds>       Seek to an absolute position in the current track
   chapter <next|prev>     Jump to the next or previous chapter of the current track
+  ab-loop [cycle|a [s]|b [s]|clear]
+                          Cycle, set, or clear the current track's A–B loop
   crossfade <seconds|off> Set local-file crossfade (off, or 0 to 3.0 seconds in 0.1s steps)
   streaming [on|off|toggle]
                           Toggle (or set) autoplay streaming
@@ -272,6 +275,26 @@ pub fn parse(args: &[String]) -> Result<Parsed, ParseError> {
             };
             Invocation::Command(RemoteCommand::Chapter { direction })
         }
+        "ab-loop" | "ab" => {
+            let action = match rest.as_slice() {
+                [] | ["cycle"] | ["toggle"] => AbLoopAction::Cycle,
+                ["clear"] | ["off"] => AbLoopAction::Clear,
+                ["a"] => AbLoopAction::SetA { seconds: None },
+                ["a", value] => AbLoopAction::SetA {
+                    seconds: Some(parse_non_negative_seconds(verb, value)?),
+                },
+                ["b"] => AbLoopAction::SetB { seconds: None },
+                ["b", value] => AbLoopAction::SetB {
+                    seconds: Some(parse_non_negative_seconds(verb, value)?),
+                },
+                _ => {
+                    return Err(ParseError::Invalid(format!(
+                        "{verb}: expected cycle|a [seconds]|b [seconds]|clear"
+                    )));
+                }
+            };
+            Invocation::Command(RemoteCommand::AbLoop { action })
+        }
         "resume-session" | "load-session" => Invocation::Command(RemoteCommand::ResumeSession),
         "status" | "st" => Invocation::Command(RemoteCommand::Status),
         "info" => {
@@ -314,6 +337,16 @@ pub fn parse(args: &[String]) -> Result<Parsed, ParseError> {
         quiet,
         json,
     })
+}
+
+fn parse_non_negative_seconds(verb: &str, value: &str) -> Result<f64, ParseError> {
+    let seconds = value.parse::<f64>().ok();
+    match seconds {
+        Some(seconds) if seconds >= 0.0 && seconds.is_finite() => Ok(seconds),
+        _ => Err(ParseError::Invalid(format!(
+            "{verb}: expected a non-negative position in seconds, got `{value}`"
+        ))),
+    }
 }
 
 fn parse_crossfade_tenths(value: &str) -> Option<u8> {
@@ -444,6 +477,32 @@ mod tests {
             cmd(&["chapter", "prev"]),
             RemoteCommand::Chapter {
                 direction: ChapterDirection::Prev
+            }
+        );
+        assert_eq!(
+            cmd(&["ab-loop"]),
+            RemoteCommand::AbLoop {
+                action: AbLoopAction::Cycle
+            }
+        );
+        assert_eq!(
+            cmd(&["ab", "a", "12.5"]),
+            RemoteCommand::AbLoop {
+                action: AbLoopAction::SetA {
+                    seconds: Some(12.5)
+                }
+            }
+        );
+        assert_eq!(
+            cmd(&["ab-loop", "b"]),
+            RemoteCommand::AbLoop {
+                action: AbLoopAction::SetB { seconds: None }
+            }
+        );
+        assert_eq!(
+            cmd(&["ab-loop", "off"]),
+            RemoteCommand::AbLoop {
+                action: AbLoopAction::Clear
             }
         );
         assert_eq!(cmd(&["resume-session"]), RemoteCommand::ResumeSession);

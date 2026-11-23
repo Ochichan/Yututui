@@ -25,6 +25,7 @@ impl App {
             }
             RemoteCommand::SeekTo { .. }
             | RemoteCommand::Chapter { .. }
+            | RemoteCommand::AbLoop { .. }
             | RemoteCommand::QueuePlay { .. }
             | RemoteCommand::QueuePlayIfRevision { .. }
             | RemoteCommand::QueueRemove { .. }
@@ -161,6 +162,10 @@ impl App {
                     Err(refusal) => (RemoteResponse::err(refusal.reason()), Vec::new()),
                 }
             }
+            RemoteCommand::AbLoop { action } => match self.try_ab_loop(action, false) {
+                Ok(cmds) => (RemoteResponse::status(self.status_snapshot()), cmds),
+                Err(refusal) => (RemoteResponse::err(refusal.reason()), Vec::new()),
+            },
             RemoteCommand::SeekBack => {
                 let cmds = self.on_player_action(Action::SeekBack);
                 (RemoteResponse::ok(self.now_playing_line()), cmds)
@@ -575,6 +580,7 @@ impl App {
             banned_tracks: self.streaming.taste.banned_track_count(),
             banned_artists: self.streaming.taste.banned_artist_count(),
             seed_terms: self.streaming.taste.seed_term_count(),
+            ab_loop: crate::remote::proto::AbLoopModel::from_state(self.playback.ab_loop),
             // Same current-track gate as the OS media snapshot (media_reducer): stale
             // art from the previous track never rides a status reply.
             artwork: cur.and_then(|song| {
@@ -631,6 +637,7 @@ impl App {
                     self.playback.time_pos,
                 )
             }),
+            ab_loop: crate::remote::proto::AbLoopModel::from_state(self.playback.ab_loop),
             owner_mode: InstanceMode::StandaloneTui,
             eq_preset: self.audio.preset.label(),
             eq_bands: self.audio.bands,

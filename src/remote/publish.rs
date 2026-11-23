@@ -25,8 +25,8 @@ use crate::api::Song;
 use crate::queue::Queue;
 
 use super::proto::{
-    EqModel, InstanceMode, PlayerModel, PushEvent, QueueModel, RemoteResponse, ServerFrame, Topic,
-    TrackModel,
+    AbLoopModel, EqModel, InstanceMode, PlayerModel, PushEvent, QueueModel, RemoteResponse,
+    ServerFrame, Topic, TrackModel,
 };
 use super::sessions::{RemoteSessionHub, RemoteSessionRef};
 
@@ -46,6 +46,8 @@ pub struct CoreView<'a> {
     pub stream_now_playing: Option<Cow<'a, str>>,
     /// The chapter at the playhead, already gated on a loaded track by the host.
     pub chapter: Option<CoreChapter<'a>>,
+    /// Active track-scoped A–B loop bounds, `None` when off.
+    pub ab_loop: Option<AbLoopModel>,
     pub owner_mode: InstanceMode,
     pub eq_preset: &'a str,
     pub eq_bands: [f64; 10],
@@ -131,6 +133,7 @@ struct PlayerFingerprint {
     radio_mode: bool,
     stream_now_playing: Option<String>,
     chapter: Option<(String, usize, usize)>,
+    ab_loop: Option<AbLoopModel>,
     eq_preset: String,
     eq_bands: [f64; 10],
     eq_normalize: bool,
@@ -164,6 +167,7 @@ impl PlayerFingerprint {
             chapter: view
                 .chapter
                 .map(|chapter| (chapter.title.to_owned(), chapter.index, chapter.count)),
+            ab_loop: view.ab_loop,
             eq_preset: view.eq_preset.to_owned(),
             eq_bands: view.eq_bands,
             eq_normalize: view.eq_normalize,
@@ -204,6 +208,7 @@ impl PlayerFingerprint {
                 == view
                     .chapter
                     .map(|chapter| (chapter.title, chapter.index, chapter.count))
+            && self.ab_loop == view.ab_loop
             && self.eq_preset == view.eq_preset
             && self.eq_bands == view.eq_bands
             && self.eq_normalize == view.eq_normalize
@@ -534,6 +539,7 @@ pub(crate) fn player_model(view: &CoreView<'_>) -> PlayerModel {
         radio_mode: view.radio_mode,
         stream_now_playing: view.stream_now_playing.as_deref().map(str::to_owned),
         chapter: view.chapter.map(CoreChapter::to_wire),
+        ab_loop: view.ab_loop,
         owner_mode: view.owner_mode,
         eq: EqModel {
             preset: view.eq_preset.to_owned(),
@@ -867,6 +873,7 @@ pub(crate) fn test_view(queue: &Queue) -> CoreView<'_> {
         radio_mode: false,
         stream_now_playing: None,
         chapter: None,
+        ab_loop: None,
         owner_mode: InstanceMode::StandaloneTui,
         eq_preset: "Flat",
         eq_bands: [0.0; 10],

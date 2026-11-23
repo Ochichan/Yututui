@@ -192,6 +192,81 @@ fn local_crossfade_setting_shape_is_additive() {
 }
 
 #[test]
+fn ab_loop_command_and_snapshot_shapes_are_additive() {
+    use yututui_core::ab_loop::AbLoopAction;
+
+    for (action, line) in [
+        (
+            AbLoopAction::Cycle,
+            r#"{"cmd":"ab_loop","action":{"action":"cycle"}}"#,
+        ),
+        (
+            AbLoopAction::SetA {
+                seconds: Some(12.5),
+            },
+            r#"{"cmd":"ab_loop","action":{"action":"set_a","seconds":12.5}}"#,
+        ),
+        (
+            AbLoopAction::SetB { seconds: None },
+            r#"{"cmd":"ab_loop","action":{"action":"set_b"}}"#,
+        ),
+        (
+            AbLoopAction::Clear,
+            r#"{"cmd":"ab_loop","action":{"action":"clear"}}"#,
+        ),
+    ] {
+        let command = RemoteCommand::AbLoop { action };
+        assert_eq!(serde_json::to_string(&command).unwrap(), line);
+        assert_eq!(
+            serde_json::from_str::<RemoteCommand>(line).unwrap(),
+            command
+        );
+    }
+
+    let plain = super::PlayerModel {
+        track: None,
+        paused: false,
+        volume: 50,
+        speed_tenths: 10,
+        elapsed_ms: None,
+        duration_ms: None,
+        position_epoch: 0,
+        shuffle: false,
+        repeat: crate::queue::Repeat::Off,
+        streaming: false,
+        radio_mode: false,
+        stream_now_playing: None,
+        chapter: None,
+        ab_loop: None,
+        owner_mode: super::InstanceMode::Daemon,
+        eq: super::EqModel {
+            preset: "Flat".to_owned(),
+            bands: [0.0; 10],
+            normalize: false,
+        },
+        queue_pos: 0,
+        queue_len: 0,
+    };
+    let plain_json = serde_json::to_string(&plain).unwrap();
+    assert!(!plain_json.contains("ab_loop"), "{plain_json}");
+
+    let mut with_ab = plain;
+    with_ab.ab_loop = Some(super::AbLoopModel {
+        a_ms: 12_500,
+        b_ms: Some(45_000),
+    });
+    let with_json = serde_json::to_string(&with_ab).unwrap();
+    assert!(
+        with_json.contains(r#""ab_loop":{"a_ms":12500,"b_ms":45000}"#),
+        "{with_json}"
+    );
+    assert_eq!(
+        serde_json::from_str::<super::PlayerModel>(&with_json).unwrap(),
+        with_ab
+    );
+}
+
+#[test]
 fn chapter_command_shape_is_additive() {
     use yututui_core::chapters::ChapterDirection;
 
@@ -233,6 +308,7 @@ fn chapter_snapshot_field_is_absent_without_chapters_and_additive_with_them() {
             radio_mode: false,
             stream_now_playing: None,
             chapter,
+            ab_loop: None,
             owner_mode: super::InstanceMode::Daemon,
             eq: super::EqModel {
                 preset: "Flat".to_owned(),
@@ -361,6 +437,7 @@ fn golden_v7_status_response_is_byte_stable() {
         banned_tracks: 0,
         banned_artists: 0,
         seed_terms: 0,
+        ab_loop: None,
     };
     let line = serde_json::to_string(&RemoteResponse::status(snap)).unwrap();
     assert_eq!(
@@ -401,6 +478,7 @@ fn golden_v8_status_artwork_is_additive() {
         banned_tracks: 0,
         banned_artists: 0,
         seed_terms: 0,
+        ab_loop: None,
     };
     // Absent artwork never appears on the wire (v7 byte stability).
     let artless_line = serde_json::to_string(&artless).unwrap();

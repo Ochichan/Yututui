@@ -370,6 +370,7 @@ mod tests {
                 radio_mode: false,
                 stream_now_playing: None,
                 chapter: None,
+                ab_loop: None,
                 owner_mode: InstanceMode::StandaloneTui,
                 eq: EqModel {
                     preset: "Flat".to_string(),

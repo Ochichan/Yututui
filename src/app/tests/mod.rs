@@ -9,6 +9,7 @@ use ratatui::backend::TestBackend;
 
 mod support;
 use support::*;
+mod ab_loop;
 mod ai;
 mod animations;
 mod art_overlay;
