@@ -144,7 +144,7 @@ fn drain_coalesced_local_inputs(
         return Vec::new();
     }
     let mut batch = Vec::new();
-    while batch.len() < MAX_COALESCED_LOCAL_INPUTS {
+    for _ in 0..MAX_COALESCED_LOCAL_INPUTS {
         let Some(ev) = try_next() else {
             break;
         };

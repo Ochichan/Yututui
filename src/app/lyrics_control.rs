@@ -216,13 +216,13 @@ impl App {
             return None;
         }
         if let Some(duration) = self.playback.duration
-            && target_playback_pos > duration
+            && (target_playback_pos > duration || position >= duration)
         {
             return None;
         }
         let delta_playback = target_playback_pos - position;
         if delta_playback <= 0.0 {
-            return Some(now);
+            return now.checked_add(Duration::from_millis(1));
         }
         let delta_wall_secs = delta_playback / self.playback.speed;
         let wait = Duration::try_from_secs_f64(delta_wall_secs)
@@ -388,5 +388,26 @@ mod tests {
         let mut app = app_with_synced_lyrics(&[5.0, 250.0], t0, 6.0, 1.0);
         app.playback.duration = Some(180.0);
         assert_eq!(app.next_lyrics_deadline_at(t0), None);
+    }
+
+    #[test]
+    fn lyrics_deadline_never_rearms_immediately_on_float_rounding_or_duration_clamp() {
+        let t0 = Instant::now();
+        // `256.2 - 0.3` rounds just below `255.9` while `255.9 + 0.3 == 256.2`, leaving
+        // `delta_playback == 0.0`. At the duration clamp the position cannot advance further,
+        // so the clock must park instead of spinning on `Some(now)`.
+        let mut app = app_with_synced_lyrics(&[5.0, 255.9], t0, 256.2, 1.0);
+        app.playback.duration = Some(256.2);
+        app.lyrics.delay = LyricDelay::from_steps(3);
+        app.refresh_lyrics_active_at(t0);
+        assert_eq!(app.next_lyrics_deadline_at(t0), None);
+
+        // Before the duration clamp, the same float-rounding edge sleeps 1 ms so playback
+        // advances past the boundary instead of returning an already-due deadline.
+        app.playback.duration = Some(300.0);
+        assert_eq!(
+            app.next_lyrics_deadline_at(t0),
+            Some(t0 + Duration::from_millis(1))
+        );
     }
 }
