@@ -209,3 +209,54 @@ async fn ab_loop_refusals_match_across_owners() {
     assert!(too_short.app_cmds.is_empty() && too_short.engine_cmds.is_empty());
     assert_parity("after refusal", &app, &engine);
 }
+
+#[tokio::test]
+async fn ab_loop_auto_wrap_bumps_position_epoch_in_both_owners() {
+    let (mut app, mut engine) = hermetic_pair();
+    app.install_seek_parity_state("b", 30.0, 240.0);
+    let mut engine_player = engine.install_seek_parity_player("b", 30.0, 240.0);
+
+    let _ = send_ab(
+        &mut app,
+        &mut engine,
+        &mut engine_player,
+        AbLoopAction::SetA {
+            seconds: Some(30.0),
+        },
+    )
+    .await;
+    let _ = send_ab(
+        &mut app,
+        &mut engine,
+        &mut engine_player,
+        AbLoopAction::SetB {
+            seconds: Some(45.0),
+        },
+    )
+    .await;
+
+    // Normal forward tick from 30.0 -> 44.6 must not bump position_epoch.
+    let epochs = PositionEpochs::capture(&app, &engine);
+    let _ = app.update(Msg::Player(crate::app::PlayerMsg::TimePos(44.6)));
+    let _ = engine
+        .handle_player_event(crate::player::PlayerEvent::TimePos(44.6))
+        .await;
+    epochs.assert_delta(
+        "forward tick inside loop",
+        PositionEpochs::capture(&app, &engine),
+        0,
+    );
+
+    // Automatic mpv wrap from 44.6 -> 30.1 must bump position_epoch by 1 in both owners.
+    let epochs = PositionEpochs::capture(&app, &engine);
+    let _ = app.update(Msg::Player(crate::app::PlayerMsg::TimePos(30.1)));
+    let _ = engine
+        .handle_player_event(crate::player::PlayerEvent::TimePos(30.1))
+        .await;
+    epochs.assert_delta(
+        "automatic A-B loop wrap",
+        PositionEpochs::capture(&app, &engine),
+        1,
+    );
+    assert_parity("after automatic wrap", &app, &engine);
+}

@@ -512,9 +512,13 @@ impl DaemonEngine {
             PlayerEvent::TimePos(t) => {
                 // Normalize at the mpv trust boundary (parity with the TUI reducer): a
                 // NaN/inf/negative time-pos must not reach the position clock or media session.
+                let prev_pos = self.playback.time_pos;
                 let t = crate::playback_policy::norm_position(t);
                 self.playback.time_pos = Some(t);
                 self.playback.time_pos_at = Some(Instant::now());
+                if self.playback.ab_loop.is_loop_wrap(prev_pos, t) {
+                    self.bump_position_epoch(PositionEpochReason::Seek);
+                }
                 if t > 0.0 {
                     self.consecutive_play_errors = 0;
                     if let Some(song) = self.queue.current() {

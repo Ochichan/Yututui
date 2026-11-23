@@ -102,3 +102,58 @@ fn track_change_clears_active_ab_loop_and_emits_mpv_reset() {
     admit_player_transition(&mut app, &mut next_cmds);
     assert_eq!(app.ab_loop(), AbLoopState::Off);
 }
+
+#[test]
+fn ab_loop_markers_win_over_chapter_ticks_and_reapply_on_transport_recovery() {
+    let mut app = App::new(100);
+    app.queue.set(vec![fsong("vid-a", "Track A", "Artist")], 0);
+    app.install_seek_parity_state("vid-a", 30.0, 200.0);
+    app.playback.chapters = vec![
+        crate::player::Chapter {
+            title: "Intro".to_owned(),
+            start_secs: 0.0,
+        },
+        crate::player::Chapter {
+            title: "Verse".to_owned(),
+            start_secs: 30.0,
+        },
+    ];
+
+    let mut cmds = app.update(Msg::Key(key(KeyCode::Char('b'))));
+    admit_player_transition(&mut app, &mut cmds);
+    app.playback.time_pos = Some(140.0);
+    let mut cmds = app.update(Msg::Key(key(KeyCode::Char('b'))));
+    admit_player_transition(&mut app, &mut cmds);
+
+    // Point A (30s) coincides with the Verse chapter boundary (30s); `[` must not be overwritten.
+    let buf = render_app_buffer(&app, 100, 24);
+    let seekbar_y = app.hits.seekbar_rect().expect("seekbar rect").y;
+    let seekbar_row = buffer_row(&buf, seekbar_y);
+    assert!(
+        seekbar_row.contains('[') && seekbar_row.contains(']'),
+        "A-B markers must render on top of overlapping chapter ticks, got: {seekbar_row:?}"
+    );
+
+    // Transport recovery on the same track preserves owner state and reapplies mpv bounds.
+    let recovery_cmds = app.update(Msg::Player(PlayerMsg::TransportClosed(
+        "ipc reset".to_owned(),
+    )));
+    let expected = AbLoopState::Active {
+        a_secs: 30.0,
+        b_secs: 140.0,
+    };
+    assert_eq!(app.ab_loop(), expected);
+    let restore = recovery_cmds
+        .iter()
+        .find_map(|cmd| match cmd {
+            Cmd::PlayerControl(PlayerControl::Restart { restore }) => Some(restore),
+            _ => None,
+        })
+        .expect("transport recovery must restart player");
+    assert!(restore.iter().any(|c| {
+        matches!(c, PlayerCmd::SetProperty { name, value } if name == "ab-loop-a" && value.as_f64() == Some(30.0))
+    }));
+    assert!(restore.iter().any(|c| {
+        matches!(c, PlayerCmd::SetProperty { name, value } if name == "ab-loop-b" && value.as_f64() == Some(140.0))
+    }));
+}

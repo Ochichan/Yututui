@@ -17,6 +17,24 @@ impl App {
         }
     }
 
+    /// Reapply the stored A–B loop on a same-track transport/cache recovery, or clear owner state
+    /// if recovery is restarting the player idle without reloading the track.
+    pub(in crate::app) fn with_ab_loop_restore(
+        &mut self,
+        mut restore: Vec<PlayerCmd>,
+    ) -> Vec<PlayerCmd> {
+        if restore.is_empty() {
+            self.playback.ab_loop = AbLoopState::Off;
+            restore
+        } else if self.playback.ab_loop.is_set() {
+            let mut bounds = crate::player::ab_loop_commands(self.playback.ab_loop);
+            bounds.append(&mut restore);
+            bounds
+        } else {
+            restore
+        }
+    }
+
     pub(in crate::app) fn try_ab_loop(
         &self,
         action: AbLoopAction,

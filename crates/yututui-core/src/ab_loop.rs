@@ -9,6 +9,8 @@ use serde::{Deserialize, Serialize};
 pub const AB_LOOP_MIN_SPAN_SECS: f64 = 0.5;
 /// Tolerance above B before activating an A–B loop also seeks back into `[a, b]`.
 const PAST_B_SEEK_EPSILON_SECS: f64 = 0.1;
+/// Minimum backward jump between consecutive `time-pos` ticks to treat as an automatic loop wrap.
+const LOOP_WRAP_BACKWARD_EPSILON_SECS: f64 = 0.25;
 
 /// User or remote intent targeting the current track's A–B loop.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -84,6 +86,24 @@ impl AbLoopState {
             Self::PointA { a_secs } => (Some(a_secs), None),
             Self::Active { a_secs, b_secs } => (Some(a_secs), Some(b_secs)),
         }
+    }
+
+    /// Detect an automatic mpv A–B loop wrap between consecutive `time-pos` ticks.
+    ///
+    /// mpv jumps back from B to A without emitting a seek command through either owner, so both
+    /// owners use this predicate to bump `position_epoch` through their central helper.
+    pub fn is_loop_wrap(self, prev_pos: Option<f64>, next_pos: f64) -> bool {
+        let Self::Active { a_secs, b_secs } = self else {
+            return false;
+        };
+        let Some(prev) = prev_pos else {
+            return false;
+        };
+        prev.is_finite()
+            && next_pos.is_finite()
+            && prev >= a_secs
+            && next_pos <= b_secs + PAST_B_SEEK_EPSILON_SECS
+            && prev - next_pos >= LOOP_WRAP_BACKWARD_EPSILON_SECS
     }
 
     /// Compute the next loop state and whether the owner should also seek back to A.
@@ -339,5 +359,19 @@ mod tests {
             ),
             Err(AbLoopRefusal::InvalidPosition)
         );
+    }
+
+    #[test]
+    fn loop_wrap_detects_backward_jump_only_while_active() {
+        let active = AbLoopState::Active {
+            a_secs: 30.0,
+            b_secs: 45.0,
+        };
+        assert!(active.is_loop_wrap(Some(44.8), 30.1));
+        assert!(!active.is_loop_wrap(Some(35.0), 35.5));
+        assert!(!active.is_loop_wrap(Some(35.0), 34.9));
+        assert!(!active.is_loop_wrap(None, 30.1));
+        assert!(!AbLoopState::Off.is_loop_wrap(Some(44.8), 30.1));
+        assert!(!AbLoopState::PointA { a_secs: 30.0 }.is_loop_wrap(Some(44.8), 30.1));
     }
 }

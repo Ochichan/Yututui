@@ -255,8 +255,8 @@ pub(in crate::ui) fn render_seekbar(frame: &mut Frame, app: &App, area: Rect, an
     // SponsorBlock non-music spans and chapter-boundary ticks sit on top of the gauge so
     // long-form tracks read at a glance; drawing lives in status_line (size cap).
     status_line::render_sponsorblock_ticks(frame, app, area, label_width);
-    status_line::render_ab_loop_markers(frame, app, area, label_width);
     status_line::render_chapter_ticks(frame, app, area);
+    status_line::render_ab_loop_markers(frame, app, area, label_width);
     // A bright comet sweeps the filled portion when the seekbar animation is on (no-op
     // otherwise), a short ripple marks the head right after a seek, and sparks dance on
     // the playhead while the sparkle flag is on. Skipped in the static (off-Player)

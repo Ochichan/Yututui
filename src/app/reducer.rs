@@ -220,10 +220,14 @@ impl App {
             PlayerMsg::TimePos(t) => {
                 // Normalize at the mpv trust boundary: a NaN/inf/negative time-pos must not
                 // reach the interpolation clock, the OS media session, or the seekbar gauge.
+                let prev_pos = self.playback.time_pos;
                 let t = crate::playback_policy::norm_position(t);
                 let now = Instant::now();
                 self.playback.time_pos = Some(t);
                 self.playback.time_pos_at = Some(now);
+                if self.playback.ab_loop.is_loop_wrap(prev_pos, t) {
+                    self.bump_position_epoch(PositionEpochReason::Seek);
+                }
                 // Real progress means the current track opened and is playing, so the
                 // auto-skip streak is broken — clear it.
                 if t > 0.0 {
