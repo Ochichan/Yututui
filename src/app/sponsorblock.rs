@@ -61,6 +61,7 @@ impl App {
             && self.sponsorblock_loaded_id().as_deref() == Some(video_id.as_str())
         {
             self.playback.skip_policy.set_segments(video_id, segments);
+            self.dirty = true;
         }
         Vec::new()
     }
