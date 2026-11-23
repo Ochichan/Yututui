@@ -148,11 +148,78 @@ async fn animation_interval_uses_the_legacy_period_and_skip_policy() {
     );
 }
 
-#[tokio::test]
-async fn lyrics_interval_uses_100ms_and_drops_missed_boundaries() {
-    let interval = lyrics_interval();
-    assert_eq!(interval.period(), Duration::from_millis(100));
-    assert_eq!(interval.missed_tick_behavior(), MissedTickBehavior::Skip);
+#[test]
+fn coalesced_local_inputs_drain_navigation_and_defer_non_coalesceable_events() {
+    use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+
+    let mut app = App::new(100);
+    let mut translator = event::Translator::default();
+    let mut deferred = None;
+    let mut queue = VecDeque::from(vec![
+        Event::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)),
+        Event::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)),
+        Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+        Event::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)),
+    ]);
+
+    let first = Msg::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    let batch = drain_coalesced_local_inputs(
+        &first,
+        &mut || queue.pop_front(),
+        &mut translator,
+        (1, 1),
+        &mut app,
+        &mut deferred,
+    );
+
+    assert_eq!(batch.len(), 2, "two adjacent Down keys should coalesce");
+    assert!(
+        matches!(deferred, Some(Msg::Key(k)) if k.code == KeyCode::Enter),
+        "Enter must stop coalescing and be preserved for the next turn"
+    );
+    assert_eq!(
+        queue.len(),
+        1,
+        "events after Enter must remain untouched in the channel"
+    );
+}
+
+#[test]
+fn coalesced_local_inputs_respect_bound_and_skip_ctrl_scroll_zoom() {
+    use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+
+    let mut app = App::new(100);
+    let mut translator = event::Translator::default();
+    let mut deferred = None;
+    let mut queue: VecDeque<Event> = (0..(MAX_COALESCED_LOCAL_INPUTS + 5))
+        .map(|_| Event::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)))
+        .collect();
+
+    let first = Msg::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    let batch = drain_coalesced_local_inputs(
+        &first,
+        &mut || queue.pop_front(),
+        &mut translator,
+        (1, 1),
+        &mut app,
+        &mut deferred,
+    );
+
+    assert_eq!(batch.len(), MAX_COALESCED_LOCAL_INPUTS);
+    assert!(deferred.is_none());
+    assert_eq!(queue.len(), 5);
+    assert!(!is_coalesceable_local_msg(&Msg::MouseScroll {
+        up: true,
+        col: 1,
+        row: 1,
+        ctrl: true,
+    }));
+    assert!(is_coalesceable_local_msg(&Msg::MouseScroll {
+        up: true,
+        col: 1,
+        row: 1,
+        ctrl: false,
+    }));
 }
 
 #[tokio::test]
