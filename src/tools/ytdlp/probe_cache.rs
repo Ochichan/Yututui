@@ -4,7 +4,13 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
-use super::{file_stamp, load_state, save_state};
+use super::{UpdateLock, file_stamp, load_state, save_state, tools_dir};
+
+fn try_lock_state() -> Option<UpdateLock> {
+    let dir = tools_dir()?;
+    let _ = crate::util::safe_fs::ensure_private_dir(&dir);
+    UpdateLock::try_acquire(&dir)
+}
 
 /// Upper bound on probe-cache entries (override + managed + system is 3; a few
 /// spares for paths that moved).
@@ -40,6 +46,7 @@ pub(crate) async fn cached_probe(path: &Path) -> Option<String> {
 
     if let Some((mtime, len)) = stamp
         && !crate::persist::persistence_access().is_read_only()
+        && let Some(_lock) = try_lock_state()
     {
         let mut state = load_state();
         let existing_js = state
@@ -89,6 +96,7 @@ pub(crate) async fn cached_js_runtimes_support(path: &Path) -> bool {
 
     if let Some((mtime, len)) = stamp
         && !crate::persist::persistence_access().is_read_only()
+        && let Some(_lock) = try_lock_state()
     {
         let mut state = load_state();
         if let Some(entry) = state

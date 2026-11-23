@@ -45,7 +45,10 @@ pub fn flag_supported(flag: &str) -> bool {
         cache.insert(key, false);
         return false;
     }
-    if let Some(supported) = super::mpv_probe_cache::lookup_flag(&program, flag) {
+    let stamp = super::mpv_probe_cache::capture_stamp(&program);
+    if let Some(ref stamp) = stamp
+        && let Some(supported) = super::mpv_probe_cache::lookup_flag(stamp, flag)
+    {
         cache.insert(key, supported);
         return supported;
     }
@@ -64,8 +67,10 @@ pub fn flag_supported(flag: &str) -> bool {
     );
     let supported = match probe {
         Ok(out) => {
-            if out.exited {
-                super::mpv_probe_cache::store_flag(&program, flag, out.success);
+            if out.exited
+                && let Some(ref stamp) = stamp
+            {
+                super::mpv_probe_cache::store_flag(&program, stamp, flag, out.success);
             }
             out.exited && out.success
         }
@@ -95,7 +100,10 @@ pub fn lifeline_supported() -> bool {
             *cached = Some((program, false));
             return false;
         }
-        if let Some(supported) = super::mpv_probe_cache::lookup_lifeline(&program) {
+        let stamp = super::mpv_probe_cache::capture_stamp(&program);
+        if let Some(ref stamp) = stamp
+            && let Some(supported) = super::mpv_probe_cache::lookup_lifeline(stamp)
+        {
             *cached = Some((program, supported));
             return supported;
         }
@@ -108,8 +116,10 @@ pub fn lifeline_supported() -> bool {
             64 * 1024,
         ) {
             Ok(output) => {
-                if output.exited {
-                    super::mpv_probe_cache::store_lifeline(&program, output.success);
+                if output.exited
+                    && let Some(ref stamp) = stamp
+                {
+                    super::mpv_probe_cache::store_lifeline(&program, stamp, output.success);
                 }
                 output.exited && output.success
             }

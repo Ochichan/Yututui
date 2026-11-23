@@ -28,15 +28,17 @@ struct MpvProbeCache {
 struct MpvProbeEntry {
     path: String,
     mtime_unix: u64,
+    mtime_nanos: Option<u32>,
     len: u64,
     flags: HashMap<String, bool>,
     lifeline: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct BinaryStamp {
+pub(super) struct BinaryStamp {
     path: String,
     mtime_unix: u64,
+    mtime_nanos: u32,
     len: u64,
 }
 
@@ -56,20 +58,24 @@ fn resolve_binary_stamp(program: &str) -> Option<BinaryStamp> {
     if !meta.is_file() {
         return None;
     }
-    let mtime_unix = meta
-        .modified()
-        .ok()?
-        .duration_since(UNIX_EPOCH)
-        .ok()?
-        .as_secs();
+    let modified = meta.modified().ok()?.duration_since(UNIX_EPOCH).ok()?;
     Some(BinaryStamp {
         path: canonical.to_string_lossy().into_owned(),
-        mtime_unix,
+        mtime_unix: modified.as_secs(),
+        mtime_nanos: modified.subsec_nanos(),
         len: meta.len(),
     })
 }
 
-fn load_at(path: &Path) -> MpvProbeCache {
+/// Non-mutating read for lookups so read-only sessions never rename or back up a shared cache.
+fn load_readonly_at(path: &Path) -> MpvProbeCache {
+    safe_fs::read_to_string_no_symlink(path)
+        .ok()
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or_default()
+}
+
+fn load_for_write_at(path: &Path) -> MpvProbeCache {
     safe_fs::load_json_or_default(path)
 }
 
@@ -83,11 +89,14 @@ fn save_at(path: &Path, cache: &MpvProbeCache) {
 }
 
 fn entry_matches(entry: &MpvProbeEntry, stamp: &BinaryStamp) -> bool {
-    entry.path == stamp.path && entry.mtime_unix == stamp.mtime_unix && entry.len == stamp.len
+    entry.path == stamp.path
+        && entry.mtime_unix == stamp.mtime_unix
+        && entry.mtime_nanos == Some(stamp.mtime_nanos)
+        && entry.len == stamp.len
 }
 
 fn lookup_flag_at(cache_file: &Path, stamp: &BinaryStamp, flag: &str) -> Option<bool> {
-    let cache = load_at(cache_file);
+    let cache = load_readonly_at(cache_file);
     cache
         .entries
         .iter()
@@ -96,7 +105,7 @@ fn lookup_flag_at(cache_file: &Path, stamp: &BinaryStamp, flag: &str) -> Option<
 }
 
 fn store_flag_at(cache_file: &Path, stamp: BinaryStamp, flag: &str, supported: bool) {
-    let mut cache = load_at(cache_file);
+    let mut cache = load_for_write_at(cache_file);
     if let Some(entry) = cache
         .entries
         .iter_mut()
@@ -113,6 +122,7 @@ fn store_flag_at(cache_file: &Path, stamp: BinaryStamp, flag: &str, supported: b
         cache.entries.push(MpvProbeEntry {
             path: stamp.path,
             mtime_unix: stamp.mtime_unix,
+            mtime_nanos: Some(stamp.mtime_nanos),
             len: stamp.len,
             flags,
             lifeline: None,
@@ -126,7 +136,7 @@ fn store_flag_at(cache_file: &Path, stamp: BinaryStamp, flag: &str, supported: b
 }
 
 fn lookup_lifeline_at(cache_file: &Path, stamp: &BinaryStamp) -> Option<bool> {
-    let cache = load_at(cache_file);
+    let cache = load_readonly_at(cache_file);
     cache
         .entries
         .iter()
@@ -135,7 +145,7 @@ fn lookup_lifeline_at(cache_file: &Path, stamp: &BinaryStamp) -> Option<bool> {
 }
 
 fn store_lifeline_at(cache_file: &Path, stamp: BinaryStamp, supported: bool) {
-    let mut cache = load_at(cache_file);
+    let mut cache = load_for_write_at(cache_file);
     if let Some(entry) = cache
         .entries
         .iter_mut()
@@ -150,6 +160,7 @@ fn store_lifeline_at(cache_file: &Path, stamp: BinaryStamp, supported: bool) {
         cache.entries.push(MpvProbeEntry {
             path: stamp.path,
             mtime_unix: stamp.mtime_unix,
+            mtime_nanos: Some(stamp.mtime_nanos),
             len: stamp.len,
             flags: HashMap::new(),
             lifeline: Some(supported),
@@ -162,42 +173,50 @@ fn store_lifeline_at(cache_file: &Path, stamp: BinaryStamp, supported: bool) {
     save_at(cache_file, &cache);
 }
 
-pub(super) fn lookup_flag(program: &str, flag: &str) -> Option<bool> {
-    let cache_file = cache_path()?;
-    let stamp = resolve_binary_stamp(program)?;
-    lookup_flag_at(&cache_file, &stamp, flag)
+pub(super) fn capture_stamp(program: &str) -> Option<BinaryStamp> {
+    resolve_binary_stamp(program)
 }
 
-pub(super) fn store_flag(program: &str, flag: &str, supported: bool) {
+pub(super) fn lookup_flag(stamp: &BinaryStamp, flag: &str) -> Option<bool> {
+    let cache_file = cache_path()?;
+    lookup_flag_at(&cache_file, stamp, flag)
+}
+
+pub(super) fn store_flag(program: &str, expected_stamp: &BinaryStamp, flag: &str, supported: bool) {
     if crate::persist::persistence_access().is_read_only() {
         return;
     }
     let Some(cache_file) = cache_path() else {
         return;
     };
-    let Some(stamp) = resolve_binary_stamp(program) else {
+    let Some(current_stamp) = resolve_binary_stamp(program) else {
         return;
     };
-    store_flag_at(&cache_file, stamp, flag, supported);
+    if current_stamp != *expected_stamp {
+        return;
+    }
+    store_flag_at(&cache_file, current_stamp, flag, supported);
 }
 
-pub(super) fn lookup_lifeline(program: &str) -> Option<bool> {
+pub(super) fn lookup_lifeline(stamp: &BinaryStamp) -> Option<bool> {
     let cache_file = cache_path()?;
-    let stamp = resolve_binary_stamp(program)?;
-    lookup_lifeline_at(&cache_file, &stamp)
+    lookup_lifeline_at(&cache_file, stamp)
 }
 
-pub(super) fn store_lifeline(program: &str, supported: bool) {
+pub(super) fn store_lifeline(program: &str, expected_stamp: &BinaryStamp, supported: bool) {
     if crate::persist::persistence_access().is_read_only() {
         return;
     }
     let Some(cache_file) = cache_path() else {
         return;
     };
-    let Some(stamp) = resolve_binary_stamp(program) else {
+    let Some(current_stamp) = resolve_binary_stamp(program) else {
         return;
     };
-    store_lifeline_at(&cache_file, stamp, supported);
+    if current_stamp != *expected_stamp {
+        return;
+    }
+    store_lifeline_at(&cache_file, current_stamp, supported);
 }
 
 #[cfg(test)]
@@ -224,11 +243,19 @@ mod tests {
         let stamp_v1 = BinaryStamp {
             path: "/usr/bin/mpv".to_owned(),
             mtime_unix: 100,
+            mtime_nanos: 123_456_789,
+            len: 4096,
+        };
+        let stamp_same_sec_diff_nanos = BinaryStamp {
+            path: "/usr/bin/mpv".to_owned(),
+            mtime_unix: 100,
+            mtime_nanos: 987_654_321,
             len: 4096,
         };
         let stamp_v2 = BinaryStamp {
             path: "/usr/bin/mpv".to_owned(),
             mtime_unix: 200,
+            mtime_nanos: 0,
             len: 4096,
         };
 
@@ -252,12 +279,63 @@ mod tests {
         );
         assert_eq!(lookup_lifeline_at(&cache_file, &stamp_v1), Some(true));
 
+        // Equal-length replacement within the same second invalidates via subsecond precision.
+        assert_eq!(
+            lookup_flag_at(&cache_file, &stamp_same_sec_diff_nanos, "--stream-record="),
+            None
+        );
+        assert_eq!(
+            lookup_lifeline_at(&cache_file, &stamp_same_sec_diff_nanos),
+            None
+        );
+
         // Upgrading the binary (different mtime/len) invalidates cached answers.
         assert_eq!(
             lookup_flag_at(&cache_file, &stamp_v2, "--stream-record="),
             None
         );
         assert_eq!(lookup_lifeline_at(&cache_file, &stamp_v2), None);
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn readonly_lookup_ignores_malformed_json_without_mutating_and_misses_legacy_entries() {
+        let cache_file = temp_cache_path("readonly");
+        let dir = cache_file.parent().unwrap().to_path_buf();
+        std::fs::create_dir_all(&dir).unwrap();
+        let stamp = BinaryStamp {
+            path: "/usr/bin/mpv".to_owned(),
+            mtime_unix: 100,
+            mtime_nanos: 0,
+            len: 4096,
+        };
+
+        // Corrupt JSON must not be renamed aside by read-only lookup.
+        std::fs::write(&cache_file, b"{not valid json").unwrap();
+        assert_eq!(
+            lookup_flag_at(&cache_file, &stamp, "--stream-record="),
+            None
+        );
+        assert_eq!(lookup_lifeline_at(&cache_file, &stamp), None);
+        assert!(cache_file.exists(), "lookup must not move aside cache file");
+        let entries: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(Result::ok)
+            .collect();
+        assert_eq!(entries.len(), 1, "lookup must not create backup files");
+
+        // Legacy entries lacking subsecond mtime_nanos must be treated as misses.
+        std::fs::write(
+            &cache_file,
+            br#"{"entries":[{"path":"/usr/bin/mpv","mtime_unix":100,"len":4096,"flags":{"--stream-record=":true},"lifeline":true}]}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            lookup_flag_at(&cache_file, &stamp, "--stream-record="),
+            None
+        );
+        assert_eq!(lookup_lifeline_at(&cache_file, &stamp), None);
 
         let _ = std::fs::remove_dir_all(dir);
     }
