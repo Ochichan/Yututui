@@ -196,6 +196,128 @@ async fn transport_terminal_automatically_restarts_and_replays_without_duplicate
     assert_eq!(engine.signals.artist_weight("artist"), artist_weight);
 }
 
+fn stored_ab_loop() -> yututui_core::ab_loop::AbLoopState {
+    yututui_core::ab_loop::AbLoopState::Active {
+        a_secs: 12.5,
+        b_secs: 48.0,
+    }
+}
+
+async fn assert_recovery_writes_stored_ab_loop(
+    rx: &mut tokio::sync::mpsc::Receiver<PlayerCmd>,
+    resume: bool,
+) {
+    assert!(matches!(
+        recv_player_command(rx).await,
+        PlayerCmd::SetVolume(50)
+    ));
+    assert!(matches!(
+        recv_player_command(rx).await,
+        PlayerCmd::SetAudioFilter(_)
+    ));
+    match recv_player_command(rx).await {
+        PlayerCmd::SetProperty { name, value } if name == "ab-loop-a" => {
+            assert_eq!(value, serde_json::Value::from(12.5));
+        }
+        _ => panic!("recovery must reapply ab-loop-a"),
+    }
+    match recv_player_command(rx).await {
+        PlayerCmd::SetProperty { name, value } if name == "ab-loop-b" => {
+            assert_eq!(value, serde_json::Value::from(48.0));
+        }
+        _ => panic!("recovery must reapply ab-loop-b"),
+    }
+    if resume {
+        assert!(matches!(
+            recv_player_command(rx).await,
+            PlayerCmd::LoadWithResume(_)
+        ));
+    } else {
+        assert!(matches!(recv_player_command(rx).await, PlayerCmd::Load(_)));
+        assert!(matches!(
+            recv_player_command(rx).await,
+            PlayerCmd::CyclePause
+        ));
+    }
+    assert!(rx.try_recv().is_err());
+}
+
+#[tokio::test]
+async fn transport_recovery_reapplies_stored_ab_loop_and_keeps_owner_state() {
+    let stored = stored_ab_loop();
+    let expected = crate::remote::proto::AbLoopModel::from_state(stored);
+
+    let mut engine = super::tests::engine_with_queue(&["seed"]);
+    engine.loaded_video_id = Some("seed".to_owned());
+    engine.playback.paused = true;
+    engine.playback.ab_loop = stored;
+    let old_rx = install_test_player(&mut engine);
+    let mut replacement_rx = queue_test_player_start(&mut engine);
+
+    assert!(
+        engine
+            .handle_player_event(PlayerEvent::TransportClosed("ipc reset".to_owned()))
+            .await
+            .is_empty()
+    );
+    assert!(old_rx.is_closed());
+    assert_eq!(engine.playback.ab_loop, stored);
+    assert_eq!(engine.status().ab_loop, expected);
+    assert_recovery_writes_stored_ab_loop(&mut replacement_rx, false).await;
+
+    engine
+        .load_current_loaded()
+        .expect("ordinary reload should still clear the loop");
+    assert_eq!(
+        engine.playback.ab_loop,
+        yututui_core::ab_loop::AbLoopState::Off
+    );
+    assert!(engine.status().ab_loop.is_none());
+    match recv_player_command(&mut replacement_rx).await {
+        PlayerCmd::SetProperty { name, value } if name == "ab-loop-a" => {
+            assert_eq!(value, serde_json::Value::String("no".to_owned()));
+        }
+        _ => panic!("ordinary load must clear ab-loop-a"),
+    }
+    match recv_player_command(&mut replacement_rx).await {
+        PlayerCmd::SetProperty { name, value } if name == "ab-loop-b" => {
+            assert_eq!(value, serde_json::Value::String("no".to_owned()));
+        }
+        _ => panic!("ordinary load must clear ab-loop-b"),
+    }
+    assert!(matches!(
+        recv_player_command(&mut replacement_rx).await,
+        PlayerCmd::Load(_)
+    ));
+    assert!(replacement_rx.try_recv().is_err());
+
+    let mut engine = super::tests::engine_with_queue(&["seed"]);
+    engine.loaded_video_id = Some("seed".to_owned());
+    engine.playback.paused = true;
+    engine.playback.time_pos = Some(30.0);
+    engine.playback.duration = Some(180.0);
+    engine.playback.ab_loop = stored;
+    let old_rx = install_test_player(&mut engine);
+    let mut replacement_rx = queue_test_player_start(&mut engine);
+
+    assert!(
+        engine
+            .handle_player_event(PlayerEvent::CacheEmergency {
+                file_generation: 0,
+                position_secs: 30.0,
+                paused: true,
+                reason: crate::player::long_form_seek::CacheReason::DisableFailed,
+            })
+            .await
+            .is_empty()
+    );
+    assert!(old_rx.is_closed());
+    assert_eq!(engine.playback.ab_loop, stored);
+    assert_eq!(engine.playback.time_pos, Some(30.0));
+    assert_eq!(engine.status().ab_loop, expected);
+    assert_recovery_writes_stored_ab_loop(&mut replacement_rx, true).await;
+}
+
 #[tokio::test]
 async fn normal_load_rearms_transport_recovery_after_a_stable_replacement() {
     let mut engine = super::tests::engine_with_queue(&["seed"]);

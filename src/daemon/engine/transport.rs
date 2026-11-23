@@ -452,10 +452,17 @@ impl DaemonEngine {
                 )
             }
         };
-        let commands = self.with_ab_loop_clear(ordinary_load.map_or_else(
+        let load_commands = ordinary_load.map_or_else(
             || restore.into_commands(None),
             |load| vec![PlayerCmd::Load(load)],
-        ));
+        );
+        // Recovery replays the same item, so the stored loop stays in owner state. Write those
+        // bounds instead of the ordinary-load clear, or mpv and every observer disagree.
+        let ab_loop_state = match intent {
+            LoadCurrentIntent::Ordinary => yututui_core::ab_loop::AbLoopState::Off,
+            LoadCurrentIntent::TransportRecovery => self.playback.ab_loop,
+        };
+        let commands = self.with_ab_loop_bounds(load_commands, ab_loop_state);
         self.send_active_player_batch("load_current", commands)?;
 
         self.on_listening_track_loaded(

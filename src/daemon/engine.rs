@@ -238,7 +238,8 @@ struct DaemonPlayback {
     duration: Option<f64>,
     /// Live playback speed (session-scoped, seeded from config; MPRIS `Rate` writes it).
     speed: f64,
-    /// Track-scoped A–B loop state; cleared whenever a track loads or playback stops.
+    /// Track-scoped A–B loop. Ordinary loads and stop clear it; transport recovery keeps it
+    /// and writes the same bounds to the replacement player.
     ab_loop: yututui_core::ab_loop::AbLoopState,
 }
 

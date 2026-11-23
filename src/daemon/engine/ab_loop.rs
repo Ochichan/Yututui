@@ -6,11 +6,21 @@ use yututui_core::ab_loop::{AbLoopAction, AbLoopRefusal, AbLoopState};
 use super::*;
 
 impl DaemonEngine {
-    pub(super) fn with_ab_loop_clear(&self, mut commands: Vec<PlayerCmd>) -> Vec<PlayerCmd> {
+    /// Prefix `ab-loop-a` / `ab-loop-b` writes when a loop is currently set.
+    ///
+    /// Ordinary loads pass [`AbLoopState::Off`]. mpv keeps those properties across `loadfile`,
+    /// so a new track has to clear them explicitly. Transport recovery passes the stored state:
+    /// a replacement player starts with no bounds, and clearing a player that survived would
+    /// drop a loop the owner still publishes.
+    pub(super) fn with_ab_loop_bounds(
+        &self,
+        mut commands: Vec<PlayerCmd>,
+        state: AbLoopState,
+    ) -> Vec<PlayerCmd> {
         if self.playback.ab_loop.is_set() {
-            let mut clear = crate::player::ab_loop_commands(AbLoopState::Off);
-            clear.append(&mut commands);
-            clear
+            let mut bounds = crate::player::ab_loop_commands(state);
+            bounds.append(&mut commands);
+            bounds
         } else {
             commands
         }
