@@ -1075,6 +1075,27 @@ impl App {
                     "現在の曲にチャプターがありません"
                 ))
             }
+            (_, Action::AbLoopClear) if !self.playback.ab_loop.is_set() => Err(t!(
+                "No A–B loop active",
+                "활성화된 A–B 반복이 없어요",
+                "有効なA–Bループがありません"
+            )),
+            (_, Action::AbLoopCycle)
+                if self.queue.current().is_some_and(Song::is_radio_station) =>
+            {
+                Err(t!(
+                    "Unavailable on live radio",
+                    "실시간 라디오에서는 사용할 수 없어요",
+                    "ライブ配信では利用できません"
+                ))
+            }
+            (_, Action::AbLoopCycle) if !has_track || self.prefetch.loaded_video_id.is_none() => {
+                Err(t!(
+                    "No track loaded",
+                    "재생 중인 트랙이 없어요",
+                    "再生中の曲がありません"
+                ))
+            }
             (_, Action::ToggleAtlas) if !self.radio_dedicated_mode => Err(t!(
                 "Enter Radio mode first",
                 "먼저 라디오 모드로 들어가세요",
