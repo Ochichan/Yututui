@@ -45,9 +45,17 @@ pub fn flag_supported(flag: &str) -> bool {
         cache.insert(key, false);
         return false;
     }
+    let stamp = super::mpv_probe_cache::capture_stamp(&program);
+    if let Some(ref stamp) = stamp
+        && let Some(supported) = super::mpv_probe_cache::lookup_flag(stamp, flag)
+    {
+        cache.insert(key, supported);
+        return supported;
+    }
     // Route through the timeout-bounded runner so a wedged/hung mpv binary can't block this
-    // synchronous startup probe forever; a timeout (or any error) is treated as "unsupported".
-    let supported = super::guardian::probe(
+    // synchronous startup probe forever; a timeout (or any error) is treated as "unsupported"
+    // and never persisted to disk.
+    let probe = super::guardian::probe(
         &program,
         vec![
             "--no-config".to_owned(),
@@ -56,9 +64,18 @@ pub fn flag_supported(flag: &str) -> bool {
         ],
         std::time::Duration::from_secs(5),
         64 * 1024,
-    )
-    .map(|out| out.success)
-    .unwrap_or(false);
+    );
+    let supported = match probe {
+        Ok(out) => {
+            if out.exited
+                && let Some(ref stamp) = stamp
+            {
+                super::mpv_probe_cache::store_flag(&program, stamp, flag, out.success);
+            }
+            out.exited && out.success
+        }
+        Err(_) => false,
+    };
     cache.insert(key, supported);
     supported
 }
@@ -69,7 +86,7 @@ pub fn flag_supported(flag: &str) -> bool {
 /// parent-only outer and guardian-only inner kill-on-close Job Objects, so no mpv option gate is
 /// needed there.
 pub fn lifeline_supported() -> bool {
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     {
         static CACHE: Mutex<Option<(String, bool)>> = Mutex::new(None);
         let program = crate::tools::mpv_program();
@@ -79,37 +96,35 @@ pub fn lifeline_supported() -> bool {
         {
             return *supported;
         }
-        // The guardian injects its own valid fd:// client immediately before --version. An old mpv
-        // rejects that option, while a supported build proves the exact lease path playback uses.
-        let supported = crate::deps::on_path(&program)
-            && super::guardian::probe(
-                &program,
-                vec!["--version".to_owned()],
-                std::time::Duration::from_secs(5),
-                64 * 1024,
-            )
-            .is_ok_and(|output| output.success);
-        *cached = Some((program, supported));
-        supported
-    }
-    #[cfg(windows)]
-    {
-        static CACHE: Mutex<Option<(String, bool)>> = Mutex::new(None);
-        let program = crate::tools::mpv_program();
-        let mut cached = CACHE.lock().unwrap_or_else(|error| error.into_inner());
-        if let Some((cached_program, supported)) = cached.as_ref()
-            && cached_program == &program
-        {
-            return *supported;
+        if !crate::deps::on_path(&program) {
+            *cached = Some((program, false));
+            return false;
         }
-        let supported = crate::deps::on_path(&program)
-            && super::guardian::probe(
-                &program,
-                vec!["--version".to_owned()],
-                std::time::Duration::from_secs(5),
-                64 * 1024,
-            )
-            .is_ok_and(|output| output.success);
+        let stamp = super::mpv_probe_cache::capture_stamp(&program);
+        if let Some(ref stamp) = stamp
+            && let Some(supported) = super::mpv_probe_cache::lookup_lifeline(stamp)
+        {
+            *cached = Some((program, supported));
+            return supported;
+        }
+        // On POSIX the guardian injects its own valid fd:// client immediately before --version.
+        // An old mpv rejects that option, while a supported build proves the exact lease path.
+        let supported = match super::guardian::probe(
+            &program,
+            vec!["--version".to_owned()],
+            std::time::Duration::from_secs(5),
+            64 * 1024,
+        ) {
+            Ok(output) => {
+                if output.exited
+                    && let Some(ref stamp) = stamp
+                {
+                    super::mpv_probe_cache::store_lifeline(&program, stamp, output.success);
+                }
+                output.exited && output.success
+            }
+            Err(_) => false,
+        };
         *cached = Some((program, supported));
         supported
     }
@@ -156,7 +171,7 @@ pub fn version_line(program: &str) -> Option<String> {
         64 * 1024,
     )
     .ok()
-    .filter(|out| out.success)
+    .filter(|out| out.exited && out.success)
     .and_then(|out| String::from_utf8(out.stdout).ok())
     .and_then(|stdout| stdout.lines().next().map(str::to_owned))
 }
