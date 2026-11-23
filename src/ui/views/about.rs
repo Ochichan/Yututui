@@ -45,12 +45,12 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     // Grow the card by the update block's four rows only when there's an update to show.
     let height = if update_available(app) { 31 } else { 27 };
     let popup = centered_fixed(area, CARD_WIDTH, height);
-    crate::ui::render_popup_background(frame, app, popup);
+    crate::ui::render_modal_background(frame, app, popup);
 
     let block = Block::default()
         .title(t!(" About ", " 정보 ", " 情報 "))
         .borders(Borders::ALL)
-        .border_style(crate::ui::popup_style(app, R::BorderPrimary))
+        .border_style(crate::ui::popup_style(app, R::BorderFocused))
         .style(crate::ui::popup_style(app, R::TextPrimary));
     let inner = block.inner(popup);
     frame.render_widget(block, popup);

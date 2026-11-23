@@ -187,6 +187,15 @@ impl App {
         (!title.is_empty()).then_some(title)
     }
 
+    /// The title of the chapter containing `position`, when the loaded media has chapters.
+    pub(crate) fn chapter_name_at(&self, position: f64) -> Option<&str> {
+        let list = self.loaded_chapters();
+        let index =
+            chapters::current_index(list.iter().map(|chapter| chapter.start_secs), position)?;
+        let title = list[index].title.trim();
+        (!title.is_empty()).then_some(title)
+    }
+
     /// Show the shared music-mode rejection used when a local or media-session
     /// control tries to enable repeat while autoplay streaming is active.
     pub(in crate::app) fn show_repeat_streaming_conflict(&mut self) {

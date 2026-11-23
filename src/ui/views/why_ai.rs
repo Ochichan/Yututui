@@ -66,11 +66,11 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     let popup_height = body_rows.saturating_add(3).min(area.height); // borders + close hint
     let popup = centered_fixed(area, popup_width, popup_height);
 
-    crate::ui::render_popup_background(frame, app, popup);
+    crate::ui::render_modal_background(frame, app, popup);
     let block = Block::default()
         .title(format!(" {} ", why_gem::title()))
         .borders(Borders::ALL)
-        .border_style(crate::ui::popup_style(app, R::BorderPrimary))
+        .border_style(crate::ui::popup_style(app, R::BorderFocused))
         .style(crate::ui::popup_style(app, R::TextPrimary));
     let inner = block.inner(popup);
     frame.render_widget(block, popup);

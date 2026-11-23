@@ -4,7 +4,7 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph};
+use ratatui::widgets::{Block, Borders, Paragraph};
 
 use crate::app::{App, MouseTarget};
 use crate::settings::{
@@ -32,7 +32,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         return;
     }
 
-    frame.render_widget(Clear, popup);
+    crate::ui::render_modal_background(frame, app, popup);
     let block = Block::default()
         .borders(Borders::ALL)
         .title(format!(

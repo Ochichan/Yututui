@@ -47,7 +47,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         width,
         height,
     );
-    crate::ui::render_popup_background(frame, app, popup);
+    crate::ui::render_modal_background(frame, app, popup);
     let block = Block::default()
         .borders(Borders::ALL)
         .title(format!(" {} ", dialog.tab.label()))
@@ -176,24 +176,26 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
 fn render_tabs(frame: &mut Frame, app: &App, dialog: &ListeningDialog, area: Rect) {
     let columns = Layout::horizontal([Constraint::Ratio(1, 3); 3]).split(area);
     for (tab, rect) in ListeningTab::ALL.into_iter().zip(columns.iter().copied()) {
-        let style = crate::ui::popup_style(
-            app,
-            if tab == dialog.tab {
-                R::Accent
-            } else {
-                R::TextMuted
-            },
-        );
+        let active = tab == dialog.tab;
+        let style = if active {
+            ratatui::style::Style::default()
+                .fg(app.theme.color(R::SelectionFg))
+                .bg(app.theme.color(R::SelectionBg))
+                .add_modifier(Modifier::BOLD)
+        } else {
+            crate::ui::popup_style(app, R::TextMuted)
+        };
+        let pill = if active && rect.width >= 4 {
+            format!(" {} ", tab.label())
+        } else {
+            tab.label().to_owned()
+        };
         frame.render_widget(
             Paragraph::new(truncate_to_width(
-                tab.label(),
+                &pill,
                 rect.width.saturating_sub(1).into(),
             ))
-            .style(style.add_modifier(if tab == dialog.tab {
-                Modifier::BOLD
-            } else {
-                Modifier::empty()
-            })),
+            .style(style),
             rect,
         );
         if dialog.editing.is_none() {
@@ -228,13 +230,25 @@ fn render_rows(frame: &mut Frame, app: &App, dialog: &ListeningDialog, area: Rec
         );
         return;
     }
-    let start = dialog
-        .selected
-        .saturating_sub(usize::from(area.height).saturating_sub(1));
+    let len = dialog.rows.len();
+    let visible = usize::from(area.height);
+    let start = dialog.scroll.resolve(
+        dialog.selected.min(len.saturating_sub(1)),
+        area.height,
+        len,
+        crate::ui::scroll::SCROLLOFF,
+    );
+    let show_bar = len > visible && area.width >= 4;
+    let row_width = if show_bar {
+        area.width.saturating_sub(1)
+    } else {
+        area.width
+    };
+    let sel_style = crate::ui::selection_highlight(app);
+    let row_style = crate::ui::popup_style(app, R::TextPrimary);
     // Count record keys in one O(N) pass so large lists stay linear while preserving
     // detection of duplicates involving off-screen rows.
-    let mut conflict_counts: HashMap<ConflictKey<'_>, u8> =
-        HashMap::with_capacity(dialog.rows.len());
+    let mut conflict_counts: HashMap<ConflictKey<'_>, u8> = HashMap::with_capacity(len);
     for row in &dialog.rows {
         let count = conflict_counts.entry(conflict_key(row)).or_insert(0);
         *count = count.saturating_add(1).min(2);
@@ -244,10 +258,10 @@ fn render_rows(frame: &mut Frame, app: &App, dialog: &ListeningDialog, area: Rec
         .iter()
         .enumerate()
         .skip(start)
-        .take(area.height.into())
+        .take(visible)
         .enumerate()
     {
-        let rect = Rect::new(area.x, area.y + line as u16, area.width, 1);
+        let rect = Rect::new(area.x, area.y + line as u16, row_width, 1);
         let selected = index == dialog.selected;
         let conflict = conflict_counts
             .get(&conflict_key(row))
@@ -260,13 +274,27 @@ fn render_rows(frame: &mut Frame, app: &App, dialog: &ListeningDialog, area: Rec
             if conflict { "! " } else { "" },
             row.label()
         );
-        frame.render_widget(
-            Paragraph::new(truncate_to_width(&label, area.width.into())).style(
-                crate::ui::popup_style(app, if selected { R::Accent } else { R::TextPrimary }),
-            ),
-            rect,
-        );
+        let style = if selected { sel_style } else { row_style };
+        let clipped = truncate_to_width(&label, usize::from(row_width));
+        frame.render_widget(Paragraph::new(clipped).style(style), rect);
         register(app, dialog, rect, ListeningControl::Select(index));
+    }
+    if show_bar
+        && let Some(thumb) = crate::ui::scroll::scrollbar_thumb(len, visible, area.height, start)
+    {
+        let bar_x = area.x + row_width;
+        let thumb_end = thumb.start.saturating_add(thumb.len);
+        let thumb_style = crate::ui::popup_style(app, R::Accent);
+        let track_style = crate::ui::popup_style(app, R::BorderPrimary);
+        let buf = frame.buffer_mut();
+        for offset in 0..area.height {
+            let y = area.y + offset;
+            if let Some(cell) = buf.cell_mut((bar_x, y)) {
+                let in_thumb = offset >= thumb.start && offset < thumb_end;
+                cell.set_symbol(if in_thumb { "█" } else { "│" })
+                    .set_style(if in_thumb { thumb_style } else { track_style });
+            }
+        }
     }
 }
 

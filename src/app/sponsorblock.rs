@@ -11,12 +11,28 @@ impl App {
         self.config.streaming.effective_skip_non_music()
     }
 
-    /// YouTube id of the loaded track when it is the queue's current, eligible track.
-    fn sponsorblock_loaded_id(&self) -> Option<String> {
+    /// Borrowed YouTube id of the loaded track when it is the queue's current, eligible track.
+    fn sponsorblock_loaded_id_str(&self) -> Option<&str> {
         let song = self.queue.current()?;
         (self.prefetch.loaded_video_id.as_deref() == Some(song.video_id.as_str()))
-            .then(|| eligible_id(song).map(str::to_owned))
+            .then(|| eligible_id(song))
             .flatten()
+    }
+
+    /// YouTube id of the loaded track when it is the queue's current, eligible track.
+    fn sponsorblock_loaded_id(&self) -> Option<String> {
+        self.sponsorblock_loaded_id_str().map(str::to_owned)
+    }
+
+    /// Sanitized SponsorBlock non-music segments for the currently loaded eligible track.
+    pub(crate) fn sponsorblock_segments(&self) -> &[yututui_core::sponsorblock::Segment] {
+        if !self.sponsorblock_enabled() {
+            return &[];
+        }
+        let Some(track_id) = self.sponsorblock_loaded_id_str() else {
+            return &[];
+        };
+        self.playback.skip_policy.segments_for(track_id)
     }
 
     pub(in crate::app) fn sponsorblock_on_load(&mut self, song: &Song) -> Vec<Cmd> {
@@ -45,6 +61,7 @@ impl App {
             && self.sponsorblock_loaded_id().as_deref() == Some(video_id.as_str())
         {
             self.playback.skip_policy.set_segments(video_id, segments);
+            self.dirty = true;
         }
         Vec::new()
     }

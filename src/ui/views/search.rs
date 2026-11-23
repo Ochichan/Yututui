@@ -630,7 +630,7 @@ fn render_filter_popup(
     }
     app.search_filter.rect.set(Some(popup));
 
-    crate::ui::render_popup_background(frame, app, popup);
+    crate::ui::render_modal_background(frame, app, popup);
     let block = Block::default()
         .title(t!(
             " ⌕ Filter results ",

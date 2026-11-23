@@ -82,12 +82,12 @@ fn render_sheet(
     } else {
         centered(area, pct_w, pct_h)
     };
-    crate::ui::render_popup_background(frame, app, popup);
+    crate::ui::render_modal_background(frame, app, popup);
 
     let block = Block::default()
         .title(title.to_owned())
         .borders(Borders::ALL)
-        .border_style(crate::ui::popup_style(app, R::BorderPrimary))
+        .border_style(crate::ui::popup_style(app, R::BorderFocused))
         .style(crate::ui::popup_style(app, R::TextPrimary));
     let inner = block.inner(popup);
 

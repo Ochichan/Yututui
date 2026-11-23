@@ -144,7 +144,7 @@ pub(in crate::ui::views) fn render_spotify_import_mode_dropdown_popup(
         return;
     }
 
-    crate::ui::render_popup_background(frame, app, popup);
+    crate::ui::render_modal_background(frame, app, popup);
     let block = Block::default()
         .title(t!(
             " Spotify import mode ",
@@ -216,7 +216,7 @@ pub fn render_spotify_picker(frame: &mut Frame, app: &App, area: Rect) {
     };
     let h = (picker.items.len() as u16 + 6).clamp(9, 20);
     let popup = centered_fixed(area, 72, h);
-    crate::ui::render_popup_background(frame, app, popup);
+    crate::ui::render_modal_background(frame, app, popup);
 
     let block = Block::default()
         .title(t!(

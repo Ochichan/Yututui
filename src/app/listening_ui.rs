@@ -81,6 +81,7 @@ pub struct ListeningDialog {
     pub tab: ListeningTab,
     pub revision: u64,
     pub selected: usize,
+    pub scroll: crate::ui::scroll::ScrollState,
     pub rows: Vec<ListeningRow>,
     pub editing: Option<ListeningEdit>,
     pub edit_revision: u64,

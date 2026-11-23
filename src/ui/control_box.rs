@@ -210,6 +210,10 @@ pub(in crate::ui) fn render_title_row(
 /// so its gauge shows the timeshift state instead (full = live edge, backed off = behind);
 /// the position-interpolating smoother would fight that meaning, so radio skips it.
 pub(in crate::ui) fn render_seekbar(frame: &mut Frame, app: &App, area: Rect, animated: bool) {
+    // Publish the seekbar's screen rect before reading `seekbar_preview_target()` so an
+    // active mouse scrub matches the current frame's geometry (the frame starts by clearing
+    // hit rects) while still invalidating automatically if a resize moved the bar.
+    app.hits.set_seekbar_rect(area);
     let (ratio, label) = if app.current_is_radio_stream() {
         format::radio_seekbar(
             app.playback.time_pos,
@@ -225,10 +229,7 @@ pub(in crate::ui) fn render_seekbar(frame: &mut Frame, app: &App, area: Rect, an
         } else {
             raw
         };
-        (
-            ratio,
-            format::seekbar_label(shown_position, app.playback.duration),
-        )
+        (ratio, status_line::seekbar_label(app, preview, area.width))
     };
     // With the time-glow animation on, the gauge and its label pulse toward the accent for
     // a beat as each playback second lands (identity style/plain label otherwise).
@@ -245,13 +246,15 @@ pub(in crate::ui) fn render_seekbar(frame: &mut Frame, app: &App, area: Rect, an
     } else {
         ratatui::text::Span::raw(label)
     };
+    let label_width = u16::try_from(label.width()).unwrap_or(area.width);
     let seekbar = Gauge::default()
         .gauge_style(gauge_style)
         .ratio(ratio)
         .label(label);
     frame.render_widget(seekbar, area);
-    // Chapter-boundary ticks sit on top of the gauge so long-form tracks read at a
-    // glance; the drawing lives in the sibling status_line module (size cap).
+    // SponsorBlock non-music spans and chapter-boundary ticks sit on top of the gauge so
+    // long-form tracks read at a glance; drawing lives in status_line (size cap).
+    status_line::render_sponsorblock_ticks(frame, app, area, label_width);
     status_line::render_chapter_ticks(frame, app, area);
     // A bright comet sweeps the filled portion when the seekbar animation is on (no-op
     // otherwise), a short ripple marks the head right after a seek, and sparks dance on
@@ -262,8 +265,6 @@ pub(in crate::ui) fn render_seekbar(frame: &mut Frame, app: &App, area: Rect, an
         crate::ui::anim::seek_flash_overlay(frame, app, area, ratio);
         crate::ui::anim::progress_sparkle_overlay(frame, app, area, ratio);
     }
-    // Publish the seekbar's screen rect so a mouse click can be hit-tested for seeking.
-    app.hits.set_seekbar_rect(area);
 }
 
 /// The transport status line: state, queue position, rating, shuffle, repeat, speed, EQ, etc.

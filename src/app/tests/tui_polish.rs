@@ -476,3 +476,194 @@ fn default_and_light_text_meets_four_and_a_half_to_one_on_its_rendered_backgroun
         }
     }
 }
+
+#[test]
+fn listening_view_renders_selection_highlight_scrollbar_and_handles_mouse_wheel() {
+    let _guard = crate::i18n::lock_for_test();
+    crate::i18n::set_language(crate::i18n::Language::English);
+    let mut app = App::new(100);
+    let rows: Vec<crate::app::ListeningRow> = (0..18)
+        .map(|i| {
+            crate::app::ListeningRow::Bookmark(crate::listening::BookmarkRecord {
+                bookmark_id: crate::listening::BookmarkId::new(format!("bm-{i}")).unwrap(),
+                track: crate::personal_state::PortableTrack {
+                    key: crate::personal_state::PortableTrackKey::Catalog {
+                        provider: "youtube".to_owned(),
+                        exact_catalog_id: format!("vid-{i}"),
+                    },
+                    title: format!("Track {i}"),
+                    artist: "Artist".to_owned(),
+                    album: None,
+                    duration_secs: Some(180),
+                    isrc: None,
+                },
+                position_ms: (i as u64) * 15_000,
+                label: format!("Moment {i}"),
+            })
+        })
+        .collect();
+    app.overlays.listening = Some(crate::app::ListeningDialog {
+        tab: crate::app::ListeningTab::Bookmarks,
+        revision: 1,
+        selected: 0,
+        rows,
+        ..Default::default()
+    });
+
+    let buffer = render_app_buffer(&app, 80, 20);
+    let sel_bg = app.theme.color(crate::theme::ThemeRole::SelectionBg);
+    let has_selected_row = (0..buffer.area.height).any(|y| {
+        buffer_row(&buffer, y).contains("Moment 0")
+            && (0..buffer.area.width).any(|x| buffer.cell((x, y)).unwrap().bg == sel_bg)
+    });
+    assert!(
+        has_selected_row,
+        "selected Listening row should use SelectionBg"
+    );
+    let has_scrollbar = (0..buffer.area.height).any(|y| buffer_row(&buffer, y).contains('█'));
+    assert!(
+        has_scrollbar,
+        "overflowing Listening list should render a scrollbar thumb"
+    );
+
+    let before = app.overlays.listening.as_ref().unwrap().scroll.offset();
+    app.update(Msg::MouseScroll {
+        up: false,
+        col: 40,
+        row: 10,
+        ctrl: false,
+    });
+    let after = app.overlays.listening.as_ref().unwrap().scroll.offset();
+    assert!(
+        after > before,
+        "mouse wheel down should scroll the Listening list ({before} -> {after})"
+    );
+}
+
+#[test]
+fn seekbar_scrub_preview_shows_delta_chapter_and_sponsorblock_spans() {
+    let _guard = crate::i18n::lock_for_test();
+    crate::i18n::set_language(crate::i18n::Language::English);
+    let mut app = app_playing(2, 0);
+    app.playback.duration = Some(300.0);
+    app.playback.time_pos = Some(40.0);
+    app.playback.time_pos_at = Some(Instant::now());
+    app.playback.chapters = vec![
+        crate::player::Chapter {
+            title: "Intro".into(),
+            start_secs: 0.0,
+        },
+        crate::player::Chapter {
+            title: "Chorus".into(),
+            start_secs: 90.0,
+        },
+    ];
+    // Include a segment across the center of the seekbar to verify the centered label's
+    // internal spaces are excluded from SponsorBlock overlays.
+    app.install_sponsorblock_parity_state(&[(20.0, 90.0), (110.0, 190.0), (210.0, 280.0)]);
+
+    let buffer = render_app_buffer(&app, 100, 26);
+    let sb_rect = app.hits.seekbar_rect().expect("seekbar rect registered");
+    let warning = app.theme.color(crate::theme::ThemeRole::Warning);
+    let has_sb_marker = (sb_rect.left()..sb_rect.right()).any(|x| {
+        let cell = buffer.cell((x, sb_rect.y)).unwrap();
+        cell.symbol() == "▒" && cell.fg == warning
+    });
+    assert!(
+        has_sb_marker,
+        "SponsorBlock segments should render warning-tinted markers on the seekbar"
+    );
+    let idle_row = buffer_row(&buffer, sb_rect.y);
+    assert!(
+        idle_row.contains("0:40 / 5:00"),
+        "SponsorBlock overlay must not paint over spaces inside the seekbar label, got: {idle_row:?}"
+    );
+
+    // Click around 55% of the seekbar (~165s, inside "Chorus", delta ~+2:05).
+    let click_col = sb_rect.x + sb_rect.width * 55 / 100;
+    app.update(Msg::MouseClick {
+        col: click_col,
+        row: sb_rect.y,
+        multi: false,
+    });
+    assert!(app.seekbar_preview_target().is_some());
+    let scrub_buf = render_app_buffer(&app, 100, 26);
+    let row = buffer_row(&scrub_buf, sb_rect.y);
+    assert!(
+        row.contains(" / 5:00 (+") && row.contains(" · Chorus"),
+        "scrub preview should keep intact spaces with signed delta and destination chapter, got: {row:?}"
+    );
+}
+
+#[test]
+fn cjk_chapter_tag_truncates_by_display_width_not_char_count() {
+    let _guard = crate::i18n::lock_for_test();
+    crate::i18n::set_language(crate::i18n::Language::Korean);
+    let mut app = app_playing(2, 0);
+    app.playback.duration = Some(300.0);
+    app.playback.time_pos = Some(10.0);
+    app.playback.time_pos_at = Some(Instant::now());
+    // 20 Hangul syllables = 20 chars (< 24) but 40 terminal cells (> 24).
+    let long_ko = "가나다라마바사아자차카타파하가나다라마바";
+    app.playback.chapters = vec![crate::player::Chapter {
+        title: long_ko.into(),
+        start_secs: 0.0,
+    }];
+    let buffer = render_app_buffer(&app, 140, 26);
+    let compact_rows: Vec<String> = (0..buffer.area.height)
+        .map(|y| {
+            buffer_row(&buffer, y)
+                .chars()
+                .filter(|c| !c.is_whitespace())
+                .collect()
+        })
+        .collect();
+    let status_row = compact_rows
+        .iter()
+        .find(|row| row.contains("1/2") && row.contains("EQ:"))
+        .unwrap_or_else(|| panic!("expected status row in buffer: {compact_rows:?}"));
+    assert!(
+        !status_row.contains(long_ko),
+        "20-syllable Korean chapter (40 cells) must be truncated by display width, got: {status_row:?}"
+    );
+    assert!(
+        status_row.contains("·가나다라마바사아자차카…"),
+        "expected width-capped Korean chapter tag with ellipsis, got: {status_row:?}"
+    );
+    crate::i18n::set_language(crate::i18n::Language::English);
+}
+
+#[test]
+fn modal_scrim_dims_backdrop_outside_modal_and_skips_retro_mode() {
+    let _guard = crate::i18n::lock_for_test();
+    crate::i18n::set_language(crate::i18n::Language::English);
+    let mut app = app_playing(3, 0);
+    app.update(Msg::Key(key(KeyCode::Char('?'))));
+
+    let buf = render_app_buffer(&app, 80, 24);
+    assert!(
+        buf.cell((0, 0))
+            .unwrap()
+            .modifier
+            .contains(ratatui::style::Modifier::DIM),
+        "backdrop outside centered modal should be dimmed"
+    );
+    assert!(
+        !buf.cell((40, 12))
+            .unwrap()
+            .modifier
+            .contains(ratatui::style::Modifier::DIM),
+        "cells inside the modal must stay undimmed"
+    );
+
+    app.config.retro_mode = true;
+    let retro_buf = render_app_buffer(&app, 80, 24);
+    assert!(
+        !retro_buf
+            .cell((0, 0))
+            .unwrap()
+            .modifier
+            .contains(ratatui::style::Modifier::DIM),
+        "retro mode should skip modal backdrop dimming"
+    );
+}

@@ -651,7 +651,7 @@ fn push_chapter_tag(parts: &mut StatusLineParts, app: &App, gap: &'static str, m
     let Some(name) = app.current_chapter_name() else {
         return;
     };
-    let name: String = name.chars().take(24).collect();
+    let name = crate::ui::text::ellipsize_owned_to_width(name.to_owned(), 24);
     parts.push((None, Cow::Owned(format!("{gap}· {name}"))));
 }
 
@@ -673,6 +673,96 @@ fn push_sleep_timer(parts: &mut StatusLineParts, app: &App, gap: &'static str, m
         format!("⏾ {}:{:02}", remaining / 60, remaining % 60)
     };
     parts.push((None, Cow::Owned(format!("{gap}{label}"))));
+}
+
+/// Seekbar timestamp label, enriched during an active mouse scrub with a signed seek delta
+/// (`+0:15` / `-0:22`) and the destination chapter name whenever they fit inside `width`.
+pub(super) fn seekbar_label(app: &App, preview: Option<f64>, width: u16) -> String {
+    let Some(target) = preview else {
+        return crate::util::format::seekbar_label(app.playback.time_pos, app.playback.duration);
+    };
+    let mut label = crate::util::format::seekbar_label(Some(target), app.playback.duration);
+    let budget = usize::from(width.saturating_sub(2));
+    if let Some(current) = app.playback.time_pos {
+        let delta_secs = (target - current).round() as i64;
+        if delta_secs != 0 {
+            let sign = if delta_secs > 0 { '+' } else { '-' };
+            let delta = format!(
+                " ({sign}{})",
+                crate::util::format::time(delta_secs.unsigned_abs() as f64)
+            );
+            if unicode_width::UnicodeWidthStr::width(label.as_str())
+                + unicode_width::UnicodeWidthStr::width(delta.as_str())
+                <= budget
+            {
+                label.push_str(&delta);
+            }
+        }
+    }
+    if let Some(chapter) = app.chapter_name_at(target) {
+        let used = unicode_width::UnicodeWidthStr::width(label.as_str());
+        let sep = " · ";
+        let sep_w = unicode_width::UnicodeWidthStr::width(sep);
+        if used + sep_w + 3 <= budget {
+            let rem = budget - used - sep_w;
+            label.push_str(sep);
+            label.push_str(&crate::ui::text::truncate_to_width(chapter, rem));
+        }
+    }
+    label
+}
+
+/// Subtle warning-tinted SponsorBlock non-music spans drawn onto blank seekbar cells so
+/// skipped segments are visible at a glance without obscuring the timestamp or chapter ticks.
+pub(super) fn render_sponsorblock_ticks(
+    frame: &mut ratatui::Frame,
+    app: &App,
+    area: ratatui::layout::Rect,
+    label_width: u16,
+) {
+    if app.current_is_radio_stream() || area.width < 2 || area.height == 0 {
+        return;
+    }
+    let Some(duration) = app.playback.duration.filter(|d| d.is_finite() && *d > 0.0) else {
+        return;
+    };
+    let segments = app.sponsorblock_segments();
+    if segments.is_empty() {
+        return;
+    }
+    // Match `Gauge`'s centered label placement so internal label spaces stay untouched.
+    let clamped_label_w = area.width.min(label_width);
+    let label_start = area.x + (area.width - clamped_label_w) / 2;
+    let label_end = label_start.saturating_add(clamped_label_w);
+    let warning = app.theme.color(crate::theme::ThemeRole::Warning);
+    let max_x = area.right().saturating_sub(1);
+    let span_w = f64::from(area.width.saturating_sub(1));
+    let buf = frame.buffer_mut();
+    for segment in segments {
+        let r0 = (segment.start / duration).clamp(0.0, 1.0);
+        let r1 = (segment.end / duration).clamp(0.0, 1.0);
+        if r1 <= r0 {
+            continue;
+        }
+        let x0 = area
+            .x
+            .saturating_add((span_w * r0).round() as u16)
+            .min(max_x);
+        let x1 = area
+            .x
+            .saturating_add((span_w * r1).round() as u16)
+            .min(max_x);
+        for x in x0..=x1 {
+            if x >= label_start && x < label_end {
+                continue;
+            }
+            if let Some(cell) = buf.cell_mut((x, area.y))
+                && cell.symbol() == " "
+            {
+                cell.set_char('▒').set_fg(warning);
+            }
+        }
+    }
 }
 
 /// Chapter-boundary ticks drawn on top of the seekbar gauge so long-form tracks read

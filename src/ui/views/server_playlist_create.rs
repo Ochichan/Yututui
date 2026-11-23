@@ -15,7 +15,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         return;
     };
     let popup = centered_fixed(area, 58, 13);
-    crate::ui::render_popup_background(frame, app, popup);
+    crate::ui::render_modal_background(frame, app, popup);
     let block = Block::default()
         .title(t!(
             " Create linked server playlist ",
