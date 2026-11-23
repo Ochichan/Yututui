@@ -55,6 +55,23 @@ fn cell_rect(r: Rect) -> CellRect {
     }
 }
 
+fn raster_key_matches(key: &RasterKey, app: &App, rect: CellRect, renderer: Renderer) -> bool {
+    let atlas = &app.radio_mode.atlas;
+    if key.rect != rect
+        || key.renderer != renderer
+        || key.lat_q != (atlas.camera.centre.lat * 100.0).round() as i32
+        || key.lon_q != (atlas.camera.centre.lon * 100.0).round() as i32
+        || key.scale_q != (atlas.camera.scale * 1000.0).round() as i32
+        || key.active_country != atlas.active_country
+        || key.grid != atlas.grid
+    {
+        return false;
+    }
+    let passport = atlas.passport_map.borrow();
+    key.visited_countries.len() == passport.countries.len()
+        && key.visited_countries.iter().eq(passport.countries.iter())
+}
+
 fn raster_key(app: &App, rect: CellRect, renderer: Renderer) -> RasterKey {
     let atlas = &app.radio_mode.atlas;
     RasterKey {
@@ -159,12 +176,14 @@ fn render_globe(frame: &mut Frame, app: &App, area: Rect) {
     app.register_mouse_button(globe, MouseTarget::Atlas(AtlasTarget::Globe));
 
     let renderer = app.atlas_renderer();
-    let key = raster_key(app, rect, renderer);
     let geom = Geometry::new(rect, renderer, atlas.camera.scale);
     {
         let mut cache = app.bridges.atlas_raster.borrow_mut();
-        let stale = cache.as_ref().is_none_or(|c| c.key != key);
+        let stale = cache
+            .as_ref()
+            .is_none_or(|c| !raster_key_matches(&c.key, app, rect, renderer));
         if stale {
+            let key = raster_key(app, rect, renderer);
             let land = land_mask();
             let passport = atlas.passport_map.borrow();
             let params = RasterParams {

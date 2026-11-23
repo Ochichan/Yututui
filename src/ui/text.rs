@@ -3,8 +3,52 @@
 //! characters (Korean, Japanese, Chinese). These measure with `unicode-width` instead, so columns
 //! line up flush in every UI language.
 
+use std::borrow::Cow;
+
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+
+/// Static pool of spaces for zero-allocation padding across typical terminal widths.
+const SPACES_POOL: &str = "                                                                                                                                                                                                                                                                ";
+
+/// Return a string of `n` ASCII spaces, borrowing from a static pool whenever `n <= 256`.
+pub fn spaces(n: usize) -> Cow<'static, str> {
+    if n <= SPACES_POOL.len() {
+        Cow::Borrowed(&SPACES_POOL[..n])
+    } else {
+        Cow::Owned(" ".repeat(n))
+    }
+}
+
+/// Borrow the longest prefix of `s` whose display width is at most `max` cells, returning
+/// `(prefix, display_width)` without allocating. Matches `Buffer::set_stringn`'s
+/// grapheme-width model so clipping never splits a grapheme cluster or wide character.
+pub fn truncate_str_to_width(s: &str, max: usize) -> (&str, usize) {
+    if s.is_ascii() {
+        let mut w = 0usize;
+        let mut end = 0usize;
+        for (idx, b) in s.bytes().enumerate() {
+            let cw = usize::from((0x20..0x7f).contains(&b));
+            if w + cw > max {
+                return (&s[..end], w);
+            }
+            w += cw;
+            end = idx + 1;
+        }
+        return (s, w);
+    }
+    let mut w = 0usize;
+    let mut end = 0usize;
+    for (idx, g) in s.grapheme_indices(true) {
+        let gw = UnicodeWidthStr::width(g);
+        if w + gw > max {
+            return (&s[..end], w);
+        }
+        w += gw;
+        end = idx + g.len();
+    }
+    (s, w)
+}
 
 /// The visible slices around an editable field's caret. The caret itself is rendered by the
 /// caller so it can keep the surface's existing style and blink animation.
@@ -398,6 +442,21 @@ mod tests {
     fn truncate_owned_reuses_fitting_string() {
         assert_eq!(truncate_owned_to_width("abcdef".to_owned(), 6), "abcdef");
         assert_eq!(truncate_owned_to_width("가나다".to_owned(), 5), "가나");
+    }
+
+    #[test]
+    fn truncate_str_preserves_graphemes_and_matches_display_width() {
+        assert_eq!(truncate_str_to_width("abcdef", 4), ("abcd", 4));
+        assert_eq!(truncate_str_to_width("abcdef", 10), ("abcdef", 6));
+        assert_eq!(truncate_str_to_width("가나다", 5), ("가나", 4));
+        assert_eq!(truncate_str_to_width("가나다", 6), ("가나다", 6));
+        // Multi-scalar ZWJ and VS16 emoji must never be split mid-grapheme.
+        assert_eq!(truncate_str_to_width("👩‍💻", 2), ("👩‍💻", 2));
+        assert_eq!(truncate_str_to_width("👩‍💻", 1), ("", 0));
+        assert_eq!(truncate_str_to_width("❤️", 1), ("", 0));
+        assert_eq!(truncate_str_to_width("❤️", 2), ("❤️", 2));
+        assert_eq!(truncate_str_to_width("a❤️b", 2), ("a", 1));
+        assert_eq!(truncate_str_to_width("a❤️b", 3), ("a❤️", 3));
     }
 
     #[test]

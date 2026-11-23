@@ -188,13 +188,6 @@ fn song_uuid(video_id: &str) -> &str {
         .unwrap_or(video_id)
 }
 
-fn song_video_id(uuid: &str) -> String {
-    format!(
-        "{}:{uuid}",
-        crate::search_source::SearchSource::RadioBrowser.id_prefix()
-    )
-}
-
 pub(in crate::app) fn atlas_context_command_label(command: ContextCommand) -> String {
     match command {
         ContextCommand::CopyStreamUrl => t!(
@@ -323,6 +316,7 @@ impl App {
         atlas.search_editing = false;
         atlas.loading = false;
         atlas.follow_uuid = None;
+        self.bridges.atlas_raster.borrow_mut().take();
         self.dirty = true;
     }
 
@@ -370,11 +364,21 @@ impl App {
         } else {
             atlas.highlight
         };
-        let library = &self.library;
+        let prefix = crate::search_source::SearchSource::RadioBrowser.id_prefix();
+        let fav_uuids: std::collections::HashSet<&str> = self
+            .library
+            .radio_favorites
+            .iter()
+            .filter_map(|song| {
+                song.video_id
+                    .strip_prefix(prefix)
+                    .and_then(|rest| rest.strip_prefix(':'))
+            })
+            .collect();
         atlas
             .catalog
             .markers(atlas.selected, highlight, &|uuid: &str| {
-                library.is_radio_favorite(&song_video_id(uuid))
+                fav_uuids.contains(uuid)
             })
     }
 

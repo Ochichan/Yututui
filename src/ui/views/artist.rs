@@ -166,17 +166,23 @@ fn render_section(frame: &mut Frame, app: &App, area: Rect, section: ArtistSecti
             } else {
                 app.theme.style(R::TextMuted)
             };
-            let mut spans = vec![ratatui::text::Span::raw(heart)];
-            spans.extend(crate::ui::track_row::spans(
-                &title,
-                &artist,
+            let mut spans = Vec::with_capacity(8);
+            spans.push(ratatui::text::Span::raw(heart));
+            crate::ui::track_row::push_spans(
+                &mut spans,
+                title.as_ref(),
+                artist.as_ref(),
                 &song.duration,
                 body_w,
                 None,
                 Style::default(),
                 muted,
-            ));
-            ListItem::new(Line::from(spans)).style(app.theme.style(R::TextPrimary))
+            );
+            let owned: Vec<ratatui::text::Span<'static>> = spans
+                .into_iter()
+                .map(|s| ratatui::text::Span::styled(s.content.into_owned(), s.style))
+                .collect();
+            ListItem::new(Line::from(owned)).style(app.theme.style(R::TextPrimary))
         })
         .collect();
     let highlight = if focused {

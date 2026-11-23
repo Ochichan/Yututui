@@ -1,7 +1,6 @@
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
-use ratatui::text::{Line, Span};
 
 use crate::app::App;
 use crate::theme::ThemeRole as R;
@@ -39,8 +38,10 @@ pub fn render(
     let base = resolve_style(app, frame_data.style);
     // Paint only each row's inked span: the margin cells stay untouched so a mascot placed
     // beside text never erases it. Interior blanks still paint, clearing whatever sits
-    // under the art's body. Only ASCII spaces count as margin so byte and cell offsets agree.
+    // under the art's body. Only ASCII spaces count as margin so byte and cell offsets agree;
+    // column == char index is guaranteed by the single-width-glyph asset test.
     let buf = frame.buffer_mut();
+    let has_regions = !asset.regions.is_empty();
     for (y, line) in frame_data.lines.iter().enumerate() {
         let trimmed = line.trim_end_matches(' ');
         let inked = trimmed.trim_start_matches(' ');
@@ -48,8 +49,31 @@ pub fn render(
             continue;
         }
         let lead = (trimmed.len() - inked.len()) as u16;
-        let row = Line::from(region_spans(app, asset, y as u16, inked, lead, base));
-        buf.set_line(rect.x + lead, rect.y + y as u16, &row, asset.width - lead);
+        let row_y = rect.y + y as u16;
+        let max_cols = usize::from(asset.width - lead);
+        if !has_regions {
+            buf.set_stringn(rect.x + lead, row_y, inked, max_cols, base);
+            continue;
+        }
+        for (x, ch) in inked.chars().take(max_cols).enumerate() {
+            let ax = lead + x as u16;
+            let style = asset
+                .regions
+                .iter()
+                .find(|region| region.contains(ax, y as u16))
+                .map_or(base, |region| {
+                    let s = resolve_style(app, region.style);
+                    if region.bold {
+                        s.add_modifier(Modifier::BOLD)
+                    } else {
+                        s
+                    }
+                });
+            if let Some(cell) = buf.cell_mut((rect.x + ax, row_y)) {
+                cell.set_char(ch);
+                cell.set_style(style);
+            }
+        }
     }
     Some(rect)
 }
@@ -62,50 +86,6 @@ fn resolve_style(app: &App, style: MascotStyle) -> Style {
         MascotStyle::Thinking => app.theme.style(R::AiThinking),
         MascotStyle::Error => app.theme.style(R::AiError),
     }
-}
-
-/// Split one art line into spans at region boundaries so each part of the mascot renders
-/// in its own color. `line` starts at asset column `x0` (leading blanks already stripped).
-/// Column == char index is guaranteed by the single-width-glyph asset test, so plain char
-/// iteration is safe here.
-fn region_spans(
-    app: &App,
-    asset: &'static MascotAsset,
-    y: u16,
-    line: &'static str,
-    x0: u16,
-    base: Style,
-) -> Vec<Span<'static>> {
-    if asset.regions.is_empty() {
-        return vec![Span::styled(line, base)];
-    }
-    let style_at = |x: u16| -> Style {
-        asset
-            .regions
-            .iter()
-            .find(|region| region.contains(x0 + x, y))
-            .map_or(base, |region| {
-                let style = resolve_style(app, region.style);
-                if region.bold {
-                    style.add_modifier(Modifier::BOLD)
-                } else {
-                    style
-                }
-            })
-    };
-    let mut spans: Vec<Span<'static>> = Vec::new();
-    let mut run_start = 0usize;
-    let mut run_style = style_at(0);
-    for (x, (idx, _)) in line.char_indices().enumerate().skip(1) {
-        let style = style_at(x as u16);
-        if style != run_style {
-            spans.push(Span::styled(&line[run_start..idx], run_style));
-            run_start = idx;
-            run_style = style;
-        }
-    }
-    spans.push(Span::styled(&line[run_start..], run_style));
-    spans
 }
 
 pub fn current_frame_index(app: &App, asset: &MascotAsset) -> usize {
