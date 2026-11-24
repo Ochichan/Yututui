@@ -224,6 +224,9 @@ pub fn render(frame: &mut Frame, app: &App) {
     if app.server.settings.modal_open() {
         views::settings::render_music_server_wizard(frame, app, area);
     }
+    if app.overlays.command_palette.is_some() {
+        views::command_palette::render(frame, app, area);
+    }
     retro::scrub_frame(frame, app);
 }
 

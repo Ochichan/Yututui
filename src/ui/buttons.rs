@@ -683,6 +683,29 @@ pub fn render_help_button(frame: &mut Frame, app: &App, area: Rect) {
             records_label,
         ));
     }
+    let palette_key = app
+        .keymap
+        .chord(
+            crate::keymap::KeyContext::Global,
+            Action::OpenCommandPalette,
+        )
+        .map_or_else(
+            || "Ctrl+K".to_owned(),
+            |chord| crate::keymap::format_chord_for_display(chord, app.retro_mode()),
+        );
+    let palette_label = format!("{palette_key} {}", t!("commands", "명령", "コマンド"));
+    let used: u16 = segs.iter().map(|segment| text_width(segment.text)).sum();
+    if used
+        .saturating_add(text_width(palette_label.as_str()))
+        .saturating_add(3)
+        <= area.width
+    {
+        segs.push(Seg::label("   "));
+        segs.push(Seg::button(
+            MouseTarget::Global(Action::OpenCommandPalette),
+            palette_label.as_str(),
+        ));
+    }
     let hint = app.theme.style(R::TextMuted);
     render_segments(frame, app, area, &segs, hint, hint, Alignment::Center);
 }

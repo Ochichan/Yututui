@@ -102,6 +102,8 @@ pub enum Action {
     ToggleRadioMode,
     ToggleLocalMode,
     ToggleHelp,
+    /// Open the fuzzy command & jump palette (`Ctrl+K`).
+    OpenCommandPalette,
     /// Open the selected row's context menu (keyboard accessibility fallback).
     OpenContextMenu,
     ToggleAbout,
@@ -671,6 +673,13 @@ const ACTION_META: &[(Action, &str, &str, &str, &str)] = &[
         "Toggle help",
         "도움말 켜기 / 끄기",
         "ヘルプのオン / オフ",
+    ),
+    (
+        Action::OpenCommandPalette,
+        "open_command_palette",
+        "Command palette",
+        "명령 팔레트",
+        "コマンドパレット",
     ),
     (
         Action::OpenContextMenu,

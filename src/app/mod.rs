@@ -147,6 +147,8 @@ mod artwork;
 pub mod atlas;
 pub use atlas::{AtlasFocus, AtlasMsg, AtlasState, AtlasTarget, PanelRows, PanelTab};
 mod clipboard;
+mod command_palette;
+pub use command_palette::{CommandPaletteState, PaletteCategory, PaletteEntry};
 mod context_menu;
 pub use context_menu::*;
 mod crossfade;

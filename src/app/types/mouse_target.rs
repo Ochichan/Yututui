@@ -296,6 +296,10 @@ pub enum MouseTarget {
     RecordingSlider(usize),
     /// A row in the radio-recordings browser, by item index. Single-click selects the row.
     RecordingBrowseRow(usize),
+    /// Modal backdrop/chrome for the command palette; captures inside clicks without closing.
+    CommandPaletteSurface,
+    /// A rendered result row in the command palette, by filtered-list index.
+    CommandPaletteRow(usize),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

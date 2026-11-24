@@ -581,6 +581,13 @@ pub(super) fn rendered_help_cluster(app: &App, width: u16, height: u16) -> Rect 
         right = right.max(records.rect.right());
         bottom = bottom.max(records.rect.bottom());
     }
+    if let Some(palette) = buttons
+        .iter()
+        .find(|button| button.target == MouseTarget::Global(Action::OpenCommandPalette))
+    {
+        right = right.max(palette.rect.right());
+        bottom = bottom.max(palette.rect.bottom());
+    }
     Rect {
         x: left,
         y: top,

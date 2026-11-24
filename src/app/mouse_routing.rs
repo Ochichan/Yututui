@@ -8,6 +8,7 @@ impl App {
     pub(in crate::app) fn blocking_modal_open(&self) -> bool {
         self.overlays.help_visible
             || self.overlays.mouse_help_visible
+            || self.overlays.command_palette.is_some()
             || self.overlays.about_visible
             || self.overlays.why_gem_video_id.is_some()
             || self.overlays.station_card.is_some()
@@ -121,6 +122,9 @@ impl App {
                 self.close_why_gem();
             }
             return Vec::new();
+        }
+        if self.overlays.command_palette.is_some() {
+            return self.on_mouse_command_palette(col, row);
         }
         if self.overlays.listening.is_some() {
             return match self.mouse_target_at(col, row) {
@@ -567,6 +571,10 @@ impl App {
                 self.overlays.mouse_help_visible = false;
                 self.bridges.help_scroll.reset();
                 self.dirty = true;
+                Vec::new()
+            }
+            MouseTarget::Global(Action::OpenCommandPalette) => {
+                self.open_command_palette();
                 Vec::new()
             }
             // The ✨ at the top-left of the nav bar — same handler as the `A` shortcut.
@@ -1168,7 +1176,9 @@ impl App {
             | MouseTarget::RecordingChange { .. }
             | MouseTarget::RecordingSlider(_)
             | MouseTarget::RecordingBrowseRow(_) => Vec::new(),
-            MouseTarget::AudioOutputRow(_) => Vec::new(),
+            MouseTarget::AudioOutputRow(_)
+            | MouseTarget::CommandPaletteSurface
+            | MouseTarget::CommandPaletteRow(_) => Vec::new(),
         }
     }
 }
