@@ -507,6 +507,7 @@ impl DesktopApp {
             banned_tracks: 0,
             banned_artists: 0,
             seed_terms: 0,
+            ab_loop: player.ab_loop,
         })
     }
 }

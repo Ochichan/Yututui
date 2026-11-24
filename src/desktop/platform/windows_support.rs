@@ -853,6 +853,7 @@ mod tests {
             banned_tracks: 0,
             banned_artists: 0,
             seed_terms: 0,
+            ab_loop: None,
         });
         assert_eq!(tooltip_for_state(&state), "Paused: Artist - Song");
         let idle_daemon = TrayState::Connected(StatusSnapshot {
@@ -880,6 +881,7 @@ mod tests {
             banned_tracks: 0,
             banned_artists: 0,
             seed_terms: 0,
+            ab_loop: None,
         });
         assert_eq!(tooltip_for_state(&idle_daemon), "YuTuTui! daemon idle");
         assert_eq!(
@@ -912,6 +914,7 @@ mod tests {
             banned_tracks: 0,
             banned_artists: 0,
             seed_terms: 0,
+            ab_loop: None,
         }));
         assert_eq!(long.chars().count(), 124);
         assert!(long.ends_with("..."));
